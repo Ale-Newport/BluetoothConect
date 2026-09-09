@@ -208,7 +208,8 @@ export class InMemoryTrustStore implements TrustStore {
   }
 
   record(peerId: string): TrustedPeer | undefined {
-    return this.peers.get(peerId);
+    const peer = this.peers.get(peerId);
+    return peer ? copyRow(peer) : undefined;
   }
 
   set(peer: TrustedPeer): void {
@@ -257,7 +258,9 @@ export class InMemoryTrustStore implements TrustStore {
   }
 
   list(): readonly TrustedPeer[] {
-    return [...this.peers.values()];
+    const out: TrustedPeer[] = [];
+    for (const peer of this.peers.values()) out.push(copyRow(peer));
+    return out;
   }
 }
 

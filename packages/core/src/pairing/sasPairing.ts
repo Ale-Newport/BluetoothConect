@@ -335,8 +335,15 @@ export class SasPairing {
     }
 
     // Acknowledge even a repeat, and even once terminal: our previous ACK may
-    // have been the packet that was lost, and the peer is still repeating.
-    this.options.send(PAIRING_CONFIRM_ACK, { b: this.binding });
+    // have been the packet that was lost, and the peer is still repeating. The
+    // budget is what stops that courtesy from becoming an unbounded transmitter
+    // a peer can drive from the other side of the room.
+    if (this.ackBudget > 0) {
+      this.ackBudget--;
+      this.options.send(PAIRING_CONFIRM_ACK, { b: this.binding });
+    } else {
+      this.suppressedAcks++;
+    }
 
     if (isTerminalState(this.state)) return true;
     // First decision wins. A peer that says yes and then no is either buggy or
@@ -344,7 +351,9 @@ export class SasPairing {
     if (this.remote !== null) return true;
 
     this.remote = accepted ? PairingDecision.ACCEPT : PairingDecision.DECLINE;
-    if (key instanceof Uint8Array) this.remoteKey = key.slice();
+    // Only a friendship needs an advertisement key. A key attached to a refusal
+    // is never stored, so it can never end up in the friend list.
+    if (accepted && key instanceof Uint8Array) this.remoteKey = key.slice();
     this.recompute();
     return true;
   }
@@ -353,11 +362,45 @@ export class SasPairing {
 
   private sendDecision(): void {
     const advertisementKey = this.options.localAdvertisementKey;
+    const accepted = this.local === PairingDecision.ACCEPT;
+    // The advertisement key rides along ONLY with an acceptance.
+    //
+    // It is a long-lived tracking secret: whoever holds it can recognise this
+    // device's broadcasts in every rotation window from now on, which is exactly
+    // the linkability the rotation exists to prevent. A decline is the case
+    // where the person on the other end may be an attacker who has just been
+    // caught relaying the handshake - the last party who should be handed a
+    // permanent way to follow this phone around. They get the answer and
+    // nothing else.
     this.options.send(PAIRING_CONFIRM, {
       b: this.binding,
-      a: this.local === PairingDecision.ACCEPT,
-      ...(advertisementKey ? { k: advertisementKey } : {}),
+      a: accepted,
+      ...(accepted && advertisementKey ? { k: advertisementKey } : {}),
     });
+  }
+
+  /**
+   * The link changed underneath us: restore the retry budget and start
+   * repeating our decision again.
+   *
+   * Everything sent on the old link may have gone nowhere - `sendControl` drops
+   * silently when there is no connected link - and the retries covering it may
+   * well have been spent into that void. Without this, a ceremony that survives
+   * a Bluetooth-to-Wi-Fi migration ends with one phone believing it has a new
+   * friend and the other still waiting, which is the worst of the two possible
+   * outcomes. Bounded, so it cannot be used to buy unlimited transmissions.
+   */
+  resumeRetransmission(): void {
+    if (this.disposed || this.localAcknowledged || this.local === null) return;
+    // A ceremony that has already given up has nothing left to deliver. Every
+    // other state does: even in both-confirmed, OUR confirmation may be the one
+    // that never arrived, and until it does the peer cannot finish.
+    if (this.state === SasPairingState.TIMED_OUT) return;
+    if (this.resumesLeft <= 0) return;
+    this.resumesLeft--;
+    this.resendsLeft = this.options.maxResends ?? DEFAULT_MAX_RESENDS;
+    this.ackBudget = this.initialAckBudget;
+    this.startResending();
   }
 
   private startResending(): void {

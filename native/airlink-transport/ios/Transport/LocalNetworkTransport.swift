@@ -457,6 +457,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
             listener = nil
             registeredServiceNames.removeAll()
             listenerRestartAttempt = 0
+            isAdvertising = false
             advertisedToken = ""
             advertisedDisplayName = ""
         }
@@ -524,7 +525,8 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
     }
 
     private func restartListener() {
-        guard isStarted, listenerRestartAttempt < NetworkTiming.restartBackoffSeconds.count,
+        guard isStarted, isAdvertising,
+              listenerRestartAttempt < NetworkTiming.restartBackoffSeconds.count,
               let configuration else {
             listener = nil
             return
@@ -535,8 +537,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         listener = nil
         let type = configuration.bonjourServiceType
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.isStarted, self.listener == nil,
-                  !self.advertisedToken.isEmpty || !self.advertisedDisplayName.isEmpty else { return }
+            guard let self, self.isStarted, self.isAdvertising, self.listener == nil else { return }
             do {
                 let created = try NWListener(using: self.makeParameters(), on: .any)
                 created.service = self.makeService(type: type)
@@ -804,8 +805,9 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
                 self.noteIfPolicyDenied(error)
                 self.fail(link, reason: "connection failed: \(error)")
             case .cancelled:
-                self.finishConnect(link, with: .failure(AirLinkError.failed("connection cancelled")))
-                self.reportTerminal(link, state: .closed, reason: "connection cancelled")
+                let reason = link.closeReason ?? "connection cancelled"
+                self.finishConnect(link, with: .failure(AirLinkError.failed(reason)))
+                self.reportTerminal(link, state: .closed, reason: reason)
                 self.forget(link)
             case .preparing, .setup:
                 break
@@ -919,10 +921,12 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
                 // the state the caller asked for.
                 return
             }
+            let detail = reason.isEmpty ? "disconnected" : reason
+            link.closeReason = detail
             if link.isOpen && !link.didReportTerminal {
-                self.events?.linkState(linkId: link.id, state: .closing, reason: reason)
+                self.events?.linkState(linkId: link.id, state: .closing, reason: detail)
             }
-            self.finishConnect(link, with: .failure(AirLinkError.failed(reason.isEmpty ? "disconnected" : reason)))
+            self.finishConnect(link, with: .failure(AirLinkError.failed(detail)))
             link.connection.cancel()
 
             // cancel() normally lands in .cancelled within milliseconds and that
@@ -932,7 +936,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
             let watchdog = DispatchWorkItem { [weak self, weak link] in
                 guard let self, let link, self.links[link.id] != nil else { return }
                 self.log("warn", "link \(link.id) did not report cancelled; forcing closed")
-                self.reportTerminal(link, state: .closed, reason: reason)
+                self.reportTerminal(link, state: .closed, reason: detail)
                 link.connection.forceCancel()
                 self.forget(link)
             }
@@ -981,8 +985,14 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
             let frame = Self.frame(data)
             link.queuedBytes += frame.count
 
-            link.connection.send(content: frame, completion: .contentProcessed { [weak self, weak link] error in
-                guard let self, let link else { return }
+            // `link` is captured strongly on purpose: this closure is released
+            // as soon as it fires, so there is no cycle, and a promise on the
+            // JavaScript side must never be left unsettled.
+            link.connection.send(content: frame, completion: .contentProcessed { [weak self] error in
+                guard let self else {
+                    completion(.failure(AirLinkError.failed("transport was torn down mid-send")))
+                    return
+                }
                 link.queuedBytes = max(0, link.queuedBytes - frame.count)
                 if let error {
                     completion(.failure(AirLinkError.failed("send failed: \(error)")))

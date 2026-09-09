@@ -13,6 +13,7 @@ import {
   mockToken,
 } from '../src/transport/mock.js';
 import { VirtualClock } from '../src/util/time.js';
+import type { CborValue } from '../src/protocol/cbor.js';
 import { DecodeError } from '../src/util/varint.js';
 import { bytesEqual } from '../src/util/bytes.js';
 import type { Link } from '../src/transport/types.js';
@@ -45,6 +46,7 @@ import {
 } from '../src/files/progress.js';
 import { MemoryFileStore } from '../src/files/memoryStore.js';
 import { FileTransferProtocol } from '../src/files/protocol.js';
+import { OutgoingTransfer, type TransferListener, type TransferWire } from '../src/files/transfer.js';
 import {
   FILE_LIMITS,
   FileErrorCode,
@@ -578,6 +580,153 @@ describe('progress reporting', () => {
     expect(formatDuration(200_000)).toBe('3m 20s');
     expect(formatDuration(3_900_000)).toBe('1h 05m');
     expect(formatDuration(-1)).toBe('--');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The sender engine, driven directly through a stub wire
+// ---------------------------------------------------------------------------
+
+const NOOP_LISTENER: TransferListener = {
+  onStateChanged: () => undefined,
+  onProgress: () => undefined,
+  onCompleted: () => undefined,
+  onFailed: () => undefined,
+  onCancelled: () => undefined,
+  onDeclined: () => undefined,
+  onChunkRejected: () => undefined,
+};
+
+function stubWire(datagramBytes: number, payloadBudget = 65536) {
+  const controls: { type: number; value: CborValue }[] = [];
+  const chunks: Uint8Array[] = [];
+  const wire: TransferWire = {
+    sendControl: (type, value) => {
+      controls.push({ type, value });
+      return true;
+    },
+    sendChunk: (payload) => {
+      chunks.push(payload);
+      return true;
+    },
+    get payloadBudget() {
+      return payloadBudget;
+    },
+    get datagramBytes() {
+      return datagramBytes;
+    },
+  };
+  return { wire, controls, chunks };
+}
+
+/** Let every already-resolved store promise settle. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+}
+
+async function makeOffer(contents: Uint8Array, chunkSize: number): Promise<FileOffer> {
+  return {
+    transferId: 'T1',
+    filename: 'unit.bin',
+    fileBytes: contents.length,
+    mimeType: '',
+    chunkSize,
+    totalChunks: totalChunksFor(contents.length, chunkSize),
+    fileHash: await computeFileHash(new MemoryFileStore(contents), contents.length, chunkSize),
+  };
+}
+
+describe('OutgoingTransfer in isolation', () => {
+  it('keeps a bounded number of messages in flight', async () => {
+    const contents = pattern(256 * 200);
+    const offer = await makeOffer(contents, 256);
+    const { wire, chunks } = stubWire(180); // Bluetooth: one chunk per message
+    const transfer = new OutgoingTransfer(offer, new MemoryFileStore(contents), wire, new VirtualClock(), NOOP_LISTENER);
+
+    transfer.handleAccept(4);
+    await settle();
+    // The peer granted four; our own cap is higher, so four is what goes out.
+    expect(chunks).toHaveLength(4);
+    expect(transfer.inFlightMessages).toBe(4);
+    expect(decodeFileChunk(chunks[0] as Uint8Array).run).toBe(1);
+  });
+
+  it('re-sends the whole run when a chunk in it is NAKed, not just the named index', async () => {
+    const contents = pattern(256 * 16);
+    const offer = await makeOffer(contents, 256);
+    // A datagram budget that fits exactly four grid chunks in one message.
+    const { wire, chunks } = stubWire(1024 + 72 + chunkHeaderBytes(2));
+    const transfer = new OutgoingTransfer(offer, new MemoryFileStore(contents), wire, new VirtualClock(), NOOP_LISTENER);
+
+    transfer.handleAccept(16);
+    await settle();
+    const sent = chunks.map((c) => decodeFileChunk(c));
+    expect(sent).toHaveLength(4);
+    expect(sent.map((c) => c.run)).toEqual([4, 4, 4, 4]);
+    expect(sent.map((c) => c.index)).toEqual([0, 4, 8, 12]);
+
+    chunks.length = 0;
+    transfer.handleAck({
+      transferId: 'T1',
+      prefix: 4, // 0..3 landed
+      bitmap: new Uint8Array(0),
+      missing: [4], // 4..7 failed their digest
+      window: 16,
+    });
+    await settle();
+
+    const resent = chunks.map((c) => decodeFileChunk(c));
+    expect(resent.some((c) => c.index === 4 && c.run === 4)).toBe(true);
+    expect(transfer.ackedChunks).toBe(4);
+  });
+
+  it('applies a selective acknowledgement above the contiguous prefix', async () => {
+    const contents = pattern(256 * 16);
+    const offer = await makeOffer(contents, 256);
+    const { wire } = stubWire(180);
+    const transfer = new OutgoingTransfer(offer, new MemoryFileStore(contents), wire, new VirtualClock(), NOOP_LISTENER);
+    transfer.handleAccept(16);
+    await settle();
+
+    // Prefix of two, plus chunks 3 and 5 held above the gap.
+    transfer.handleAck({
+      transferId: 'T1',
+      prefix: 2,
+      bitmap: new Uint8Array([0b0000_1010]),
+      missing: [],
+      window: 16,
+    });
+    expect(transfer.ackedChunks).toBe(4);
+  });
+
+  it('ignores a resume message it cannot parse rather than losing its place', async () => {
+    const contents = pattern(256 * 16);
+    const offer = await makeOffer(contents, 256);
+    const { wire } = stubWire(180);
+    const transfer = new OutgoingTransfer(offer, new MemoryFileStore(contents), wire, new VirtualClock(), NOOP_LISTENER);
+    transfer.handleAccept(16);
+    transfer.handleAck({ transferId: 'T1', prefix: 8, bitmap: new Uint8Array(0), missing: [], window: 16 });
+    expect(transfer.ackedChunks).toBe(8);
+
+    transfer.handleResume({ transferId: 'T1', prefix: 0, bitmap: new Uint8Array(99) });
+    expect(transfer.ackedChunks).toBe(8);
+    expect(transfer.state).toBe(TransferState.TRANSFERRING);
+  });
+
+  it('adopts the peer view of the world when a resume does parse', async () => {
+    const contents = pattern(256 * 16);
+    const offer = await makeOffer(contents, 256);
+    const { wire } = stubWire(180);
+    const transfer = new OutgoingTransfer(offer, new MemoryFileStore(contents), wire, new VirtualClock(), NOOP_LISTENER);
+    transfer.handleAccept(16);
+    transfer.handleAck({ transferId: 'T1', prefix: 12, bitmap: new Uint8Array(0), missing: [], window: 16 });
+
+    // The receiver actually only has the first three chunks.
+    const theirs = new ChunkBitmap(16);
+    for (let i = 0; i < 3; i++) theirs.set(i);
+    const encoded = theirs.encodeResume();
+    transfer.handleResume({ transferId: 'T1', prefix: encoded.prefix, bitmap: encoded.bytes });
+    expect(transfer.ackedChunks).toBe(3);
   });
 });
 

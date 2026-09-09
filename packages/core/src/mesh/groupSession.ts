@@ -303,6 +303,8 @@ export class GroupSession {
       updatedAt: now,
     };
     this.state = snapshot;
+    this.seen.clear();
+    this.relayBudget.clear();
     this.events.emit('stateChanged', { snapshot, reason: 'created' });
     // Nothing goes on the wire: a group of one has nobody to tell. The
     // invitation is GROUP_CREATE, and `addMember` is what sends it.
@@ -312,12 +314,19 @@ export class GroupSession {
   /**
    * Adopt a group state handed to us out of band - a QR code, or a GROUP_CREATE
    * from the host. Replaces any group we were in.
+   *
+   * The snapshot is validated against exactly the rules the wire decoder
+   * enforces, because a QR code held up across an aisle is no more trustworthy
+   * than a datagram: see `snapshotProblem` in codec.ts for why an unchecked one
+   * silently and permanently desynchronises this device from the group.
    */
   adopt(snapshot: GroupSnapshot): void {
     this.assertUsable();
-    if (snapshot.members.length > MESH_LIMITS.maxMembers) throw new MeshError('adopt: too many members');
+    const problem = snapshotProblem(snapshot);
+    if (problem !== null) throw new MeshError(`adopt: ${problem}`);
     this.state = snapshot;
     this.seen.clear();
+    this.relayBudget.clear();
     this.events.emit('stateChanged', { snapshot, reason: 'adopted' });
   }
 
@@ -327,19 +336,27 @@ export class GroupSession {
    */
   announceSelf(): void {
     const state = this.requireGroup();
+    // A group whose roster is already full has no room for us. Adding ourselves
+    // anyway would put the local state one over the limit, and every snapshot
+    // we encoded from then on would throw - leaving this device unable to
+    // gossip at all. The state that gets us here is real: a snapshot that
+    // dropped us while we were out of range is a full group we are not in.
+    if (!this.isMember(this.options.localPeerId) && state.members.length >= MESH_LIMITS.maxMembers) {
+      throw new MeshError(`announceSelf: the group already has ${MESH_LIMITS.maxMembers} members`);
+    }
     const member: GroupMember = {
       peerId: this.options.localPeerId,
       displayName: this.options.localDisplayName ?? '',
       joinedAt: this.options.clock.wallNow(),
     };
     this.applyJoin(member);
-    this.sendToAll(MessageType.GROUP_MEMBER_JOIN, encodeMemberJoin({ groupId: state.groupId, member }), null);
+    this.sendToMembers(MessageType.GROUP_MEMBER_JOIN, encodeMemberJoin({ groupId: state.groupId, member }), null);
   }
 
   /** Tell the group we are going. Local state is left intact for the UI to show. */
   leave(reason = 'left'): void {
     const state = this.requireGroup();
-    this.sendToAll(
+    this.sendToMembers(
       MessageType.GROUP_MEMBER_LEAVE,
       encodeMemberLeave({ groupId: state.groupId, peerId: this.options.localPeerId, reason }),
       null,
@@ -351,7 +368,7 @@ export class GroupSession {
     const state = this.requireGroup();
     const payload = encodeStateRequest(state.groupId);
     if (peerId === undefined) {
-      this.sendToAll(MessageType.GROUP_STATE_REQUEST, payload, null);
+      this.sendToMembers(MessageType.GROUP_STATE_REQUEST, payload, null);
       return;
     }
     const neighbour = this.neighbours.get(peerId);
@@ -374,7 +391,7 @@ export class GroupSession {
     // GROUP_CREATE *is* the invitation. Everybody else has the group already
     // and needs one line of news.
     this.sendCborTo(member.peerId, MessageType.GROUP_CREATE, encodeGroupSnapshot(updated));
-    this.sendToAll(
+    this.sendToMembers(
       MessageType.GROUP_MEMBER_JOIN,
       encodeMemberJoin({ groupId: state.groupId, member }),
       member.peerId,
@@ -389,7 +406,12 @@ export class GroupSession {
     const state = this.requireGroup();
     if (!this.isMember(peerId)) return;
     this.applyLeave(peerId, reason);
-    this.sendToAll(MessageType.GROUP_MEMBER_LEAVE, encodeMemberLeave({ groupId: state.groupId, peerId, reason }), null);
+    const signal = encodeMemberLeave({ groupId: state.groupId, peerId, reason });
+    this.sendToMembers(MessageType.GROUP_MEMBER_LEAVE, signal, null);
+    // Explicitly, because the peer we just removed is by definition no longer a
+    // member and so is no longer in the audience for group control traffic. It
+    // still has to be told, or it goes on believing it is in the group.
+    this.sendCborTo(peerId, MessageType.GROUP_MEMBER_LEAVE, signal);
   }
 
   // -- host migration --------------------------------------------------------
@@ -520,6 +542,19 @@ export class GroupSession {
 
   private handleMessage(via: string, message: IncomingMessage): void {
     if (this.disposed) return;
+    // The whole trust model of this module is "the link peer id is the
+    // authenticated identity". `attach` permits a session that has not finished
+    // its handshake yet (peerId still null), so the check has to be repeated
+    // here: by now the session may have proved it is somebody else entirely,
+    // and everything below - membership, relaying, state updates - would
+    // otherwise be attributed to the id it was optimistically attached under.
+    const neighbour = this.neighbours.get(via);
+    if (neighbour === undefined) return;
+    const authenticated = neighbour.peer.peerId;
+    if (authenticated !== null && authenticated !== via) {
+      this.drop(MeshDropReason.IDENTITY_MISMATCH, via, authenticated);
+      return;
+    }
     try {
       switch (message.type) {
         case MessageType.GROUP_CREATE:
@@ -590,6 +625,14 @@ export class GroupSession {
       this.drop(MeshDropReason.RELAY_NOT_MEMBER, via, 'state update from a non-member');
       return;
     }
+    // An epoch is in range and still not believable. Accepting a jump to the
+    // ceiling pins the counter there for good - `bumpEpoch` saturates, so no
+    // later change can out-rank it and the group can never be corrected. See
+    // MAX_EPOCH_ADVANCE.
+    if (incoming.epoch > current.epoch + MAX_EPOCH_ADVANCE) {
+      this.drop(MeshDropReason.EPOCH_JUMP, via, String(incoming.epoch));
+      return;
+    }
 
     const order = compareSnapshots(incoming, current);
     if (order > 0) {
@@ -637,7 +680,7 @@ export class GroupSession {
     this.applyJoin(signal.member);
     // Pass it on so the far end of a line hears about it too. Terminates
     // because a repeat finds the member already present and returns above.
-    this.sendToAll(MessageType.GROUP_MEMBER_JOIN, encodeMemberJoin(signal), via);
+    this.sendToMembers(MessageType.GROUP_MEMBER_JOIN, encodeMemberJoin(signal), via);
     // The host is the authority: it turns an announcement into a numbered state
     // that heals anyone who missed the gossip.
     if (this.isHost) {
@@ -663,7 +706,7 @@ export class GroupSession {
     if (!this.isMember(signal.peerId)) return; // already gone: no change, no gossip
 
     this.applyLeave(signal.peerId, signal.reason);
-    this.sendToAll(MessageType.GROUP_MEMBER_LEAVE, encodeMemberLeave(signal), via);
+    this.sendToMembers(MessageType.GROUP_MEMBER_LEAVE, encodeMemberLeave(signal), via);
     if (this.isHost) this.bumpAndGossip('member left');
   }
 
@@ -741,6 +784,18 @@ export class GroupSession {
     const hopsRemaining = packet.hops - 1;
     if (hopsRemaining < 1) {
       this.drop(MeshDropReason.HOP_LIMIT, via, packet.messageId);
+      return;
+    }
+    // The last of the four bounds, and the one the hop limit and the seen-set
+    // cannot supply: neither of them stops one member ORIGINATING packets
+    // without end, and every packet we accept for forwarding turns into up to
+    // seven outbound sends that `ReliableChannel` will queue if the radio
+    // cannot keep up. Anything addressed to us has already been delivered
+    // above; what is refused here is only the work we would do for somebody
+    // else.
+    if (!this.admitRelay(packet)) {
+      this.packetsRateLimited++;
+      this.drop(MeshDropReason.RATE_LIMITED, via, packet.originId);
       return;
     }
     const forwarded: RelayPacket = { ...packet, hops: hopsRemaining };

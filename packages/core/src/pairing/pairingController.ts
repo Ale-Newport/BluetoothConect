@@ -103,7 +103,10 @@ export class PairingController {
         if (message.type !== PAIRING_CONFIRM && message.type !== PAIRING_CONFIRM_ACK) return;
         this.sas?.handlePeerMessage(message.type, message.value);
       }),
-      session.events.on('closed', () => this.dispose()),
+      // A new link means everything we put on the old one may have gone
+      // nowhere. The ceremony repeats itself rather than stranding one phone.
+      session.events.on('transportChanged', () => this.sas?.resumeRetransmission()),
+      session.events.on('closed', ({ reason }) => this.onSessionClosed(reason)),
     );
 
     // A controller attached after the handshake already finished must not sit
@@ -154,6 +157,23 @@ export class PairingController {
   }
 
   // -- flow ------------------------------------------------------------------
+
+  /**
+   * The session went away while the sheet was still up.
+   *
+   * Disposing silently would take the ceremony's timeout with it and leave the
+   * six digits on screen with nothing left alive to ever take them down - the
+   * one outcome a state machine with a timeout on every state exists to
+   * prevent. The screen is told first, and only then does the controller go.
+   * There is nothing to tear down; the session is already gone.
+   */
+  private onSessionClosed(reason: string): void {
+    if (this.disposed) return;
+    if (!this.settled && this.sas !== null && !this.sas.isTerminal) {
+      this.refuse(`session closed: ${reason}`, { tearDown: false });
+    }
+    this.dispose();
+  }
 
   private onAuthenticated(
     peerId: string,
