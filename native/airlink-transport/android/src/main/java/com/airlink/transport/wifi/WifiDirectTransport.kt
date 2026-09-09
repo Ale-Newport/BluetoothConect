@@ -540,7 +540,8 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                         }
                     },
                 )
-            } catch (e: SecurityException) {
+            } catch (_: SecurityException) {
+                // The permission was revoked between the check above and here.
                 failPending(AirLinkError.PermissionDenied(kind))
             }
         }

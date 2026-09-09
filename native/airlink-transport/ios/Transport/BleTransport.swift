@@ -536,23 +536,23 @@ final class BleTransport: NSObject, AirLinkTransport {
             // Every completion hops the queue before it fires, which is what
             // makes rule 4 of the datagram contract - no re-entrant callbacks
             // from inside a send - true by construction rather than by review.
-            let item = BleOutboundDatagram(data: data, reliable: reliable) { [queue] result in
+            let deliver: (Result<Void, Error>) -> Void = { [queue] result in
                 queue.async { completion(result) }
             }
 
             guard let link = links[linkId] else {
-                item.finish(.failure(AirLinkError.unknownLink(linkId)))
+                deliver(.failure(AirLinkError.unknownLink(linkId)))
                 return
             }
             guard link.state == .connected else {
-                item.finish(.failure(AirLinkError.failed("Link \(linkId) is \(link.state.rawValue)")))
+                deliver(.failure(AirLinkError.failed("Link \(linkId) is \(link.state.rawValue)")))
                 return
             }
             guard !data.isEmpty else {
                 // A zero-length datagram cannot be framed unambiguously on the
                 // stream path and carries nothing on the GATT one. Refusing is
                 // better than having it mean different things per path.
-                item.finish(.failure(AirLinkError.failed("Cannot send an empty datagram")))
+                deliver(.failure(AirLinkError.failed("Cannot send an empty datagram")))
                 return
             }
             let limit = link.currentDatagramSize
@@ -560,17 +560,27 @@ final class BleTransport: NSObject, AirLinkTransport {
                 // Loudly, never truncated.
                 link.metrics.packetsDropped += 1
                 publishMetrics(link)
-                item.finish(.failure(AirLinkError.payloadTooLarge(data.count, limit)))
+                deliver(.failure(AirLinkError.payloadTooLarge(data.count, limit)))
                 return
             }
 
             if link.fastPath == .active, let session = link.l2cap {
+                // The session owns its own bounded queue and settles the promise
+                // when the bytes are in the stream. Counting optimistically and
+                // correcting on refusal keeps one code path for the common case
+                // without ever reporting a datagram as sent that was not.
+                accountSent(link, bytes: data.count)
+                let item = BleOutboundDatagram(data: data, reliable: reliable) { [weak self, weak link] result in
+                    if case .failure = result, let self, let link {
+                        link.metrics.packetsSent -= 1
+                        link.metrics.bytesSent -= Double(data.count)
+                        link.throughputWindowBytes -= Double(data.count)
+                        link.metrics.packetsDropped += 1
+                        self.publishMetrics(link)
+                    }
+                    deliver(result)
+                }
                 session.send(item)
-                // Accounting happens on acceptance; the session settles the promise.
-                link.metrics.packetsSent += 1
-                link.metrics.bytesSent += Double(data.count)
-                link.throughputWindowBytes += Double(data.count)
-                publishMetrics(link)
                 return
             }
 
@@ -578,10 +588,11 @@ final class BleTransport: NSObject, AirLinkTransport {
                   link.outboundBytes + data.count <= Self.maxQueuedBytes else {
                 link.metrics.packetsDropped += 1
                 publishMetrics(link)
-                item.finish(.failure(AirLinkError.failed("Bluetooth send queue is full")))
+                deliver(.failure(AirLinkError.failed("Bluetooth send queue is full")))
                 return
             }
 
+            let item = BleOutboundDatagram(data: data, reliable: reliable, completion: deliver)
             link.outbound.append(item)
             link.outboundBytes += data.count
             pumpOutbound(link)
@@ -860,10 +871,10 @@ final class BleTransport: NSObject, AirLinkTransport {
     }
 
     private func activatePendingFastPath(_ link: BleLink) {
-        guard link.fastPath == .opening, link.l2cap != nil else { return }
+        guard link.fastPath == .opening, let session = link.l2cap else { return }
         link.fastPath = .active
         announceDatagramSize(link)
-        log("info", "link \(link.id): L2CAP active, datagrams up to \(BleL2CAPSession.maxDatagramSize) bytes")
+        log("info", "link \(link.id): L2CAP active on PSM \(session.psm), datagrams up to \(BleL2CAPSession.maxDatagramSize) bytes")
     }
 
     private func abandonFastPath(_ link: BleLink, reason: String) {

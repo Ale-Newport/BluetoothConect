@@ -16,8 +16,8 @@ import android.os.HandlerThread
 import android.provider.Settings
 import android.util.Log
 import com.airlink.transport.ble.BleTransport
+import com.airlink.transport.wifi.HotspotHost
 import com.airlink.transport.wifi.LocalNetworkTransport
-import com.airlink.transport.wifi.WifiAwareTransport
 import com.airlink.transport.wifi.WifiDirectTransport
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -230,18 +230,27 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
             availableDetail = "Wi-Fi Direct is only used between two Android devices.",
         )
 
-        TransportKind.WIFI_AWARE -> wifiGate(
-            kind = kind,
-            feature = PackageManager.FEATURE_WIFI_AWARE,
-            // Said plainly, in both directions, because the product must never
-            // promise it: most handsets have no Aware radio at all, and on the
-            // ones that do, Android-to-iPhone Aware does not work in practice.
-            unsupportedDetail = "This device does not support Wi-Fi Aware. Most phones do not, " +
-                "and Wi-Fi Aware between Android and iPhone does not work reliably even where " +
-                "both devices claim it, so AirLink never depends on it.",
-            availableDetail = "This device reports Wi-Fi Aware, but it does not interoperate with " +
-                "iPhones in practice, so AirLink only ever offers it between Android devices and " +
-                "never relies on it.",
+        // Wi-Fi Aware is reported honestly in both directions and is available
+        // in neither. Most handsets have no Aware radio at all; on the ones that
+        // do, Android-to-iPhone Aware fails in practice (missing DCEA
+        // attributes, auth status 15, PINs that are never displayed), which is
+        // precisely the only case that would have justified building it. See
+        // wifi/WifiAwareNotes.kt for the full reasoning. The identifier stays in
+        // the vocabulary so that if the interop story ever changes this becomes
+        // one new file and no feature code changes.
+        TransportKind.WIFI_AWARE -> Gate(
+            supported = hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE),
+            availability = TransportAvailability(
+                available = false,
+                reason = UnavailableReason.UNSUPPORTED_HARDWARE,
+                detail = if (hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) {
+                    "This device has Wi-Fi Aware hardware, but Wi-Fi Aware does not work " +
+                        "reliably between Android phones and iPhones, so AirLink does not use " +
+                        "it. Bluetooth, Wi-Fi Direct and a shared hotspot cover the same ground."
+                } else {
+                    "This device does not support Wi-Fi Aware, and most phones do not."
+                },
+            ),
         )
     }
 
@@ -1043,9 +1052,9 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         if (hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
             register { WifiDirectTransport(it) }
         }
-        if (hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) {
-            register { WifiAwareTransport(it) }
-        }
+        // There is deliberately no Wi-Fi Aware transport: see
+        // wifi/WifiAwareNotes.kt. The identifier stays alive in the negotiation
+        // protocol, and platformGate() reports it honestly as never available.
     }
 
     private fun register(factory: TransportFactory) {

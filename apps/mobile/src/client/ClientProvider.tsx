@@ -1,0 +1,116 @@
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform } from 'react-native';
+import { ConnectionState } from '@airlink/core';
+import { AppPhase, useAppStore } from '../state/index.js';
+import { AirLinkClient } from './AirLinkClient.js';
+import pkg from '../../package.json';
+
+/**
+ * Owns the client for the app's lifetime and keeps the store in step with it.
+ *
+ * The client is created once and never re-created; React re-renders, radios do
+ * not. Everything the interface reads flows one way: core events → store →
+ * screens.
+ */
+const ClientContext = createContext<AirLinkClient | null>(null);
+
+export function useClient(): AirLinkClient {
+  const client = useContext(ClientContext);
+  if (!client) throw new Error('useClient must be used inside a ClientProvider');
+  return client;
+}
+
+export function ClientProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const clientRef = useRef<AirLinkClient | null>(null);
+  const [client, setClient] = useState<AirLinkClient | null>(null);
+  const store = useAppStore;
+
+  if (!clientRef.current) {
+    clientRef.current = new AirLinkClient({
+      appVersion: (pkg as { version?: string }).version ?? '0.1.0',
+      platform: Platform.OS === 'ios' ? 'ios' : 'android',
+      deviceModel: Platform.OS,
+    });
+  }
+
+  useEffect(() => {
+    const instance = clientRef.current as AirLinkClient;
+    let cancelled = false;
+
+    const subscriptions = [
+      instance.events.on('peersChanged', () => {
+        const nearby = instance.nearby();
+        store.getState().setPeers(
+          nearby.map((peer) => {
+            const handle = instance.peer(peer.key);
+            return {
+              key: peer.key,
+              peerId: peer.peerId,
+              displayName: peer.displayName || 'Unknown device',
+              avatarEmoji: null,
+              isFriend: peer.peerId !== null,
+              nearby: true,
+              connection: handle?.session.state ?? ConnectionState.DISCOVERED,
+              quality: null,
+              lastSeenAt: peer.lastSeenAt,
+              highBandwidth: handle?.session.isHighBandwidth ?? false,
+            };
+          }),
+        );
+      }),
+
+      instance.events.on('connectionChanged', ({ peerKey, state, quality }) => {
+        store.getState().setConnection(peerKey, state, quality);
+      }),
+
+      instance.events.on('pairingRequired', ({ peerKey, displayName, code }) => {
+        store.getState().addPendingPairing({ peerKey, displayName, code, startedAt: Date.now() });
+      }),
+
+      instance.events.on('pairingResolved', ({ peerKey }) => {
+        store.getState().resolvePendingPairing(peerKey);
+      }),
+
+      instance.events.on('radioChanged', ({ transport, available, detail }) => {
+        if (transport === 'ble') store.getState().setRadios({ bluetoothOn: available, detail: detail || null });
+        else store.getState().setRadios({ wifiOn: available });
+      }),
+
+      instance.events.on('error', ({ message, fatal }) => {
+        if (fatal) store.getState().setPhase(AppPhase.FAILED, message);
+      }),
+    ];
+
+    void (async () => {
+      try {
+        const { hasIdentity } = await instance.load();
+        if (cancelled) return;
+        if (!hasIdentity) {
+          store.getState().setPhase(AppPhase.ONBOARDING);
+        } else {
+          store.getState().setProfile(instance.profile);
+          store.getState().setPhase(AppPhase.READY);
+          // Radios come up only once there is an identity to advertise, so a
+          // first launch never shows a permission prompt before the screen that
+          // explains it.
+          await instance.start();
+        }
+        setClient(instance);
+      } catch (err) {
+        if (!cancelled) {
+          store.getState().setPhase(AppPhase.FAILED, err instanceof Error ? err.message : String(err));
+          setClient(instance);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const off of subscriptions) off();
+      void instance.stop();
+    };
+  }, [store]);
+
+  const value = useMemo(() => client, [client]);
+  return <ClientContext.Provider value={value}>{children}</ClientContext.Provider>;
+}

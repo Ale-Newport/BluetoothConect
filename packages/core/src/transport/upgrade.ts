@@ -54,7 +54,12 @@ import { ConnectionState } from '../session/stateMachine.js';
 import type { IncomingMessage, PeerSession } from '../session/peerSession.js';
 import { LinkState, type Link, type TransportProfile } from './types.js';
 import type { TransportCapabilityManager } from './capabilityManager.js';
-import { defaultProfileFor, negotiateTransports, type TransportCandidate } from './negotiation.js';
+import {
+  defaultProfileFor,
+  isTransportUpgrade,
+  negotiateTransports,
+  type TransportCandidate,
+} from './negotiation.js';
 import {
   ConnectionQuality,
   ConnectionQualityTracker,
@@ -505,10 +510,7 @@ export class TransportUpgradeController {
       this.session.events.on('message', (message) => this.handleSessionMessage(message)),
       this.session.events.on('stateChanged', ({ state }) => this.handleSessionState(state)),
       this.session.events.on('closed', () => this.dispose()),
-      this.capabilities.events.on('changed', () => {
-        if (this.options.autoUpgrade === false) return;
-        void this.considerUpgrade();
-      }),
+      this.capabilities.events.on('changed', () => this.handleTransportsChanged()),
     );
 
     this.qualityTimer = this.clock.setInterval(() => this.sampleQuality(), this.timings.qualitySampleIntervalMs);
@@ -624,27 +626,44 @@ export class TransportUpgradeController {
       // first link that answers the probe CORRECTLY, not by the first link that
       // arrives. Otherwise anyone who can open a link on that radio could take
       // the slot, stay silent, and starve the upgrade.
-      if (this.probeCandidates.length >= MAX_PROBE_LINKS) {
-        void link.close('too many unproven links').catch(() => undefined);
-        return true;
-      }
-      this.probeCandidates.push(link);
-      this.armProbeResponder(link, waiter);
+      this.admitProbeCandidate(link, waiter);
       return true;
     }
 
     // Not an upgrade. It may still be the reconnect we are waiting for: an
-    // established session whose link has died accepts a fresh one. We only do
-    // this while the session is NOT carrying traffic, so a stranger cannot
-    // displace a healthy link - the worst they can do is offer one we ignore.
+    // established session whose link has died accepts a fresh one. Two things
+    // have to hold before we hand a live conversation to it.
+    //
+    //  - The session must not be carrying traffic, so a stranger can never
+    //    displace a healthy link.
+    //  - The link must come from the endpoint we believe the peer to be at.
+    //    Without that, ANY device able to open a link on that radio during a
+    //    dropout takes the session over: it proves nothing, answers nothing,
+    //    and every retransmission and keepalive drains into it while the UI
+    //    happily reports a healthy connection. Nothing is disclosed - the
+    //    session is sealed - but the conversation stops working, which is the
+    //    one outcome this whole module exists to prevent.
+    //
+    // An endpoint handle is a weaker credential than the upgrade probe, and it
+    // is the strongest one available here: a reconnect has no live link to
+    // carry a nonce, so there is nothing unforgeable to bind to. It costs an
+    // attacker the effort of spoofing the peer's handle on that radio rather
+    // than none at all, and a wrong guess now costs only a reconnect attempt.
     if (
       this.session.isSecure &&
       this.session.state === ConnectionState.RECONNECTING &&
       link.state !== LinkState.CLOSED &&
       link.state !== LinkState.FAILED
     ) {
-      this.adoptLink(link, 'incoming link while reconnecting');
-      return true;
+      const expected = this.safeResolveEndpoint(link.transport);
+      if (expected !== null && expected === link.endpointId) {
+        this.adoptLink(link, 'incoming link while reconnecting');
+        return true;
+      }
+      this.log.debug('ignored an incoming link from an unexpected endpoint', {
+        transport: link.transport,
+        endpoint: link.endpointId,
+      });
     }
     return false;
   }
@@ -716,6 +735,7 @@ export class TransportUpgradeController {
     const nonce = this.random.randomBytes(UPGRADE_NONCE_LENGTH);
     const scope = new AttemptScope();
     this.scope = scope;
+    this.attemptId = upgradeId;
     let link: Link | null = null;
 
     this.setState(UpgradeState.OFFERING);
@@ -749,13 +769,7 @@ export class TransportUpgradeController {
 
       // 2. Open the new link. The old one is still carrying the conversation.
       this.setState(UpgradeState.CONNECTING);
-      link = await this.withTimeout(
-        transport.connect(peerEndpoint, { timeoutMs: this.timings.connectTimeoutMs }),
-        this.timings.connectTimeoutMs,
-        UpgradeFailureReason.CONNECT_FAILED,
-        `connect to ${candidate.kind} timed out`,
-        scope,
-      );
+      link = await this.connectLink(transport, peerEndpoint, candidate.kind, scope);
       if (scope.error) throw scope.error;
 
       // 3. Prove it. Until this round trip completes we have an open socket and
@@ -928,7 +942,7 @@ export class TransportUpgradeController {
     // The initiator repeats its offer until it hears back, so a repeat of the
     // offer we are ALREADY working on means our acceptance was the thing that
     // got lost. Say it again rather than declining ourselves as busy.
-    if (this.responderOfferId && bytesEqual(this.responderOfferId, upgradeId)) {
+    if (this.attemptId && bytesEqual(this.attemptId, upgradeId)) {
       if (this.upgradeState === UpgradeState.AWAITING_LINK) this.sendAccept(upgradeId, kind);
       return;
     }
@@ -943,10 +957,19 @@ export class TransportUpgradeController {
     if (current && profile && profile.kind === current.kind) {
       return decline(UpgradeFailureReason.NO_CANDIDATE, 'already on that transport');
     }
+    // The initiator only ever offers something that beats what we are on - so
+    // an offer that does not is either a bug on its side or a peer trying to
+    // pin the conversation onto the slowest radio it can reach us over. The
+    // responder enforces the invariant rather than trusting it: this is the
+    // only message in the protocol that can move a healthy session, and moving
+    // it DOWN is never something the user asked for.
+    if (current && profile && !isTransportUpgrade(current, profile)) {
+      return decline(UpgradeFailureReason.NO_CANDIDATE, `${kind} is no better than the current transport`);
+    }
 
     const scope = new AttemptScope();
     this.scope = scope;
-    this.responderOfferId = upgradeId;
+    this.attemptId = upgradeId;
     let link: Link | null = null;
 
     try {
@@ -994,8 +1017,45 @@ export class TransportUpgradeController {
     }
   }
 
+  /**
+   * Take an incoming link into the pool of ones we are listening to.
+   *
+   * Holding several at once is the defence against a single silent squatter -
+   * but only if a newcomer can always get in. Turning the newest link away when
+   * the pool is full reduces the defence to "the first few links win", which is
+   * exactly the starvation it was built to prevent: an attacker opens a handful
+   * of connections, says nothing on any of them, and the peer's real link is
+   * refused at the door. So a full pool is made room in, not appealed to.
+   */
+  private admitProbeCandidate(link: Link, waiter: LinkWaiter): void {
+    // Anything that has closed, or that has spent its datagram budget on
+    // something other than our probe, has already told us it is not the peer.
+    this.probeCandidates = this.probeCandidates.filter((candidate) => {
+      const dead =
+        candidate.spent || candidate.link.state === LinkState.CLOSED || candidate.link.state === LinkState.FAILED;
+      if (!dead) return true;
+      this.dropProbeCandidate(candidate, 'unproven link gave up its slot');
+      return false;
+    });
+
+    // Still full: the oldest silent link is the least likely to be the peer we
+    // are waiting for, so it makes way.
+    while (this.probeCandidates.length >= MAX_PROBE_LINKS) {
+      const oldest = this.probeCandidates.shift();
+      if (!oldest) break;
+      this.dropProbeCandidate(oldest, 'made way for a newer unproven link');
+    }
+
+    this.probeCandidates.push(this.armProbeResponder(link, waiter));
+  }
+
+  private dropProbeCandidate(candidate: ProbeCandidate, reason: string): void {
+    candidate.detach();
+    void candidate.link.close(reason).catch(() => undefined);
+  }
+
   /** Arm the probe responder on a link handed to us by `handleIncomingLink`. */
-  private armProbeResponder(link: Link, waiter: LinkWaiter): void {
+  private armProbeResponder(link: Link, waiter: LinkWaiter): ProbeCandidate {
     const expected = probeToken(waiter.nonce, waiter.upgradeId, PROBE_REQUEST);
     const answer = encodeProbeDatagram(PROBE_ACK, waiter.upgradeId, probeToken(waiter.nonce, waiter.upgradeId, PROBE_ACK));
 
@@ -1004,11 +1064,17 @@ export class TransportUpgradeController {
     let offData: Unsubscribe = () => undefined;
     let offState: Unsubscribe = () => undefined;
 
-    const detach = (): void => {
-      settled = true;
-      offData();
-      offState();
+    const candidate: ProbeCandidate = {
+      link,
+      spent: false,
+      detach: () => {
+        settled = true;
+        candidate.spent = true;
+        offData();
+        offState();
+      },
     };
+    const detach = candidate.detach;
 
     offData = link.events.on('data', ({ bytes }) => {
       if (settled) return;
@@ -1038,6 +1104,8 @@ export class TransportUpgradeController {
       // waitForProbedLink owns, ends the wait.
       if (state === LinkState.CLOSED || state === LinkState.FAILED) detach();
     });
+
+    return candidate;
   }
 
   /** Close every unproven link except the one that answered the probe. */
@@ -1045,8 +1113,13 @@ export class TransportUpgradeController {
     const candidates = this.probeCandidates;
     this.probeCandidates = [];
     for (const candidate of candidates) {
-      if (candidate === keep) continue;
-      void candidate.close('not the peer we were expecting').catch(() => undefined);
+      if (candidate.link === keep) {
+        // Keep the winner, but stop listening for probes on it: from here it
+        // belongs to the session, not to the negotiation.
+        candidate.detach();
+        continue;
+      }
+      this.dropProbeCandidate(candidate, 'not the peer we were expecting');
     }
   }
 
@@ -1106,12 +1179,16 @@ export class TransportUpgradeController {
     }
 
     if (message.type === MessageType.TRANSPORT_FAILED) {
-      const waiter = this.messageWaiter;
-      const linkWaiter = this.linkWaiter;
-      const matches =
-        (waiter && bytesEqual(waiter.upgradeId, upgradeId)) ||
-        (linkWaiter && bytesEqual(linkWaiter.upgradeId, upgradeId));
-      if (!matches && !this.isBusy) return;
+      // Strictly about the attempt in flight, and nothing else. The initiator
+      // walks a ranked list, so a failure notice for the PREVIOUS candidate
+      // routinely arrives while the NEXT one is being negotiated - accepting a
+      // mismatched id would make the fall-through path abort itself, and would
+      // hand any peer a way to suppress every upgrade by naming an id that
+      // matches nothing.
+      if (!this.attemptId || !bytesEqual(this.attemptId, upgradeId)) {
+        this.log.debug('ignoring a failure notice for another upgrade', { type: message.typeName });
+        return;
+      }
       this.abortAttempt(
         new UpgradeAbort(readReason(payload, 'r') || UpgradeFailureReason.PEER_DECLINED, 'the peer abandoned the upgrade'),
       );
@@ -1341,7 +1418,7 @@ export class TransportUpgradeController {
     this.messageWaiter = null;
     this.linkWaiter = null;
     this.releaseProbeCandidates(null);
-    this.responderOfferId = null;
+    this.attemptId = null;
     this.setState(UpgradeState.IDLE);
   }
 
@@ -1353,7 +1430,7 @@ export class TransportUpgradeController {
     this.messageWaiter = null;
     this.linkWaiter = null;
     this.releaseProbeCandidates(null);
-    this.responderOfferId = null;
+    this.attemptId = null;
     if (this.provenLink) {
       void this.provenLink.close('upgrade aborted').catch(() => undefined);
       this.provenLink = null;

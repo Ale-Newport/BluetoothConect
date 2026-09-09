@@ -93,6 +93,9 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         /** Display names longer than this are truncated before publishing. */
         const val MAX_DISPLAY_NAME_CHARS = 24
 
+        /** Hard cap on any single TXT value we will carry across the bridge. */
+        const val MAX_TXT_VALUE_CHARS = 64
+
         /**
          * A resolve that never calls back would leak a listener slot for the
          * life of the process, so every one gets a deadline.
@@ -672,7 +675,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             emptyMap()
         }
         val token = textOf(attributes[TXT_TOKEN])
-        val displayName = textOf(attributes[TXT_NAME]).take(MAX_DISPLAY_NAME_CHARS)
+        val displayName = textOf(attributes[TXT_NAME], MAX_DISPLAY_NAME_CHARS)
 
         val endpoint = ResolvedEndpoint(name, addresses, port, displayName, token)
         endpoints[name] = endpoint
@@ -915,11 +918,16 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         return a == b || a.endsWith(b) || b.endsWith(a)
     }
 
-    private fun textOf(value: ByteArray?): String {
+    /**
+     * TXT values are attacker-controlled bytes. Decoding is bounded and never
+     * throws, and the result is truncated: nothing downstream should have to
+     * defend itself against a peer that pads a record to the mDNS limit.
+     */
+    private fun textOf(value: ByteArray?, limit: Int = MAX_TXT_VALUE_CHARS): String {
         if (value == null || value.isEmpty()) return ""
         return try {
-            String(value, Charsets.UTF_8)
-        } catch (t: Throwable) {
+            String(value, Charsets.UTF_8).take(limit)
+        } catch (_: Throwable) {
             ""
         }
     }

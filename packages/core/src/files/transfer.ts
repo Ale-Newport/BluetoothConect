@@ -119,6 +119,8 @@ export abstract class BaseTransfer {
   abstract readonly direction: TransferDirection;
   protected currentState: TransferState = TransferState.OFFERED;
   protected readonly throughput = new ThroughputEstimator();
+  /** When the offer was made, for the one timeout the OFFERED state needs. */
+  protected readonly offeredAt: number;
 
   constructor(
     readonly offer: FileOffer,
@@ -126,7 +128,9 @@ export abstract class BaseTransfer {
     protected readonly clock: Clock,
     protected readonly listener: TransferListener,
     protected readonly tuning: TransferTuning,
-  ) {}
+  ) {
+    this.offeredAt = clock.now();
+  }
 
   get transferId(): string {
     return this.offer.transferId;
@@ -161,6 +165,25 @@ export abstract class BaseTransfer {
 
   /** Called after the session migrates to a new link. */
   abstract onLinkChanged(): void;
+
+  /**
+   * OFFERED is the only state in this protocol that nothing else can move on
+   * its own: the sender is waiting for an answer that may never come, and the
+   * receiver is waiting for a person who may never look. Both sides therefore
+   * put a clock on it, and both retire the transfer when it runs out - which is
+   * what frees the concurrency slot and lets the protocol stop its timer.
+   *
+   * Returns true when the offer was expired by this call.
+   */
+  protected expireOfferIfStale(): boolean {
+    if (this.currentState !== TransferState.OFFERED) return false;
+    if (this.clock.now() - this.offeredAt < this.tuning.offerTimeoutMs) return false;
+    this.onOfferExpired();
+    return true;
+  }
+
+  /** What this side does when its own offer clock runs out. */
+  protected abstract onOfferExpired(): void;
 
   /** Local cancellation. Tells the peer, then stops. */
   cancel(reason = 'cancelled'): void {
@@ -224,6 +247,18 @@ interface InFlightEntry {
   readonly run: number;
   readonly sentAt: number;
 }
+
+/**
+ * How far above its contiguous prefix a FILE_CHUNK_ACK can describe the
+ * receiver's state: the selective-ack bitmap is bounded by the wire limit, so
+ * one acknowledgement reaches exactly this many grid chunks.
+ *
+ * The sender's window is bounded in MESSAGES and each message may carry up to
+ * `maxRunChunks` grid chunks, so the window can legitimately reach further than
+ * an acknowledgement can - and a chunk out there is not silent because it was
+ * lost, it is silent because the receiver has no field to put it in.
+ */
+const ACK_REACH_CHUNKS = FILE_LIMITS.maxAckBitmapBytes * 8;
 
 export class OutgoingTransfer extends BaseTransfer {
   override readonly direction = TransferDirection.OUTGOING;
@@ -297,7 +332,12 @@ export class OutgoingTransfer extends BaseTransfer {
     this.acked.reset();
     this.sent.reset();
     this.inFlight.clear();
-    this.attempts.clear();
+    // The retry budget is deliberately NOT cleared here. `onLinkChanged` clears
+    // it because this device knows its own radio went away; a FILE_RESUME is
+    // the peer's word, and a peer that repeats it would otherwise be able to
+    // make us re-read and re-send the whole file for ever - a few bytes of
+    // theirs against every byte of ours, with the one counter that could stop
+    // it reset on each pass.
     for (let i = 0; i < this.offer.totalChunks; i++) {
       if (theirs.has(i)) {
         this.acked.set(i);
@@ -374,12 +414,33 @@ export class OutgoingTransfer extends BaseTransfer {
     void this.pump();
   }
 
+  protected override onOfferExpired(): void {
+    this.fail(FileErrorCode.TIMED_OUT, 'the peer never answered the offer');
+  }
+
   override tick(): void {
+    if (this.expireOfferIfStale()) return;
     if (!this.isState(TransferState.TRANSFERRING)) return;
     const now = this.clock.now();
+    // Everything from here up is out of an acknowledgement's reach, so silence
+    // about it carries no information at all.
+    const reportableCeiling = this.acked.contiguousPrefix() + ACK_REACH_CHUNKS;
+    // The lowest entry is always allowed to time out, whatever its index, so
+    // the window can never fill up with entries that are all waiting on each
+    // other and nothing is left to make the prefix move.
+    let lowestInFlight = Number.POSITIVE_INFINITY;
+    for (const index of this.inFlight.keys()) if (index < lowestInFlight) lowestInFlight = index;
+
     let timedOut = false;
     for (const entry of [...this.inFlight.values()]) {
       if (now - entry.sentAt < this.tuning.chunkTimeoutMs) continue;
+      // Treating this as loss would re-send a run the receiver very probably
+      // already holds, and would spend a retry the peer never had a chance to
+      // save - eventually failing a perfectly healthy transfer for
+      // TOO_MANY_RETRIES. Wait for the prefix to advance instead; it advances
+      // as soon as the low chunks holding it back are re-sent, which is
+      // precisely what this loop is doing to them.
+      if (entry.index >= reportableCeiling && entry.index !== lowestInFlight) continue;
       const attempts = this.attempts.get(entry.index) ?? 1;
       if (attempts >= FILE_LIMITS.maxChunkAttempts) {
         this.fail(FileErrorCode.TOO_MANY_RETRIES, `chunk ${entry.index} was never acknowledged`);
@@ -660,8 +721,30 @@ export class IncomingTransfer extends BaseTransfer {
     this.ackPending = true;
     if (!novel) return;
 
+    // Back-pressure, and the only bound on how much of this peer's data we hold
+    // in memory at once.
+    //
+    // Every accepted chunk pins its payload until the store has written it, and
+    // the window we granted is a request, not a guarantee - a peer may ignore
+    // it, and a store on a phone whose flash is busy may simply be slower than
+    // the radio is fast. Dropping is safe and cheap: the chunk was never
+    // acknowledged, so the sender still owns it and will send it again. Holding
+    // it would be neither.
+    if (this.writesInFlight >= this.maxWritesInFlight()) {
+      this.reject(msg.index, 'too many writes already outstanding');
+      return;
+    }
+
     this.writesInFlight++;
     void this.writeRun(store, msg);
+  }
+
+  /**
+   * Generous against the window we advertise, so an honest sender can never
+   * reach it, and finite so a dishonest one cannot grow our heap.
+   */
+  private maxWritesInFlight(): number {
+    return Math.max(4, this.tuning.receiveWindowMessages * 2);
   }
 
   private async writeRun(store: FileStore, msg: FileChunkMessage): Promise<void> {
@@ -690,7 +773,18 @@ export class IncomingTransfer extends BaseTransfer {
     this.sendResume();
   }
 
+  protected override onOfferExpired(): void {
+    // Tell the sender before we forget the offer, so its own prompt - and its
+    // concurrency slot - go away at the same moment ours do.
+    this.wire.sendControl(
+      MessageType.FILE_DECLINE,
+      encodeFileDecline({ transferId: this.transferId, code: FileErrorCode.TIMED_OUT, reason: 'offer expired' }),
+    );
+    this.decline(FileErrorCode.TIMED_OUT, 'offer expired');
+  }
+
   override tick(): void {
+    if (this.expireOfferIfStale()) return;
     if (!this.isState(TransferState.TRANSFERRING)) return;
     if (this.ackPending || this.nak.size > 0) this.sendAck();
     this.recordProgress();

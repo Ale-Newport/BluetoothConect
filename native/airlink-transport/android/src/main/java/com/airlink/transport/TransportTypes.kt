@@ -89,6 +89,17 @@ data class TransportAvailability(
 )
 
 /**
+ * The same type under a shorter name.
+ *
+ * Both spellings are in use across the radio packages, and an alias costs
+ * nothing while a rename would touch several hundred lines of working transport
+ * code for no behavioural gain. They are the same class: `Availability(...)`
+ * constructs a [TransportAvailability] and the two are assignable in both
+ * directions.
+ */
+typealias Availability = TransportAvailability
+
+/**
  * A peer seen by a transport, before any session exists.
  *
  * [endpointId] is a transport-scoped handle, NOT an identity: a BLE address
@@ -132,14 +143,6 @@ data class LinkMetricsSnapshot(
     val bytesReceived: Double = 0.0,
     /** Estimated throughput in bytes per second, or 0 when unknown. */
     val throughput: Double = 0.0,
-)
-
-/** Credentials for a local-only hotspot, handed to the peer over an existing link. */
-data class HotspotCredentials(
-    val ssid: String,
-    val passphrase: String,
-    /** True when the hotspot is running and a peer may join. */
-    val active: Boolean,
 )
 
 /**
@@ -305,33 +308,21 @@ interface TransportEventSink {
     fun log(level: String, scope: String, message: String)
 }
 
-/**
- * The local-only hotspot, which is not a transport but lives with the Wi-Fi
- * code because it is `WifiManager` all the way down.
+/*
+ * THE LOCAL-ONLY HOTSPOT is deliberately NOT part of this vocabulary. It is not
+ * a transport - it moves no datagrams - it is a `WifiManager` reservation whose
+ * only output is a pair of credentials, so it lives with the Wi-Fi code in
+ * `wifi/HotspotHost.kt` and the module talks to that class directly.
  *
- * Implemented by whichever Wi-Fi transport owns `WifiManager` (see
- * `wifi/`). The module finds it by asking each registered transport whether it
- * is a [HotspotHost], rather than by naming a class, so the hotspot can move
- * between files without the module caring - and so a build with no Wi-Fi
- * transport at all simply reports the capability as unsupported instead of
- * failing to compile.
- *
- * WHY THIS EXISTS AT ALL. An Android app can start a hotspot
- * (`WifiManager.startLocalOnlyHotspot`) but cannot silently join one; an iOS
- * app can join one (`NEHotspotConfiguration`) but cannot start one. That
- * asymmetry is exactly why the high-bandwidth cross-platform handoff always has
- * Android hosting and the iPhone joining.
+ * Why it exists at all: an Android app can START a hotspot
+ * (`WifiManager.startLocalOnlyHotspot`) but cannot silently join one; an iOS app
+ * can JOIN one (`NEHotspotConfiguration`) but cannot start one. That asymmetry
+ * is exactly why the only high-bandwidth cross-platform path with no network
+ * present has Android hosting and the iPhone joining.
  */
-interface HotspotHost {
-    /** Calls back exactly once. The hotspot stays up until [stopHotspot]. */
-    fun createHotspot(timeoutMs: Int, completion: (Result<HotspotCredentials>) -> Unit)
-
-    /** Idempotent. */
-    fun stopHotspot()
-}
 
 /**
- * Constructed by the module for every transport. Kept as a typealias-ish helper
- * so the construction site reads as one line per radio.
+ * How the module constructs a transport: one application `Context` in, one
+ * transport out. Kept as an alias so the registry reads as one line per radio.
  */
 internal typealias TransportFactory = (Context) -> AirLinkTransport
