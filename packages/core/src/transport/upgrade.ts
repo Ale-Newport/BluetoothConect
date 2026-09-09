@@ -373,6 +373,15 @@ interface LinkWaiter {
   readonly reject: (err: UpgradeAbort) => void;
 }
 
+/** An incoming link we are listening to, hoping it turns out to be the peer. */
+interface ProbeCandidate {
+  readonly link: Link;
+  /** True once we have stopped listening: it closed, or it used up its budget. */
+  spent: boolean;
+  /** Remove the listeners. Idempotent. */
+  readonly detach: () => void;
+}
+
 // -- bounded readers for peer-supplied payloads ------------------------------
 
 function asMap(value: CborValue | null): Record<string, CborValue> | null {
@@ -391,13 +400,32 @@ function readKind(map: Record<string, CborValue>, key: string): TransportKind | 
   return isTransportKind(value) ? value : null;
 }
 
-function readEndpoint(map: Record<string, CborValue>, key: string): string | null {
-  const value = map[key];
-  // Endpoint handles are platform strings (a BLE peripheral UUID, a Bonjour
-  // name). Length-bounded because it is a peer-supplied string we will hand
-  // straight to a native connect() call.
-  if (typeof value !== 'string' || value.length === 0 || value.length > 128) return null;
+/** Longest platform handle we will look at. A real one is far shorter. */
+const MAX_ENDPOINT_LENGTH = 128;
+
+/**
+ * Validate a transport endpoint handle.
+ *
+ * These are platform strings - a BLE peripheral UUID, a Bonjour instance name -
+ * and every one of them ends up as the argument to a native `connect()`. They
+ * arrive either from the peer (inside TRANSPORT_ACCEPT) or from a native bridge,
+ * so length alone is not a check: a handle carrying a NUL or an escape sequence
+ * is either a bridge bug or an attempt to confuse whatever parses it on the far
+ * side, and neither is worth dialling. Everything above U+007F is left alone -
+ * Bonjour names are UTF-8 and may legitimately contain anything printable.
+ */
+function sanitizeEndpoint(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (value.length === 0 || value.length > MAX_ENDPOINT_LENGTH) return null;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return null;
+  }
   return value;
+}
+
+function readEndpoint(map: Record<string, CborValue>, key: string): string | null {
+  return sanitizeEndpoint(map[key]);
 }
 
 function readReason(map: Record<string, CborValue>, key: string): UpgradeFailureReason {
@@ -434,9 +462,14 @@ export class TransportUpgradeController {
   private provenLink: Link | null = null;
   private provenKind: TransportKind | null = null;
   /** Incoming links on the offered transport that have yet to prove themselves. */
-  private probeCandidates: Link[] = [];
-  /** The offer this side is currently working on as the responder. */
-  private responderOfferId: Uint8Array | null = null;
+  private probeCandidates: ProbeCandidate[] = [];
+  /**
+   * The upgrade this side is working on right now, in either role. Every piece
+   * of news from the peer is matched against it: an attempt must only ever be
+   * ended by news about ITSELF, or a late notice about the previous attempt
+   * kills the one that replaced it.
+   */
+  private attemptId: Uint8Array | null = null;
   /** Cuts the commit grace window short when the peer switches first. */
   private commitGraceDone: (() => void) | null = null;
 

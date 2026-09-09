@@ -68,8 +68,12 @@ internal class CentralConnection(
 
     private var attMtu: Int = BleWire.DEFAULT_ATT_MTU
     private var settled = false
+    private var tornDown = false
     private var retired = false
     private var highPriority = false
+
+    /** PSM the peer published in its identity characteristic; 0 means no upgrade. */
+    private var peerPsm = 0
 
     val endpointId: String get() = link.endpointId
     val linkId: String get() = link.id
@@ -159,6 +163,8 @@ internal class CentralConnection(
 
     /** Ends the connection. Idempotent; safe from any of the paths that call it. */
     fun teardown(reason: String, failed: Boolean) {
+        if (tornDown) return
+        tornDown = true
         handler.removeCallbacks(connectTimeout)
         handler.removeCallbacks(dropPriority)
         queue?.abort(reason)
@@ -283,7 +289,7 @@ internal class CentralConnection(
                 if (!outcome.ok) {
                     host.log("warn", "MTU exchange refused (${outcome.describe()}); staying at $attMtu")
                 }
-                subscribeToNotifications()
+                readIdentity()
             },
         )
     }
@@ -333,12 +339,23 @@ internal class CentralConnection(
                 if (!outcome.ok) {
                     teardown("the peer refused our subscription: ${outcome.describe()}", failed = true)
                 } else {
-                    readIdentity()
+                    tryL2capUpgrade(peerPsm)
                 }
             },
         )
     }
 
+    /**
+     * ORDERING MATTERS, AND BOTH PLATFORMS MUST MATCH.
+     *
+     * The identity read happens BEFORE the subscription, not after. A peripheral
+     * cannot know whether an arriving central intends to upgrade to L2CAP, and
+     * it must not delay every incoming link on the chance that one might. Its
+     * one honest signal is "this central has read my identity characteristic,
+     * so it now knows my PSM" - which is only useful if that read lands before
+     * the subscription that tells the peripheral the link is ready. See
+     * [BleGattServer], which waits on exactly that.
+     */
     private fun readIdentity() {
         val g = gatt ?: return
         val identityUuid = uuids.identity
@@ -355,7 +372,7 @@ internal class CentralConnection(
         if (identity == null) {
             // No identity characteristic means no published PSM and no name.
             // Both are enhancements; the link works without either.
-            openOverGatt()
+            subscribeToNotifications()
             return
         }
 
@@ -370,12 +387,13 @@ internal class CentralConnection(
                     host.log("info", "identity read failed (${outcome.describe()}); GATT only")
                     BleWire.IdentityRecord.EMPTY
                 }
+                peerPsm = record.psm
                 try {
                     onIdentity(link.endpointId, record)
                 } catch (t: Throwable) {
                     host.log("warn", "identity handler threw ${t.javaClass.simpleName}")
                 }
-                tryL2capUpgrade(record.psm)
+                subscribeToNotifications()
             },
         )
     }

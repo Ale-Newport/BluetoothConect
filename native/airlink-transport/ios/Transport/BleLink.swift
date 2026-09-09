@@ -90,8 +90,6 @@ final class BleLink {
         fastPath == .active ? BleL2CAPSession.maxDatagramSize : gattDatagramSize
     }
 
-    var isUsable: Bool { state == .connected }
-
     func cancelTimers() {
         connectTimer?.cancel()
         connectTimer = nil

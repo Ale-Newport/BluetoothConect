@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.MacAddress
+import android.net.wifi.WifiManager
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
@@ -109,6 +110,8 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
 
     private val manager: WifiP2pManager? =
         context.applicationContext.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+    private val wifiManager: WifiManager? =
+        context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
     private var channel: WifiP2pManager.Channel? = null
     private var receiver: BroadcastReceiver? = null
@@ -118,8 +121,15 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     private var started = false
     private var discovering = false
 
-    /** Mirrors WIFI_P2P_STATE_CHANGED. Wi-Fi being switched off lands here. */
+    /**
+     * Mirrors WIFI_P2P_STATE_CHANGED, which is where Wi-Fi being switched off
+     * lands. That broadcast is NOT sticky, so until one arrives we have no
+     * direct reading and fall back to whether Wi-Fi is on at all - p2p cannot be
+     * enabled without it, so the fallback is never wrong in the direction that
+     * matters (telling a user to turn on a radio that is already on).
+     */
     private var p2pEnabled = false
+    private var p2pStateKnown = false
 
     private val peers = LinkedHashMap<String, WifiP2pDevice>()
     private val links = ConcurrentHashMap<String, LinkRecord>()
@@ -169,7 +179,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                 "Turn on Location to let Android scan for nearby devices.",
             )
         }
-        if (!p2pEnabled) {
+        if (!p2pLikelyEnabled()) {
             return Availability(
                 false,
                 UnavailableReason.RADIO_OFF,
@@ -192,6 +202,9 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         }
         return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     }
+
+    private fun p2pLikelyEnabled(): Boolean =
+        if (p2pStateKnown) p2pEnabled else wifiManager?.isWifiEnabled == true
 
     private fun isLocationEnabled(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return true
@@ -268,7 +281,9 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                     WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
                         val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
                         val enabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                        if (enabled != p2pEnabled) {
+                        val changed = !p2pStateKnown || enabled != p2pEnabled
+                        p2pStateKnown = true
+                        if (changed) {
                             p2pEnabled = enabled
                             events?.availabilityChanged(
                                 kind,
@@ -455,7 +470,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                 completion(Result.failure(AirLinkError.NotStarted))
                 return@post
             }
-            if (!p2pEnabled) {
+            if (!p2pLikelyEnabled()) {
                 completion(Result.failure(AirLinkError.RadioOff(kind)))
                 return@post
             }

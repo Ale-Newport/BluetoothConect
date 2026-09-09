@@ -30,6 +30,7 @@ import {
   encodeFileChunk,
   encodeFileChunkAck,
   encodeFileComplete,
+  encodeFileDecline,
   encodeFileError,
   encodeFileResume,
   type FileChunkAckMessage,
@@ -83,12 +84,25 @@ export interface TransferTuning {
   readonly chunkTimeoutMs: number;
   /** No movement for this long and the UI is told the transfer has stalled. */
   readonly stallAfterMs: number;
+  /**
+   * How long an offer may sit unanswered before both sides give up on it.
+   *
+   * Without this a peer that offers files and then says nothing pins one of the
+   * (deliberately small) concurrency slots for the lifetime of the process, and
+   * keeps the protocol's service timer running on a phone that has nothing to
+   * do - which is how an offline app gets noticed by the battery screen and
+   * then by the OS.
+   */
+  readonly offerTimeoutMs: number;
 }
 
 export const DEFAULT_TUNING: TransferTuning = {
   maxInFlightMessages: 12,
   receiveWindowMessages: 16,
   ackEveryMessages: 8,
+  // Long enough for a person to pick their phone up and look at the prompt,
+  // short enough that a peer cannot wedge the feature by walking away.
+  offerTimeoutMs: 120_000,
   // Generous on purpose: the BULK channel retransmits lost packets by itself,
   // so this timer exists only for the case where the reliability layer gave up
   // (a link that died mid-flight), and firing it early would double the traffic

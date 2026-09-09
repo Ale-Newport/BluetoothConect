@@ -132,12 +132,14 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     private val connectivity: ConnectivityManager? =
         context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
+    /** These three are read on the caller's thread and cleared on `control`. */
+    @Volatile
     private var configuration: TransportConfiguration? = null
 
-    /** Read by the accept and dial threads, written only on `control`. */
     @Volatile
     private var started = false
 
+    @Volatile
     private var server: FramedTcpServer? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
@@ -248,25 +250,28 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     // -- lifecycle ------------------------------------------------------------
 
     override fun start(configuration: TransportConfiguration) {
-        val manager = nsdManager ?: throw AirLinkError.Failed("network service discovery is unavailable")
+        // Fail here rather than at the first advertise: an absent NsdManager is a
+        // property of the device, not of this call.
+        if (nsdManager == null) throw AirLinkError.Failed("network service discovery is unavailable")
         if (started) return
         this.configuration = configuration
         started = true
 
-        watchLocalNetwork()
-
-        val listener = FramedTcpServer(::log) { socket -> acceptIncoming(socket) }
+        val listening = FramedTcpServer(::log) { socket -> acceptIncoming(socket) }
         try {
             // Port 0: the OS picks, and we publish whatever we get in the TXT
-            // record. Nothing here may hard-code a port - two AirLink installs
-            // on the same phone-shaped device would collide.
-            listener.start(0)
+            // record. Nothing here may hard-code a port - two AirLink installs on
+            // the same network would collide on it.
+            listening.start(0)
         } catch (e: IOException) {
             started = false
+            this.configuration = null
             throw AirLinkError.Failed("could not open a listening socket: ${e.javaClass.simpleName}")
         }
-        server = listener
-        log("info", "listening on port ${listener.port} using ${manager.javaClass.simpleName}")
+        server = listening
+
+        control.execute { watchLocalNetwork() }
+        log("info", "listening on port ${listening.port}")
     }
 
     override fun stop() {
@@ -343,8 +348,8 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     override fun startAdvertising(token: ByteArray, displayName: String) {
         val manager = nsdManager ?: throw AirLinkError.Failed("network service discovery is unavailable")
         val config = configuration ?: throw AirLinkError.NotStarted
-        val listener = server ?: throw AirLinkError.NotStarted
-        if (listener.port == 0) throw AirLinkError.NotStarted
+        val tcpServer = server ?: throw AirLinkError.NotStarted
+        if (tcpServer.port == 0) throw AirLinkError.NotStarted
 
         val tokenBase64 = if (token.isEmpty()) "" else Base64.encodeToString(token, Base64.NO_WRAP)
         // The instance name is public, so it is derived from the rotating token
@@ -364,7 +369,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             val info = NsdServiceInfo().apply {
                 serviceName = instanceName
                 serviceType = normaliseServiceType(config.bonjourServiceType)
-                port = listener.port
+                port = tcpServer.port
                 setAttribute(TXT_VERSION, "1")
                 if (tokenBase64.isNotEmpty()) setAttribute(TXT_TOKEN, tokenBase64)
                 // Presence of the key is the opt-in signal, so an empty name is
@@ -378,7 +383,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
                     control.execute {
                         registeredServiceName = serviceInfo.serviceName
-                        log("info", "advertising as ${serviceInfo.serviceName} on port ${listener.port}")
+                        log("info", "advertising as ${serviceInfo.serviceName} on port ${tcpServer.port}")
                     }
                 }
 
@@ -448,7 +453,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                     control.execute { log("info", "discovering $regType") }
                 }
 
-                override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                override fun onStartDiscoveryFailed(failedType: String, errorCode: Int) {
                     control.execute {
                         discoveryListener = null
                         log("error", "discovery failed to start: ${nsdError(errorCode)}")
@@ -456,11 +461,11 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                     }
                 }
 
-                override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                override fun onStopDiscoveryFailed(failedType: String, errorCode: Int) {
                     control.execute { log("warn", "discovery failed to stop: ${nsdError(errorCode)}") }
                 }
 
-                override fun onDiscoveryStopped(serviceType: String) {
+                override fun onDiscoveryStopped(stoppedType: String) {
                     control.execute { discoveryListener = null }
                 }
 

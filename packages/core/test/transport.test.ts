@@ -1111,3 +1111,216 @@ describe('developer mode', () => {
     expect(ctx.clock.pendingTimers).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Adversarial review: defects found by hostile reading, each with the test that
+// fails against the implementation as it was written.
+// ---------------------------------------------------------------------------
+
+describe('an upgrade attempt is only ended by news about ITSELF', () => {
+  it('ignores a TRANSPORT_FAILED carrying somebody else’s upgrade id', async () => {
+    // The initiator falls through a ranked list, so a failure notice for the
+    // PREVIOUS attempt routinely arrives while the NEXT one is in flight. If a
+    // mismatched id can abort whatever happens to be running, the runner-up
+    // path kills itself, and a peer can suppress every upgrade for free.
+    const ctx = await connectPair();
+    const running = ctx.initiator.controller.considerUpgrade();
+
+    // Straight after the offer goes out, while the attempt is live.
+    ctx.responder.session.sendControl(MessageType.TRANSPORT_FAILED, {
+      i: new Uint8Array(8).fill(0xee),
+      r: UpgradeFailureReason.PEER_DECLINED,
+    } as never);
+
+    await ctx.clock.advanceAsync(20_000);
+    const outcome = await running;
+
+    expect(outcome).toMatchObject({ upgraded: true, kind: FAST });
+    expect(ctx.initiator.session.currentLink?.transport).toBe(FAST);
+  });
+
+  it('still gives up at once when the failure IS about the attempt in flight', async () => {
+    // The other half of the same rule: a matching notice must still cut the
+    // attempt short rather than leaving the initiator to time out.
+    const ctx = await connectPair();
+    // The responder has no fast radio, so it declines the offer it is sent.
+    ctx.responder.fast.setAvailable(false);
+
+    const running = ctx.initiator.controller.considerUpgrade();
+    await ctx.clock.advanceAsync(5_000);
+
+    const outcome = await running;
+    expect(outcome.upgraded).toBe(false);
+    expect(outcome.reason).toBe(UpgradeFailureReason.UNAVAILABLE);
+    expect(ctx.initiator.session.state).toBe(ConnectionState.CONNECTED);
+    expect(ctx.initiator.controller.state).toBe(UpgradeState.IDLE);
+  });
+});
+
+describe('an unproven stranger cannot take over a reconnecting session', () => {
+  it('refuses an incoming link from an endpoint that is not the peer', async () => {
+    const ctx = await connectPair();
+    // The radio goes out of range: the session keeps its keys and waits.
+    ctx.network.partition(ctx.a.slow.trueEndpointId, ctx.b.slow.trueEndpointId);
+    await ctx.clock.advanceAsync(100);
+    expect(ctx.b.session.state).toBe(ConnectionState.RECONNECTING);
+
+    // Anybody at all can open a link on that radio. Adopting it hands the
+    // conversation to a device that has proven nothing: every retransmission,
+    // every keepalive and every future message goes to the stranger, while the
+    // UI shows a healthy connection that carries nothing.
+    const stranger = ctx.network.createTransport('stranger-ble');
+    const connecting = stranger.connect(ctx.b.slow.trueEndpointId);
+    await ctx.clock.advanceAsync(200);
+    const link = new LabelledLink(SLOW, await connecting);
+
+    expect(ctx.b.controller.handleIncomingLink(link)).toBe(false);
+    expect(ctx.b.session.currentLink).toBeNull();
+    expect(ctx.b.session.state).toBe(ConnectionState.RECONNECTING);
+  });
+
+  it('still adopts the real peer dialling back in after a dropout', async () => {
+    // The guard must not cost us the reconnect it exists to protect.
+    const ctx = await connectPair();
+    const got = collect(ctx.responder.session);
+    ctx.network.partition(ctx.a.slow.trueEndpointId, ctx.b.slow.trueEndpointId);
+    await ctx.clock.advanceAsync(100);
+    expect(ctx.responder.session.state).toBe(ConnectionState.RECONNECTING);
+
+    ctx.network.heal(ctx.a.slow.trueEndpointId, ctx.b.slow.trueEndpointId);
+    await ctx.clock.advanceAsync(20_000);
+
+    expect(ctx.initiator.session.state).toBe(ConnectionState.CONNECTED);
+    expect(ctx.responder.session.state).toBe(ConnectionState.CONNECTED);
+    ctx.initiator.session.sendReliable(MessageType.MESSAGE, { i: 0 });
+    await ctx.clock.advanceAsync(5000);
+    expect(chatIndexes(got)).toEqual([0]);
+  });
+});
+
+describe('an offer can only ever move the session UP', () => {
+  it('refuses an offer that would drop the session onto a slower radio', async () => {
+    const ctx = await connectPair();
+    const running = ctx.initiator.controller.considerUpgrade();
+    await ctx.clock.advanceAsync(20_000);
+    expect((await running).upgraded).toBe(true);
+    expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
+
+    // Now the peer offers to move the conversation back onto Bluetooth. A
+    // correct peer never does this - which is exactly why accepting it is a
+    // way for a broken or hostile one to pin the conversation at 20 KB/s.
+    ctx.initiator.session.sendControl(MessageType.TRANSPORT_OFFER, {
+      i: new Uint8Array(8).fill(0x11),
+      k: SLOW,
+      n: new Uint8Array(32).fill(0x22),
+    } as never);
+    await ctx.clock.advanceAsync(5_000);
+
+    expect(ctx.responder.controller.state).toBe(UpgradeState.IDLE);
+    expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
+    expect(ctx.initiator.session.currentLink?.transport).toBe(FAST);
+  });
+});
+
+describe('a connect that finishes after we gave up', () => {
+  it('does not leave an orphan link open on the radio', async () => {
+    // A radio that answers late is the normal case, not a strange one: a BLE
+    // connect can take many seconds. If the timeout simply walks away, every
+    // slow attempt leaves a live connection behind, and a phone retrying in a
+    // pocket accumulates them until the OS kills the app.
+    const ctx = await connectPair({ timings: { connectTimeoutMs: 1_000 } });
+    ctx.inner.aFast.applyConditions({ latencyMs: 4_000 });
+    ctx.inner.bFast.applyConditions({ latencyMs: 4_000 });
+
+    const running = ctx.initiator.controller.considerUpgrade();
+    await ctx.clock.advanceAsync(60_000, 10);
+    expect((await running).upgraded).toBe(false);
+
+    expect(ctx.initiator.fast.linkCount).toBe(0);
+    expect(ctx.initiator.session.currentLink?.transport).toBe(SLOW);
+    expect(ctx.initiator.session.state).toBe(ConnectionState.CONNECTED);
+  });
+});
+
+describe('probe slots cannot be squatted on', () => {
+  it('lets the real peer in even when strangers hold every listening slot', async () => {
+    // Listening on several unproven links at once is the defence against one
+    // silent squatter. It only works if a newcomer can still get in: otherwise
+    // the defence is just "the first few links win", and a squatter who opens a
+    // handful of connections and then says nothing starves the upgrade anyway.
+    const ctx = await connectPair();
+    const stranger = ctx.network.createTransport('stranger-squatter');
+    const target = ctx.responder.fast.trueEndpointId;
+
+    ctx.responder.controller.events.on('stateChanged', ({ state }) => {
+      if (state !== UpgradeState.AWAITING_LINK) return;
+      for (let i = 0; i < 6; i++) void stranger.connect(target).catch(() => undefined);
+    });
+
+    const running = ctx.initiator.controller.considerUpgrade();
+    await ctx.clock.advanceAsync(40_000, 10);
+
+    expect((await running).upgraded).toBe(true);
+    expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
+  });
+});
+
+describe('a radio handle from a native bridge is not trusted', () => {
+  it('does not dial a handle carrying control characters', async () => {
+    // TRANSPORT_ACCEPT carries the peer's own handle for the new radio, and it
+    // is handed straight to a native connect(). Length alone is not a check.
+    const ctx = await connectPair();
+    // A NUL and an ANSI escape - the two things a platform handle must never
+    // carry, and two that a native bridge is entirely capable of letting through.
+    ctx.responder.fast.endpointIdOverride =
+      ctx.responder.fast.trueEndpointId + String.fromCharCode(0) + String.fromCharCode(27) + '[2J';
+
+    const running = ctx.initiator.controller.considerUpgrade();
+    await ctx.clock.advanceAsync(30_000, 10);
+
+    // We fall back to the handle discovery gave us, and the upgrade still works.
+    expect((await running).upgraded).toBe(true);
+    expect(ctx.initiator.session.currentLink?.transport).toBe(FAST);
+  });
+
+  it('sanitises an availability record passed straight to register()', () => {
+    const clock = new VirtualClock();
+    const network = new MockNetwork(clock, 11);
+    const slow = new LabelledTransport(SLOW, DEFAULT_TRANSPORT_PROFILES[SLOW], network.createTransport('z-ble'));
+    const manager = new TransportCapabilityManager();
+    manager.register(slow, {
+      availability: {
+        available: false,
+        reason: 'invented',
+        detail: 'x'.repeat(9999),
+      } as unknown as TransportAvailability,
+    });
+    expect(manager.availabilityOf(SLOW).reason).toBe('unknown');
+    expect((manager.availabilityOf(SLOW).detail ?? '').length).toBe(200);
+  });
+});
+
+describe('a radio coming back rescues a session that gave up reconnecting', () => {
+  it('re-arms the reconnect ladder when a transport becomes available again', async () => {
+    // The ladder is finite on purpose - a phone in a pocket must not dial for
+    // ever. But once it is exhausted nothing ever retries, so the session sits
+    // on "Reconnecting" for good even though the Wi-Fi came back thirty seconds
+    // later. A radio appearing is new evidence, and deserves a fresh run.
+    const ctx = await connectPair({ maxDowngradeAttempts: 2 });
+    ctx.initiator.fast.setAvailable(false);
+    ctx.responder.fast.setAvailable(false);
+
+    ctx.network.partition(ctx.a.slow.trueEndpointId, ctx.b.slow.trueEndpointId);
+    await ctx.clock.advanceAsync(30_000, 10);
+    expect(ctx.initiator.session.state).toBe(ConnectionState.RECONNECTING);
+
+    // The fast radio comes back. Nothing else changes; nobody taps anything.
+    ctx.responder.fast.setAvailable(true);
+    ctx.initiator.fast.setAvailable(true);
+    await ctx.clock.advanceAsync(30_000, 10);
+
+    expect(ctx.initiator.session.state).toBe(ConnectionState.CONNECTED);
+    expect(ctx.initiator.session.currentLink?.transport).toBe(FAST);
+    expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
+  });
+});

@@ -98,6 +98,12 @@ export const FileErrorCode = {
   REJECTED_BY_USER: 8,
   /** A chunk was resent the maximum number of times without being accepted. */
   TOO_MANY_RETRIES: 9,
+  /**
+   * An offer was never answered. Sent by whichever side gave up waiting, so the
+   * other one can take its prompt down instead of showing it until the app is
+   * next restarted.
+   */
+  TIMED_OUT: 10,
 } as const;
 export type FileErrorCode = (typeof FileErrorCode)[keyof typeof FileErrorCode];
 

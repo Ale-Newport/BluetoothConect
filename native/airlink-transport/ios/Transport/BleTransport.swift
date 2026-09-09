@@ -68,6 +68,9 @@ final class BleTransport: NSObject, AirLinkTransport {
     /// queue is wedged; the link is dead even though nothing has said so.
     private static let reliableWriteTimeoutMs = 15_000
     private static let housekeepingIntervalMs = 2_000
+    /// How long an L2CAP channel with no link yet is held before it is dropped.
+    private static let unmatchedChannelTtlMs: Double = 10_000
+    private static let maxUnmatchedChannels = 4
     /// No advertisement for this long and the peer is reported lost.
     private static let discoveryExpiryMs: Double = 15_000
     /// Duplicate advertisements arrive several times a second in the foreground;
@@ -111,6 +114,11 @@ final class BleTransport: NSObject, AirLinkTransport {
     private var advertisedName = ""
     private var publishedPSM: CBL2CAPPSM = 0
     private var l2capPublishInFlight = false
+    /// Channels a central opened before it subscribed to TX. Our own central
+    /// subscribes first, but the peer decides its own ordering and an Android
+    /// one may not - holding the channel briefly costs a few bytes and saves the
+    /// fast path. Bounded in both count and age.
+    private var unmatchedInboundChannels: [UUID: (channel: CBL2CAPChannel, expiresAt: CFAbsoluteTime)] = [:]
 
     // MARK: - Central-role state
 
@@ -331,6 +339,11 @@ final class BleTransport: NSObject, AirLinkTransport {
             peripheral.delegate = nil
         }
         peripheralManager = nil
+
+        for held in unmatchedInboundChannels.values {
+            discard(channel: held.channel, why: "transport is stopping")
+        }
+        unmatchedInboundChannels.removeAll()
 
         gattService = nil
         rxCharacteristic = nil
@@ -950,6 +963,11 @@ final class BleTransport: NSObject, AirLinkTransport {
         }
         for record in expired { events?.peerLost(record.endpoint) }
 
+        for (identifier, held) in Array(unmatchedInboundChannels) where held.expiresAt <= now {
+            unmatchedInboundChannels.removeValue(forKey: identifier)
+            discard(channel: held.channel, why: "no link appeared for it in time")
+        }
+
         for link in Array(links.values) {
             // RSSI, and a re-read of the negotiated write length: iOS raises the
             // ATT MTU shortly after connecting and there is no callback for it,
@@ -1411,6 +1429,10 @@ extension BleTransport: CBPeripheralManagerDelegate {
             gattService = nil
             publishedPSM = 0
             l2capPublishInFlight = false
+            for held in unmatchedInboundChannels.values {
+                discard(channel: held.channel, why: "Bluetooth went away")
+            }
+            unmatchedInboundChannels.removeAll()
             let reason = peripheral.state == .poweredOff ? "Bluetooth was switched off" : "Bluetooth became unavailable"
             for link in Array(links.values) where link.role == .peripheral {
                 closeLink(link, state: .failed, reason: reason, notify: true)
@@ -1445,10 +1467,15 @@ extension BleTransport: CBPeripheralManagerDelegate {
 
     private func addServiceIfNeeded() {
         guard let manager = peripheralManager, manager.state == .poweredOn else { return }
-        guard !serviceAdded, gattService == nil, let serviceUUID, let rxUUID, let txUUID else {
+        if serviceAdded {
+            publishL2CAPChannelIfNeeded()
             applyAdvertisingState()
             return
         }
+        // gattService non-nil with serviceAdded false means an add is already in
+        // flight; didAdd picks the thread back up. Calling applyAdvertisingState
+        // here instead would bounce between the two functions forever.
+        guard gattService == nil, let serviceUUID, let rxUUID, let txUUID else { return }
 
         // RX accepts both write types so a peer can choose per datagram: a
         // command for the realtime game channel, a request when it wants the
@@ -1543,6 +1570,11 @@ extension BleTransport: CBPeripheralManagerDelegate {
         peripheral.setDesiredConnectionLatency(.low, for: central)
 
         openLink(link)
+
+        // A channel this peer opened before subscribing now has a home.
+        if let held = unmatchedInboundChannels.removeValue(forKey: central.identifier) {
+            adopt(channel: held.channel, for: link)
+        }
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
@@ -1649,15 +1681,37 @@ extension BleTransport: CBPeripheralManagerDelegate {
             log("warn", "inbound L2CAP channel failed: \(error?.localizedDescription ?? "unknown")")
             return
         }
-        guard let peer = channel.peer as? CBCentral, let link = activeLink(forCentral: peer.identifier) else {
-            // A channel we cannot attribute to a link is a channel we can never
-            // read from. Closing its streams is the only way not to leak it.
-            channel.inputStream?.close()
-            channel.outputStream?.close()
-            log("warn", "closing an L2CAP channel from an unknown central")
+        guard let peer = channel.peer as? CBCentral else {
+            discard(channel: channel, why: "channel peer is not a central")
             return
         }
-        guard link.fastPath == .none else { return }
-        adopt(channel: channel, for: link)
+
+        if let link = activeLink(forCentral: peer.identifier) {
+            guard link.fastPath == .none else {
+                discard(channel: channel, why: "link \(link.id) already has a fast path")
+                return
+            }
+            adopt(channel: channel, for: link)
+            return
+        }
+
+        // Nothing to attach it to yet: the peer opened the channel before it
+        // subscribed. Hold it for didSubscribeTo rather than throwing away a
+        // working fast path over an ordering difference we do not control.
+        guard unmatchedInboundChannels.count < Self.maxUnmatchedChannels else {
+            discard(channel: channel, why: "too many unmatched L2CAP channels")
+            return
+        }
+        unmatchedInboundChannels[peer.identifier] = (
+            channel, CFAbsoluteTimeGetCurrent() + Self.unmatchedChannelTtlMs / 1000
+        )
+    }
+
+    /// A channel nothing will ever read from. Closing both streams is the only
+    /// way not to leak it - CoreBluetooth will not do it for us.
+    private func discard(channel: CBL2CAPChannel, why: String) {
+        channel.inputStream?.close()
+        channel.outputStream?.close()
+        log("warn", "dropped an L2CAP channel: \(why)")
     }
 }

@@ -179,7 +179,10 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
             putBoolean("supported", gate.supported)
             putBoolean("available", gate.supported && availability.available)
             putString("reason", availability.reason.id)
-            putString("detail", availability.detail)
+            // A transport that is happy usually has nothing to say, but the
+            // module may still have a caveat worth printing - Wi-Fi Aware is
+            // "available" and still not something to rely on.
+            putString("detail", availability.detail.ifBlank { gate.availability.detail })
         }
     }
 
@@ -224,21 +227,30 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
             kind = kind,
             feature = PackageManager.FEATURE_WIFI_DIRECT,
             unsupportedDetail = "This device does not have Wi-Fi Direct hardware.",
+            availableDetail = "Wi-Fi Direct is only used between two Android devices.",
         )
 
         TransportKind.WIFI_AWARE -> wifiGate(
             kind = kind,
             feature = PackageManager.FEATURE_WIFI_AWARE,
-            // Said plainly because the product must never promise it: most
-            // handsets have no Aware radio, and on the ones that do,
-            // Android-to-iPhone Aware does not work in practice.
+            // Said plainly, in both directions, because the product must never
+            // promise it: most handsets have no Aware radio at all, and on the
+            // ones that do, Android-to-iPhone Aware does not work in practice.
             unsupportedDetail = "This device does not support Wi-Fi Aware. Most phones do not, " +
                 "and Wi-Fi Aware between Android and iPhone does not work reliably even where " +
                 "both devices claim it, so AirLink never depends on it.",
+            availableDetail = "This device reports Wi-Fi Aware, but it does not interoperate with " +
+                "iPhones in practice, so AirLink only ever offers it between Android devices and " +
+                "never relies on it.",
         )
     }
 
-    private fun wifiGate(kind: TransportKind, feature: String, unsupportedDetail: String): Gate {
+    private fun wifiGate(
+        kind: TransportKind,
+        feature: String,
+        unsupportedDetail: String,
+        availableDetail: String,
+    ): Gate {
         if (!hasSystemFeature(feature)) {
             return Gate(
                 supported = false,
@@ -249,7 +261,13 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                 ),
             )
         }
-        return Gate(supported = true, availability = permissionAvailability(kind))
+        val permission = permissionAvailability(kind)
+        val availability = if (permission.available) {
+            TransportAvailability(true, UnavailableReason.NONE, availableDetail)
+        } else {
+            permission
+        }
+        return Gate(supported = true, availability = availability)
     }
 
     private fun bleAvailability(): TransportAvailability {

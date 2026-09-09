@@ -103,7 +103,11 @@ export class TransportCapabilityManager {
     const registration: Registration = {
       transport,
       profile,
-      availability: options.availability ?? UNPROBED,
+      // Sanitised on the way in for the same reason `apply` sanitises: a caller
+      // that "already knows the answer" is usually relaying a native bridge,
+      // and an unchecked record here would be the one path into the manager
+      // that no validation covers.
+      availability: options.availability ? sanitizeAvailability(options.availability) : UNPROBED,
       unsubscribe: transport.events.on('availabilityChanged', ({ availability }) => {
         this.apply(kind, availability);
       }),
