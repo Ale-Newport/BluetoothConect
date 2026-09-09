@@ -1,0 +1,19 @@
+{
+  "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "jsx": "react-jsx",
+    "types": ["react-native", "jest"],
+    "paths": {
+      "@airlink/core": ["../../packages/core/src/index.ts"],
+      "@airlink/games": ["../../packages/games/src/index.ts"],
+      "@airlink/db": ["../../packages/db/src/index.ts"],
+      "@airlink/config": ["../../packages/config/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*", "specs/**/*", "index.js", "App.tsx", "__tests__/**/*"],
+  "exclude": ["node_modules", "ios", "android"]
+}

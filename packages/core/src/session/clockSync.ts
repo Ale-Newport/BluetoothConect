@@ -78,13 +78,13 @@ export class ClockSynchronizer {
   }
 
   /** Run one round of probes and keep the best sample. */
-  startRound(samples = TIMING.clockSyncSamples): void {
+  startRound(samples: number = TIMING.clockSyncSamples): void {
     this.roundRemaining = samples;
     this.probe();
   }
 
   /** Probe periodically for as long as a sync session is running. */
-  startPeriodic(intervalMs = TIMING.clockSyncIntervalMs): void {
+  startPeriodic(intervalMs: number = TIMING.clockSyncIntervalMs): void {
     this.stopPeriodic();
     this.startRound();
     this.timer = this.clock.setInterval(() => this.startRound(), intervalMs);
