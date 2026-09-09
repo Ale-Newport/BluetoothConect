@@ -100,7 +100,10 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
      * confined to one thread without a single lock. Kept alive across stop() so
      * a restart is cheap and cannot race with in-flight callbacks.
      */
-    private val controlThread = HandlerThread("airlink-wifidirect").apply { start() }
+    private val controlThread = HandlerThread("airlink-wifidirect").apply {
+        isDaemon = true
+        start()
+    }
     private val control = Handler(controlThread.looper)
     private val controlExecutor = Executor { runnable -> control.post(runnable) }
 

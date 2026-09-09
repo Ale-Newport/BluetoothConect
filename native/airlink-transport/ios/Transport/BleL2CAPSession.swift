@@ -183,7 +183,7 @@ final class BleL2CAPSession: NSObject, StreamDelegate {
                 continue
             }
 
-            let written = framed.withUnsafeBytes { raw -> Int in
+            let written = framed.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int in
                 guard let base = raw.baseAddress else { return -1 }
                 let start = base.advanced(by: writeOffset).assumingMemoryBound(to: UInt8.self)
                 return output.write(start, maxLength: remaining)

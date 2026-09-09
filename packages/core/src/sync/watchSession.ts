@@ -490,6 +490,11 @@ export class WatchTogetherSession {
     // Nothing has been created yet, so there is nothing to tell the peer - but
     // an outstanding query has to stop, or the user cannot get out of the
     // waiting state they just asked to leave.
+    if (this.state === WatchState.MATCHING || this.state === WatchState.READY) {
+      this.cancelQuery();
+      this.setState(WatchState.IDLE);
+      return;
+    }
     if (!this.sessionId || !this.isActive) return;
     const type = this.role === SyncRole.HOST ? MessageType.SYNC_END : MessageType.SYNC_LEAVE;
     this.send(type, encodeFarewell({ sessionId: this.sessionId, reason }));

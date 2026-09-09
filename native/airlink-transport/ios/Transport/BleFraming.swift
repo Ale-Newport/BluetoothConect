@@ -102,7 +102,7 @@ struct BleFrameAccumulator {
         }
 
         let offset = readOffset
-        let length = buffer.withUnsafeBytes { raw -> Int in
+        let length = buffer.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int in
             (Int(raw[offset]) << 24) | (Int(raw[offset + 1]) << 16)
                 | (Int(raw[offset + 2]) << 8) | Int(raw[offset + 3])
         }

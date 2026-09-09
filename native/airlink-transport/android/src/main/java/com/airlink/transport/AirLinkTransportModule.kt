@@ -498,17 +498,23 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         val once = Once(promise)
         handler.post {
             try {
-                // Starting twice is a restart, not an error: JavaScript retries
-                // start() after a failure, and a half-configured stack is worse
-                // than a fresh one.
-                if (started) stopEverything()
-
                 val config = TransportConfiguration(
                     serviceUuid = serviceUuid,
                     rxCharacteristicUuid = rxCharacteristicUuid,
                     txCharacteristicUuid = txCharacteristicUuid,
                     bonjourServiceType = bonjourServiceType,
                 )
+
+                // Starting twice with the same configuration is a no-op, so a
+                // JavaScript hot reload does not tear a live session down. With
+                // a DIFFERENT configuration it is a genuine restart: the UUIDs
+                // are baked into advertisements and GATT tables, so half the
+                // stack on the old ones is worse than a clean rebuild.
+                if (started && configuration == config) {
+                    once.resolve(null)
+                    return@post
+                }
+                if (started) stopEverything()
                 configuration = config
                 if (transports.isEmpty()) buildTransports()
 
@@ -1057,7 +1063,7 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
     }
 
     /** Every simple routed call has the same shape: hop, run, settle. */
-    private inline fun route(promise: Promise, crossinline body: () -> Unit) {
+    private fun route(promise: Promise, body: () -> Unit) {
         val once = Once(promise)
         handler.post {
             try {

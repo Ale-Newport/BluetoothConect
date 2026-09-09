@@ -1194,11 +1194,13 @@ extension BleTransport: CBCentralManagerDelegate {
         handleDisconnect(peripheral, isReconnecting: false, error: error)
     }
 
-    /// iOS 17 replaced the callback above with one that also reports whether the
-    /// stack intends to reconnect by itself. Only one of the two is ever called,
-    /// and the handler is idempotent, so both can be implemented and the right
-    /// one wins at runtime.
-    @available(iOS 17.0, *)
+    /// iOS 17 added a richer disconnect callback that also says whether the
+    /// stack means to reconnect on its own. When it is implemented CoreBluetooth
+    /// calls it *instead of* the one above, and an older iOS simply never knows
+    /// the selector exists - so implementing both is the runtime capability
+    /// check, and the shared handler is idempotent so either route is safe.
+    /// The SDK back-dates its availability annotation, so no @available is
+    /// needed or wanted here.
     func centralManager(_ central: CBCentralManager,
                         didDisconnectPeripheral peripheral: CBPeripheral,
                         timestamp: CFAbsoluteTime,
