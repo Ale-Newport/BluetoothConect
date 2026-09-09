@@ -30,6 +30,29 @@ export const PairingMethod = {
 } as const;
 export type PairingMethod = (typeof PairingMethod)[keyof typeof PairingMethod];
 
+const ALL_PAIRING_METHODS: readonly string[] = [PairingMethod.QR, PairingMethod.SAS, PairingMethod.RESTORED];
+
+export function isPairingMethod(value: unknown): value is PairingMethod {
+  return typeof value === 'string' && ALL_PAIRING_METHODS.includes(value);
+}
+
+/**
+ * Ranking used when a friendship is re-established by a weaker route than the
+ * one that created it. Scanning a code proves the identity key out of band;
+ * comparing six digits only proves that no attacker sat in the middle of THIS
+ * exchange. A later SAS pairing must therefore not quietly downgrade the record
+ * of a friend who was originally scanned.
+ */
+const METHOD_STRENGTH: Record<PairingMethod, number> = {
+  [PairingMethod.QR]: 3,
+  [PairingMethod.SAS]: 2,
+  [PairingMethod.RESTORED]: 1,
+};
+
+export function strongerPairingMethod(a: PairingMethod, b: PairingMethod): PairingMethod {
+  return METHOD_STRENGTH[a] >= METHOD_STRENGTH[b] ? a : b;
+}
+
 export interface TrustedPeer {
   readonly peerId: string;
   /** Long-term Ed25519 public key. Proven, never merely claimed. */
@@ -41,11 +64,18 @@ export interface TrustedPeer {
   readonly pairedAt: number;
   readonly lastSeenAt: number;
   /**
-   * The peer's advertisement key, handed to us during pairing. It lets us
-   * recognise their rotating BLE advertisement token before connecting. Absent
-   * until the peer has sent it, which happens one round trip after pairing.
+   * The peer's advertisement key: the secret THEIR rotating BLE token is
+   * computed from, so we can recognise them before connecting. It is handed to
+   * us inside the encrypted session during the pairing exchange, so it is
+   * absent on a record created by a scanned QR code until we have actually met.
    */
   readonly advertisementKey?: Uint8Array;
+  /**
+   * The key OUR token to this friend is computed from. Per friendship, not per
+   * device: if every friend saw the same token from us, two of them could
+   * compare notes and prove they had seen the same phone.
+   */
+  readonly selfAdvertisementKey?: Uint8Array;
   readonly blocked: boolean;
 }
 
@@ -53,6 +83,39 @@ export interface TrustedPeer {
 const MAX_PEER_ID_LENGTH = 64;
 /** Longest display name we will store. Matches the capability record's limit. */
 export const MAX_TRUSTED_DISPLAY_NAME_LENGTH = 64;
+
+/**
+ * True when a string carries C0/C1 control characters.
+ *
+ * A display name reaches us from a peer or from a scanned code. Control
+ * characters in it are never legitimate and are the classic way to spoof a UI
+ * row - a right-to-left override turns "evil.exe" into something else entirely.
+ * A strict parser rejects them outright; a lenient one strips them.
+ */
+export function hasControlCharacters(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) return true;
+    // Bidi overrides and embeddings: legitimate text uses the isolates, never these.
+    if (code >= 0x202a && code <= 0x202e) return true;
+    if (code >= 0x2066 && code <= 0x2069) return true;
+  }
+  return false;
+}
+
+/** Strip anything unsafe and clamp the length, without ever throwing. */
+export function sanitiseDisplayName(name: string, maxLength = MAX_TRUSTED_DISPLAY_NAME_LENGTH): string {
+  if (typeof name !== 'string') return '';
+  let out = '';
+  // Iterating by code point keeps surrogate pairs (emoji) intact; truncating
+  // between the halves of one would produce an unpaired surrogate.
+  for (const ch of name) {
+    if (hasControlCharacters(ch)) continue;
+    if (out.length + ch.length > maxLength) break;
+    out += ch;
+  }
+  return out.trim();
+}
 
 export interface TrustStore {
   /**
@@ -89,8 +152,8 @@ function assertPeerId(peerId: string): void {
 
 /**
  * Validate a row before it is stored. Some of these fields originate with the
- * peer (the display name) and some are derived locally, so the check runs on
- * the way in rather than trusting every call site.
+ * peer (the display name, the advertisement key) and some are derived locally,
+ * so the check runs on the way in rather than trusting every call site.
  */
 export function validateTrustedPeer(peer: TrustedPeer): void {
   assertPeerId(peer.peerId);
@@ -106,14 +169,17 @@ export function validateTrustedPeer(peer: TrustedPeer): void {
   if (typeof peer.displayName !== 'string' || peer.displayName.length > MAX_TRUSTED_DISPLAY_NAME_LENGTH) {
     throw new Error('trustStore: display name must be a string of at most 64 characters');
   }
-  if (peer.advertisementKey !== undefined) {
-    if (!(peer.advertisementKey instanceof Uint8Array) || peer.advertisementKey.length !== ADVERTISEMENT_KEY_LENGTH) {
+  if (!isPairingMethod(peer.method)) throw new Error('trustStore: unknown pairing method');
+  for (const key of [peer.advertisementKey, peer.selfAdvertisementKey]) {
+    if (key === undefined) continue;
+    if (!(key instanceof Uint8Array) || key.length !== ADVERTISEMENT_KEY_LENGTH) {
       throw new Error('trustStore: advertisement key must be 32 bytes');
     }
   }
   if (!Number.isFinite(peer.pairedAt) || !Number.isFinite(peer.lastSeenAt)) {
     throw new Error('trustStore: timestamps must be finite');
   }
+  if (typeof peer.blocked !== 'boolean') throw new Error('trustStore: blocked must be a boolean');
 }
 
 /**
@@ -147,6 +213,9 @@ export class InMemoryTrustStore implements TrustStore {
 
   set(peer: TrustedPeer): void {
     validateTrustedPeer(peer);
+    // A row that claims to be blocked must also appear in the block set, or
+    // `isBlocked` and `get` would disagree about the same peer.
+    if (peer.blocked) this.blocks.add(peer.peerId);
     // Copy every buffer: callers hand us slices of decoded packets, and a stored
     // identity key that can be mutated from outside is not a trust anchor.
     const stored: TrustedPeer = {
@@ -157,6 +226,7 @@ export class InMemoryTrustStore implements TrustStore {
       pairedAt: peer.pairedAt,
       lastSeenAt: peer.lastSeenAt,
       ...(peer.advertisementKey ? { advertisementKey: peer.advertisementKey.slice() } : {}),
+      ...(peer.selfAdvertisementKey ? { selfAdvertisementKey: peer.selfAdvertisementKey.slice() } : {}),
       blocked: peer.blocked || this.blocks.has(peer.peerId),
     };
     this.peers.set(peer.peerId, stored);

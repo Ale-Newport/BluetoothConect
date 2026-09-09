@@ -28,7 +28,6 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-	  <!-- Do not change NSAllowsArbitraryLoads to true, or you will risk app rejection! -->
 		<key>NSAllowsArbitraryLoads</key>
 		<false/>
 		<key>NSAllowsLocalNetworking</key>
@@ -36,8 +35,6 @@
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>AirLink uses Bluetooth to find friends nearby and to talk to their phones directly. Your location is not used or shared, and nothing is sent to the internet.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>When you and your friend share a Wi-Fi network, AirLink uses it to send photos and video much faster. Only devices you connect to can see you.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_airlink._tcp</string>
@@ -45,27 +42,21 @@
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>AirLink uses the camera to scan a friend's QR code so you can add them without typing anything.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>AirLink needs access to your photos so you can send them to a friend nearby.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>AirLink saves photos your friends send you to your photo library.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>When you and your friend share a Wi-Fi network, AirLink uses it to send photos and video much faster. Only devices you connect to can see you.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>AirLink uses the microphone to record voice messages.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>AirLink saves photos your friends send you to your photo library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>AirLink needs access to your photos so you can send them to a friend nearby.</string>
+	<key>RCTNewArchEnabled</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
-		<!--
-		  These let an established Bluetooth session survive the app going to the
-		  background, and let an incoming message wake the app briefly. They do
-		  NOT allow silent high-bandwidth transfer, and a backgrounded iOS
-		  advertiser is not discoverable by an Android phone: iOS moves service
-		  UUIDs into an overflow area only Apple devices can scan. The app tells
-		  the user this rather than pretending otherwise.
-		-->
 		<string>bluetooth-central</string>
 		<string>bluetooth-peripheral</string>
 	</array>
-	<key>UIUserInterfaceStyle</key>
-	<string>Automatic</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>
@@ -83,6 +74,8 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
+	<key>UIUserInterfaceStyle</key>
+	<string>Automatic</string>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
 </dict>

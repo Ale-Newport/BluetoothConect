@@ -408,10 +408,6 @@ import UIKit
             reject("failed", error.localizedDescription)
         }
     }
-
-    fileprivate func log(level: String, scope: String, message: String) {
-        delegate?.emitLog(["level": level, "scope": scope, "message": message])
-    }
 }
 
 // MARK: - TransportEventSink

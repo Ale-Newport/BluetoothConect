@@ -9,7 +9,11 @@ Pod::Spec.new do |s|
   s.license      = "MIT"
   s.author       = { "AirLink" => "noreply@example.com" }
   s.homepage     = "https://example.com/airlink"
-  s.platforms    = { :ios => "16.0" }
+  # Track React Native's own floor rather than picking our own: every API this
+  # pod uses (CoreBluetooth L2CAP, Network.framework, NEHotspotConfiguration)
+  # has been available since well before it, and diverging only breaks the
+  # dependency resolution.
+  s.platforms    = { :ios => min_ios_version_supported }
   s.source       = { :path => "." }
 
   # Every Swift and ObjC++ file in ios/ is compiled. New transports are new

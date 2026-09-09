@@ -39,13 +39,19 @@ export const MESH_LIMITS = {
   seenCapacity: 512,
   /** How long an entry stays in the seen-set. Longer than any plausible flood. */
   seenTtlMs: 120_000,
-
-  /** Invitations awaiting the host's blessing. Bounded like everything else. */
-  maxPendingInvites: 8,
 } as const;
 
 /** Version byte of the GROUP_RELAY packet header. */
 export const RELAY_WIRE_VERSION = 1;
+
+/**
+ * Ceiling on the group state counter: a 32-bit unsigned integer.
+ *
+ * Shared by the codec (which rejects anything larger from a peer) and by the
+ * session (which saturates rather than wrapping at it). A wrap would break the
+ * total order that gossip convergence depends on.
+ */
+export const MAX_GROUP_EPOCH = 0xffff_ffff;
 
 /**
  * Thrown for a *local* misuse of the mesh API (promoting a non-member, sending
