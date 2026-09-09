@@ -1101,15 +1101,166 @@ describe('watch together: end to end', () => {
       correctionIntervalMs: 250,
     });
     broken.setLocalContent({ ...pair.content, contentId: 'guest' });
+    // Asserting on `currentAnchor` alone would prove nothing: that field is set
+    // on the first line of applyAnchor, before the player is touched at all, so
+    // it survives an implementation that throws its way out of every command.
+    // What has to hold is that the WORK still happened.
+    const anchors = collect(broken, 'anchorChanged');
+    const started = collect(broken, 'playbackStarted');
 
     pair.watchA.create();
     await pair.run(1500);
+    expect(broken.currentState).toBe(WatchState.FOLLOWING);
+    // pause() threw on the create anchor; the rest of applyAnchor must still run.
+    // (The exact count depends on how many heartbeats landed - what matters is
+    // that the adoption of a line is reported at all.)
+    expect(anchors.length).toBeGreaterThan(0);
+
+    // The scheduled start must still be armed and must still fire. This is the
+    // exact assertion: a heartbeat can never produce `playbackStarted`, because
+    // it carries the epoch already held and applyAnchor short-circuits on it.
+    // Before pause() was guarded, applyAnchor threw before scheduleStart and
+    // this stayed at 0 for ever; before play() was guarded, the throw escaped a
+    // clock.setTimeout callback - an unhandled exception on the system clock,
+    // which the VirtualClock reproduces by letting it out of run().
     pair.watchA.play();
     await pair.run(5000);
 
+    expect(started.length).toBe(1);
     expect(broken.currentState).toBe(WatchState.FOLLOWING);
     expect(broken.currentAnchor?.playing).toBe(true);
     broken.dispose();
+  });
+
+  it('ends the watch session when the peer session closes for good', async () => {
+    const pair = await watchPair({ conditions: WIFI_LIKE_CONDITIONS });
+    await startSession(pair);
+    pair.watchA.play();
+    await pair.run(3000);
+    expect(pair.watchB.currentState).toBe(WatchState.FOLLOWING);
+
+    const endedB = collect(pair.watchB, 'ended');
+    const timersBefore = pair.clock.pendingTimers;
+
+    const closing = pair.sessionB.close('bluetooth off');
+    await pair.run(2000);
+    await closing;
+    await pair.run(10_000);
+
+    // Without this the correction and heartbeat intervals run for the life of
+    // the process, correcting a player against a line nobody will ever update.
+    expect(pair.watchB.currentState).toBe(WatchState.ENDED);
+    expect(endedB.length).toBe(1);
+    expect(pair.clock.pendingTimers).toBeLessThan(timersBefore);
+
+    // Nothing is corrected after the end, however long the clock runs.
+    const corrections = collect(pair.watchB, 'correction');
+    await pair.run(20_000);
+    expect(corrections.length).toBe(0);
+  });
+
+  it('retires its own drift nudge when the session ends', async () => {
+    const pair = await watchPair({ conditions: WIFI_LIKE_CONDITIONS });
+    await startSession(pair);
+    pair.watchA.play();
+    await pair.run(4000);
+
+    // A stall inside the rate band leaves a nudge applied for several seconds -
+    // it takes 150 ms / 2% = 7.5 s to work off - so the session ends while the
+    // module's own correction is still on the player.
+    pair.playerB.stall(150);
+    await pair.run(500);
+    expect(pair.playerB.appliedRate).toBeGreaterThan(1);
+
+    pair.watchA.end('done for tonight');
+    await pair.run(1500);
+
+    // The film keeps playing - but at the speed of the line, not 0.8% fast for
+    // ever because the loop that would have retired the nudge was stopped.
+    expect(pair.watchB.currentState).toBe(WatchState.ENDED);
+    expect(pair.playerB.isPlaying).toBe(true);
+    expect(pair.playerB.appliedRate).toBe(1);
+  });
+
+  it('leaves the speed the USER chose alone when it retires a nudge', async () => {
+    const pair = await watchPair({ conditions: WIFI_LIKE_CONDITIONS });
+    await startSession(pair);
+    pair.watchA.play();
+    await pair.run(3000);
+    pair.watchA.setRate(2);
+    await pair.run(2000);
+    expect(pair.playerB.appliedRate).toBe(2);
+
+    pair.playerB.stall(150);
+    await pair.run(500);
+    expect(pair.playerB.appliedRate).not.toBe(2);
+
+    pair.watchA.end('done');
+    await pair.run(1500);
+    // Back to the line's rate, not to 1.
+    expect(pair.playerB.appliedRate).toBe(2);
+  });
+
+  it('gives up on a content query the peer never answers', async () => {
+    const pair = await watchPair({ conditions: WIFI_LIKE_CONDITIONS });
+    pair.watchB.dispose(); // nobody is listening on the other end any more
+    const timedOut = collect(pair.watchA, 'contentQueryTimedOut');
+
+    const queryId = pair.watchA.queryPeerContent();
+    expect(pair.watchA.currentState).toBe(WatchState.MATCHING);
+    await pair.run(10_000);
+    // Still waiting: the timeout is generous, because a hostile link is slow.
+    expect(pair.watchA.currentState).toBe(WatchState.MATCHING);
+
+    await pair.run(40_000);
+    expect(timedOut.map((t) => t.queryId)).toEqual([queryId]);
+    expect(pair.watchA.currentState).toBe(WatchState.IDLE);
+  });
+
+  it('lets the user cancel a query instead of waiting for the peer', async () => {
+    const pair = await watchPair({ conditions: WIFI_LIKE_CONDITIONS });
+    pair.watchB.dispose();
+    const timedOut = collect(pair.watchA, 'contentQueryTimedOut');
+
+    pair.watchA.queryPeerContent();
+    pair.watchA.end('never mind');
+    expect(pair.watchA.currentState).toBe(WatchState.IDLE);
+
+    // Cancelled means cancelled: the timer must not fire later and knock the
+    // state machine out of whatever the user did next.
+    await pair.run(60_000);
+    expect(timedOut.length).toBe(0);
+    expect(pair.watchA.currentState).toBe(WatchState.IDLE);
+  });
+
+  it('withdraws an invitation the host cancelled before it was accepted', async () => {
+    const pair = await watchPair({ conditions: WIFI_LIKE_CONDITIONS });
+    pair.watchB.dispose();
+    const manual = new WatchTogetherSession({
+      session: pair.sessionB,
+      clock: pair.clockB,
+      media: pair.playerB,
+      random: new SeededRandom(21),
+      autoJoin: false,
+      correctionIntervalMs: 250,
+    });
+    manual.setLocalContent({ ...pair.content, contentId: 'guest' });
+    const endedB = collect(manual, 'ended');
+
+    pair.watchA.create();
+    await pair.run(1500);
+    expect(manual.currentState).toBe(WatchState.INVITED);
+
+    pair.watchA.end('changed my mind');
+    await pair.run(1500);
+
+    // The invite card must come down. Left standing, tapping Join sends a
+    // SYNC_JOIN into a session that no longer exists and strands this device in
+    // FOLLOWING with nobody publishing anchors.
+    expect(manual.currentState).not.toBe(WatchState.INVITED);
+    expect(endedB.length).toBe(1);
+    expect(() => manual.join()).toThrow(/no invitation/);
+    manual.dispose();
   });
 });
 
@@ -1359,6 +1510,88 @@ describe('watch together: a hostile peer', () => {
     await pair.run(1500);
 
     expect(rejectsA.some((r) => r.reason === SyncRejectReason.UNEXPECTED_ROLE)).toBe(true);
+  });
+
+  it('does not believe a peer that claims HAVE without proving it', async () => {
+    const pair = await watchPair({ conditions: WIFI_LIKE_CONDITIONS });
+    pair.watchB.dispose(); // we answer for the peer ourselves, below
+    const rejects = collect(pair.watchA, 'rejected');
+    const unavailable = collect(pair.watchA, 'contentUnavailable');
+
+    const queryId = pair.watchA.queryPeerContent();
+    // "Yes, I have it" - with nothing whatsoever to back the claim up.
+    pair.sessionB.sendReliable(MessageType.SYNC_CONTENT_REPLY, { q: queryId, a: ContentAvailability.HAVE });
+    await pair.run(2000);
+
+    expect(pair.watchA.currentState).toBe(WatchState.IDLE);
+    expect(rejects.some((r) => r.reason === SyncRejectReason.CONTENT_MISMATCH)).toBe(true);
+    expect(unavailable[0]?.availability).toBe(ContentAvailability.MISMATCH);
+  });
+
+  it('does not believe a HAVE backed by somebody else’s descriptor', async () => {
+    const pair = await watchPair({ conditions: WIFI_LIKE_CONDITIONS });
+    pair.watchB.dispose();
+    const rejects = collect(pair.watchA, 'rejected');
+
+    const queryId = pair.watchA.queryPeerContent();
+    pair.sessionB.sendReliable(MessageType.SYNC_CONTENT_REPLY, {
+      q: queryId,
+      a: ContentAvailability.HAVE,
+      n: pair.content.byteLength + 4096,
+      d: pair.content.durationMs,
+      h: pair.content.sampledHash,
+    });
+    await pair.run(2000);
+
+    expect(pair.watchA.currentState).toBe(WatchState.IDLE);
+    expect(rejects.some((r) => r.reason === SyncRejectReason.CONTENT_MISMATCH)).toBe(true);
+  });
+
+  it('does not volunteer an unrelated film to a peer that asked about another', async () => {
+    const other = await filmDescriptor('other');
+    const pair = await watchPair({
+      conditions: WIFI_LIKE_CONDITIONS,
+      guestContent: {
+        ...other,
+        byteLength: other.byteLength + 9_999,
+        durationMs: 11 * 60 * 1000,
+        title: 'Marias private home video',
+      },
+    });
+    const answered = collect(pair.watchA, 'contentAnswered');
+
+    pair.watchA.queryPeerContent();
+    await pair.run(1500);
+
+    // Asking "do you have this film?" is not asking what else is on the phone.
+    expect(answered[0]?.reply.availability).toBe(ContentAvailability.MISSING);
+    expect(answered[0]?.reply.content).toBeUndefined();
+  });
+
+  it('refuses a session takeover from a peer that already joined', async () => {
+    const { pair, sessionId } = await hostileSetup();
+    const rejectsA = collect(pair.watchA, 'rejected');
+    const endedA = collect(pair.watchA, 'ended');
+
+    // A modified guest mints a create whose id sorts below every 16-hex id and
+    // tries to promote itself to host mid-film.
+    pair.sessionB.sendReliable(
+      MessageType.SYNC_CREATE,
+      encodeSessionCreate({
+        sessionId: '0000000000000000',
+        content: identityOf(pair.content),
+        anchor: { epoch: 1, positionMs: 0, hostWallClockMs: pair.clockB.wallNow(), rate: 4, playing: false },
+      }),
+    );
+    await pair.run(3000);
+
+    expect(pair.watchA.currentRole).toBe(SyncRole.HOST);
+    expect(pair.watchA.id).toBe(sessionId);
+    expect(endedA.length).toBe(0);
+    expect(rejectsA.some((r) => r.reason === SyncRejectReason.UNEXPECTED_ROLE)).toBe(true);
+    // The host's own line is untouched: still playing, still rate 1.
+    expect(pair.playerA.isPlaying).toBe(true);
+    expect(pair.watchA.currentAnchor?.rate).toBe(1);
   });
 
   it('resolves a simultaneous create with a deterministic tie-break', async () => {

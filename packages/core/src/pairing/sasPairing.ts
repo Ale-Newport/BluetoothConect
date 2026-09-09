@@ -37,7 +37,15 @@
  * which is exactly the guarantee that makes this ceremony worth running. So the
  * exchange runs on the control channel and carries its own bounded retry. On a
  * Bluetooth link losing one packet in seven, a ceremony that gave up after one
- * try would strand the user in "waiting for Maria" forever.
+ * try would strand the user in "waiting for Maria" forever. Every bound in that
+ * retry is ours, never the peer's: the repeats, the acknowledgements we send
+ * back, and the number of times a link change may restore either.
+ *
+ * WHAT A REFUSAL DOES NOT SEND. The advertisement key travels with an
+ * ACCEPTANCE and nothing else. It is a permanent tracking secret - whoever holds
+ * it recognises this device in every future rotation window - and a decline is
+ * precisely the case where the other end may be the attacker the six digits just
+ * caught.
  */
 import { MessageType, TIMING } from '../protocol/constants.js';
 import type { CborValue } from '../protocol/cbor.js';
@@ -396,9 +404,13 @@ export class SasPairing {
     // other state does: even in both-confirmed, OUR confirmation may be the one
     // that never arrived, and until it does the peer cannot finish.
     if (this.state === SasPairingState.TIMED_OUT) return;
+    const maxResends = this.options.maxResends ?? DEFAULT_MAX_RESENDS;
+    // Nothing to restore: the retry is still running on a full budget, which is
+    // the case for the transport event the handshake itself emits.
+    if (this.resendTimer !== undefined && this.resendsLeft >= maxResends) return;
     if (this.resumesLeft <= 0) return;
     this.resumesLeft--;
-    this.resendsLeft = this.options.maxResends ?? DEFAULT_MAX_RESENDS;
+    this.resendsLeft = maxResends;
     this.ackBudget = this.initialAckBudget;
     this.startResending();
   }

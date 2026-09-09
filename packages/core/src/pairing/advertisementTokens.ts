@@ -179,10 +179,24 @@ export function tokenRotation(
 ): { peerId: string; token: Uint8Array } | null {
   if (friends.length === 0) return null;
   if (!Number.isInteger(slot)) return null;
-  const chosen = friends[((slot % friends.length) + friends.length) % friends.length];
-  if (!chosen) return null;
-  return {
-    peerId: chosen.peerId,
-    token: deriveAdvertisementToken(chosen.advertisementKey, wallNowMs, windowMs),
-  };
+  // The clock is checked here rather than left to throw further down: this
+  // function runs from the advertising loop, and a device with a broken clock
+  // must go quiet, not crash the radio.
+  if (!Number.isFinite(wallNowMs) || wallNowMs < 0) return null;
+  // One unusable row must not stop the device advertising to everybody else.
+  // The matcher already skips a corrupt candidate rather than treating it as
+  // fatal; the broadcaster has far more to lose by disagreeing, because a throw
+  // here means this phone stops being recognisable to every friend it has.
+  const start = ((slot % friends.length) + friends.length) % friends.length;
+  for (let offset = 0; offset < friends.length; offset++) {
+    const chosen = friends[(start + offset) % friends.length];
+    if (!chosen) continue;
+    if (!(chosen.advertisementKey instanceof Uint8Array)) continue;
+    if (chosen.advertisementKey.length !== ADVERTISEMENT_KEY_LENGTH) continue;
+    return {
+      peerId: chosen.peerId,
+      token: deriveAdvertisementToken(chosen.advertisementKey, wallNowMs, windowMs),
+    };
+  }
+  return null;
 }

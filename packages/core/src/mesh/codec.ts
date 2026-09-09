@@ -133,8 +133,18 @@ export function decodeGroupSnapshot(value: CborValue | null): GroupSnapshot {
  * which error type belongs to its own API.
  */
 export function snapshotProblem(snapshot: GroupSnapshot): string | null {
-  if (!isMeshId(snapshot.groupId, MESH_LIMITS.maxGroupIdLength)) return 'groupId is not a valid identifier';
-  if (!isMeshId(snapshot.hostId, MESH_LIMITS.maxPeerIdLength)) return 'hostId is not a valid identifier';
+  // `typeof` before `isMeshId` everywhere below: the argument is typed
+  // GroupSnapshot, but the whole point of this function is that the value did
+  // not come from anywhere the type system could vouch for, and isMeshId reads
+  // `.length` - which on a non-string is undefined, and would sail through the
+  // loop that follows it.
+  if (snapshot === null || typeof snapshot !== 'object') return 'snapshot must be an object';
+  if (typeof snapshot.groupId !== 'string' || !isMeshId(snapshot.groupId, MESH_LIMITS.maxGroupIdLength)) {
+    return 'groupId is not a valid identifier';
+  }
+  if (typeof snapshot.hostId !== 'string' || !isMeshId(snapshot.hostId, MESH_LIMITS.maxPeerIdLength)) {
+    return 'hostId is not a valid identifier';
+  }
   if (typeof snapshot.name !== 'string' || snapshot.name.length > MESH_LIMITS.maxGroupNameLength) {
     return `name must be a string of at most ${MESH_LIMITS.maxGroupNameLength} characters`;
   }
@@ -151,7 +161,9 @@ export function snapshotProblem(snapshot: GroupSnapshot): string | null {
   const seen = new Set<string>();
   for (const member of snapshot.members) {
     if (member === null || typeof member !== 'object') return 'malformed member entry';
-    if (!isMeshId(member.peerId, MESH_LIMITS.maxPeerIdLength)) return 'member peerId is not a valid identifier';
+    if (typeof member.peerId !== 'string' || !isMeshId(member.peerId, MESH_LIMITS.maxPeerIdLength)) {
+      return 'member peerId is not a valid identifier';
+    }
     if (typeof member.displayName !== 'string' || member.displayName.length > MESH_LIMITS.maxDisplayNameLength) {
       return 'member displayName is not a bounded string';
     }

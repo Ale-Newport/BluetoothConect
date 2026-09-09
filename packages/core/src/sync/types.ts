@@ -186,8 +186,12 @@ export interface ContentReply {
  * on stale information. The anchor already says whether playback should be
  * running; this module keeps the player matching the anchor and never asks.
  *
- * Implementations must not throw. If one does, the drift loop treats the reading
- * as unavailable and skips the tick rather than tearing down the session.
+ * Implementations should not throw, but the protocol does not rely on that:
+ * every call this module makes - play, pause, seek, setRate, getPosition - is
+ * guarded, because the one thing that reliably throws in production is a ref
+ * whose component has unmounted, and half of these calls are made from timer
+ * callbacks where an escaping exception has nobody to catch it. A throwing
+ * player loses that one instruction and nothing else.
  */
 export interface MediaController {
   play(): void;

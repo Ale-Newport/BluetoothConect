@@ -640,7 +640,9 @@ export class GroupSession {
     // An epoch is in range and still not believable. Accepting a jump to the
     // ceiling pins the counter there for good - `bumpEpoch` saturates, so no
     // later change can out-rank it and the group can never be corrected. See
-    // MAX_EPOCH_ADVANCE.
+    // MAX_EPOCH_ADVANCE. (The invitation path above has no epoch of its own to
+    // compare against; a group joined already poisoned is a group that was
+    // already broken before we arrived.)
     if (incoming.epoch > current.epoch + MAX_EPOCH_ADVANCE) {
       this.drop(MeshDropReason.EPOCH_JUMP, via, String(incoming.epoch));
       return;

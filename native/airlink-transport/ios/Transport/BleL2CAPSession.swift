@@ -138,17 +138,20 @@ final class BleL2CAPSession: NSObject, StreamDelegate {
     // MARK: - Reading
 
     private func readAvailable() {
-        while !closed, input.hasBytesAvailable {
+        // Hoisted so the closure below touches nothing on `self` while `scratch`
+        // is under an exclusive access.
+        let stream = input
+        while !closed, stream.hasBytesAvailable {
             let read = scratch.withUnsafeMutableBufferPointer { buffer -> Int in
                 guard let base = buffer.baseAddress else { return -1 }
-                return input.read(base, maxLength: buffer.count)
+                return stream.read(base, maxLength: buffer.count)
             }
             if read == 0 {
                 shutdown(reason: "L2CAP channel closed by peer")
                 return
             }
             if read < 0 {
-                let detail = input.streamError?.localizedDescription ?? "read failed"
+                let detail = stream.streamError?.localizedDescription ?? "read failed"
                 shutdown(reason: "L2CAP read error: \(detail)")
                 return
             }
@@ -245,7 +248,7 @@ final class BleL2CAPSession: NSObject, StreamDelegate {
          * is identical to the one a GATT link has when the connection drops, and
          * it is exactly what the reliability layer above is designed for.
          */
-        let unsent = pending.map(\.item)
+        let unsent = pending.map { $0.item }
         pending.removeAll()
         queuedBytes = 0
         writeOffset = 0

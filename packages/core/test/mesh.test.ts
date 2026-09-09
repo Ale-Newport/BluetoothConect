@@ -1512,7 +1512,7 @@ describe('the epoch a peer may claim', () => {
     // wrong with this update is that it is four billion epochs ahead.
     ctx.session('B', 'A').sendReliable(
       MessageType.GROUP_UPDATE,
-      encodeGroupSnapshot({ ...before, epoch: MESH_LIMITS.maxMembers === 0 ? 0 : 4_000_000_000 }),
+      encodeGroupSnapshot({ ...before, epoch: 4_000_000_000 }),
     );
     await ctx.clock.advanceAsync(10_000);
 
@@ -1586,5 +1586,23 @@ describe('a neighbour that turns out to be somebody else', () => {
       ),
     );
     expect(group.groupId).toBe('grp1');
+  });
+});
+
+describe('snapshotProblem on values TypeScript cannot police', () => {
+  it('rejects fields that are not strings at all, rather than reading .length off them', () => {
+    // A snapshot from a QR code, a file, or a caller's own store arrives as
+    // whatever JSON.parse produced. `isMeshId` alone reads `.length`, which on
+    // a number is undefined and would let the loop that follows it pass.
+    const wrong = (over: Record<string, unknown>): GroupSnapshot => ({ ...snapshot(), ...over }) as GroupSnapshot;
+    expect(snapshotProblem(wrong({ groupId: 7 }))).toMatch(/groupId/);
+    expect(snapshotProblem(wrong({ hostId: null }))).toMatch(/hostId/);
+    expect(snapshotProblem(wrong({ name: 42 }))).toMatch(/name/);
+    expect(snapshotProblem(wrong({ members: 'not an array' }))).toMatch(/members/);
+    expect(snapshotProblem(wrong({ members: [null] }))).toMatch(/member entry/);
+    expect(snapshotProblem(wrong({ members: [{ peerId: 3, displayName: 'x', joinedAt: 1 }] }))).toMatch(/peerId/);
+    expect(snapshotProblem(wrong({ members: [{ peerId: 'AAAA', displayName: 9, joinedAt: 1 }] }))).toMatch(
+      /displayName/,
+    );
   });
 });

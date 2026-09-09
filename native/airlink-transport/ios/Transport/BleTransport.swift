@@ -169,7 +169,7 @@ final class BleTransport: NSObject, AirLinkTransport {
 
     /// The permission half of the question, answerable from any thread and
     /// before a manager exists. Returns nil when permission is not the problem.
-    private static func authorizationAvailability() -> (Bool, UnavailableReason, String)? {
+    private static func authorizationAvailability() -> Availability? {
         switch CBManager.authorization {
         case .denied, .restricted:
             return (false, .permissionDenied,
@@ -196,8 +196,8 @@ final class BleTransport: NSObject, AirLinkTransport {
         log(next.available ? "info" : "warn", "availability: \(next.reason.rawValue.isEmpty ? "available" : next.reason.rawValue)")
     }
 
-    private func computeAvailability() -> (Bool, UnavailableReason, String) {
-        if let denied = Self.authorizationAvailability(), denied.1 == .permissionDenied {
+    private func computeAvailability() -> Availability {
+        if let denied = Self.authorizationAvailability(), denied.reason == .permissionDenied {
             return denied
         }
         guard let manager = centralManager else {
@@ -305,7 +305,9 @@ final class BleTransport: NSObject, AirLinkTransport {
         housekeeping?.cancel()
         housekeeping = nil
 
-        for link in links.values {
+        // Snapshotted because closeLink removes from `links`, and mutating a
+        // dictionary through its own iterator is undefined behaviour.
+        for link in Array(links.values) {
             closeLink(link, state: .closed, reason: reason, notify: true)
         }
         links.removeAll()
@@ -452,7 +454,7 @@ final class BleTransport: NSObject, AirLinkTransport {
                 self.queue.async { completion(result) }
             }
 
-            guard let manager = centralManager, let serviceUUID else {
+            guard let manager = centralManager, serviceUUID != nil else {
                 finish(.failure(AirLinkError.notStarted))
                 return
             }
@@ -504,7 +506,6 @@ final class BleTransport: NSObject, AirLinkTransport {
             // Deliberately no auto-reconnect option: whether and when to
             // reconnect is a decision for the session layer, not the radio.
             manager.connect(peripheral, options: nil)
-            _ = serviceUUID
         }
     }
 
@@ -746,9 +747,7 @@ final class BleTransport: NSObject, AirLinkTransport {
     /// The single exit for a link. Idempotent, so a disconnect racing a
     /// stream error cannot emit two closed events or settle a promise twice.
     private func closeLink(_ link: BleLink, state: LinkState, reason: String, notify: Bool) {
-        guard links[link.id] != nil || link.state != .closed else { return }
-
-        links.removeValue(forKey: link.id)
+        guard links.removeValue(forKey: link.id) != nil else { return }
         link.cancelTimers()
         link.state = state
 
@@ -798,12 +797,12 @@ final class BleTransport: NSObject, AirLinkTransport {
         completion?(.failure(AirLinkError.failed(reason)))
     }
 
-    private func link(forPeripheral identifier: UUID) -> BleLink? {
+    private func activeLink(forPeripheral identifier: UUID) -> BleLink? {
         guard let id = linkIdByPeripheral[identifier] else { return nil }
         return links[id]
     }
 
-    private func link(forCentral identifier: UUID) -> BleLink? {
+    private func activeLink(forCentral identifier: UUID) -> BleLink? {
         guard let id = linkIdByCentral[identifier] else { return nil }
         return links[id]
     }
@@ -943,7 +942,7 @@ final class BleTransport: NSObject, AirLinkTransport {
         // Peers whose advertisements stopped. A peer we hold a link to is never
         // reported lost: the link is better evidence than the beacon.
         var expired: [DiscoveryRecord] = []
-        for (endpointId, record) in discovered {
+        for (endpointId, record) in Array(discovered) {
             guard (now - record.lastSeen) * 1000 > Self.discoveryExpiryMs else { continue }
             if let identifier = UUID(uuidString: endpointId), linkIdByPeripheral[identifier] != nil { continue }
             expired.append(record)
@@ -951,7 +950,7 @@ final class BleTransport: NSObject, AirLinkTransport {
         }
         for record in expired { events?.peerLost(record.endpoint) }
 
-        for link in links.values {
+        for link in Array(links.values) {
             // RSSI, and a re-read of the negotiated write length: iOS raises the
             // ATT MTU shortly after connecting and there is no callback for it,
             // so the only honest way to report a change is to look again.
@@ -1003,30 +1002,37 @@ final class BleTransport: NSObject, AirLinkTransport {
 
     private func noteDiscovery(endpointId: String, name: String, token: String, rssi: Int) {
         let now = CFAbsoluteTimeGetCurrent()
-        if var record = discovered[endpointId] {
-            if !name.isEmpty { record.name = name }
-            if !token.isEmpty { record.token = token }
-            if rssi != 0 { record.rssi = rssi }
-            record.lastSeen = now
 
-            let movedSignal = abs(record.rssi - record.lastEmittedRssi) >= Self.rssiChangeThreshold
-            let stale = (now - record.lastEmitted) * 1000 >= Self.rediscoveryThrottleMs
-            let changed = record.name != discovered[endpointId]?.name || record.token != discovered[endpointId]?.token
-            discovered[endpointId] = record
-
-            guard stale || movedSignal || changed else { return }
-            record.lastEmitted = now
-            record.lastEmittedRssi = record.rssi
-            discovered[endpointId] = record
-            events?.peerDiscovered(record.endpoint)
-        } else {
+        guard let previous = discovered[endpointId] else {
             let record = DiscoveryRecord(
                 endpointId: endpointId, name: name, token: token, rssi: rssi,
                 lastSeen: now, lastEmitted: now, lastEmittedRssi: rssi
             )
             discovered[endpointId] = record
             events?.peerDiscovered(record.endpoint)
+            return
         }
+
+        // Fields are only ever filled in, never blanked: a scan response without
+        // a name does not mean the peer lost the one it advertised a moment ago,
+        // and the identity read fills in a token the advertisement could not
+        // carry at all.
+        var record = previous
+        if !name.isEmpty { record.name = name }
+        if !token.isEmpty { record.token = token }
+        if rssi != 0 { record.rssi = rssi }
+        record.lastSeen = now
+        discovered[endpointId] = record
+
+        let learnedSomething = record.name != previous.name || record.token != previous.token
+        let movedSignal = abs(record.rssi - record.lastEmittedRssi) >= Self.rssiChangeThreshold
+        let stale = (now - record.lastEmitted) * 1000 >= Self.rediscoveryThrottleMs
+        guard learnedSomething || movedSignal || stale else { return }
+
+        record.lastEmitted = now
+        record.lastEmittedRssi = record.rssi
+        discovered[endpointId] = record
+        events?.peerDiscovered(record.endpoint)
     }
 
     // MARK: - Helpers
@@ -1095,9 +1101,10 @@ extension BleTransport: CBCentralManagerDelegate {
             // crash and not silence. Central-role links are gone; peripheral-role
             // ones are the peripheral manager's to mourn.
             let reason = central.state == .poweredOff ? "Bluetooth was switched off" : "Bluetooth became unavailable"
-            for link in links.values where link.role == .central {
+            for link in Array(links.values) where link.role == .central {
                 closeLink(link, state: .failed, reason: reason, notify: true)
             }
+            for record in discovered.values { events?.peerLost(record.endpoint) }
             discovered.removeAll()
         }
     }
@@ -1173,13 +1180,13 @@ extension BleTransport: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        guard let link = link(forPeripheral: peripheral.identifier), let serviceUUID else { return }
+        guard activeLink(forPeripheral: peripheral.identifier) != nil, let serviceUUID else { return }
         peripheral.delegate = self
         peripheral.discoverServices([serviceUUID])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        guard let link = link(forPeripheral: peripheral.identifier) else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         failConnect(link, error: AirLinkError.failed(error?.localizedDescription ?? "connection failed"))
     }
 
@@ -1201,7 +1208,7 @@ extension BleTransport: CBCentralManagerDelegate {
     }
 
     private func handleDisconnect(_ peripheral: CBPeripheral, isReconnecting: Bool, error: Error?) {
-        guard let link = link(forPeripheral: peripheral.identifier) else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         // We never ask for auto-reconnect - when to come back is the session
         // layer's decision - so this flag should always be false. If a future
         // iOS sets it anyway, reporting the link as closed is still correct;
@@ -1220,7 +1227,7 @@ extension BleTransport: CBCentralManagerDelegate {
 extension BleTransport: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let link = link(forPeripheral: peripheral.identifier) else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         if let error {
             failConnect(link, error: AirLinkError.failed("service discovery failed: \(error.localizedDescription)"))
             return
@@ -1234,7 +1241,7 @@ extension BleTransport: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let link = link(forPeripheral: peripheral.identifier) else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         if let error {
             failConnect(link, error: AirLinkError.failed("characteristic discovery failed: \(error.localizedDescription)"))
             return
@@ -1250,17 +1257,16 @@ extension BleTransport: CBPeripheralDelegate {
             }
         }
 
-        guard let rx = link.rxCharacteristic, let tx = link.txCharacteristic else {
+        guard link.rxCharacteristic != nil, let tx = link.txCharacteristic else {
             failConnect(link, error: AirLinkError.failed("peer is missing an AirLink characteristic"))
             return
         }
-        _ = rx
         refreshGattDatagramSize(link)
         peripheral.setNotifyValue(true, for: tx)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        guard let link = link(forPeripheral: peripheral.identifier), characteristic.uuid == txUUID else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier), characteristic.uuid == txUUID else { return }
         if let error {
             failConnect(link, error: AirLinkError.failed("could not subscribe: \(error.localizedDescription)"))
             return
@@ -1288,7 +1294,7 @@ extension BleTransport: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard let link = link(forPeripheral: peripheral.identifier) else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         if error != nil { return }
         guard let value = characteristic.value, !value.isEmpty else { return }
 
@@ -1333,7 +1339,7 @@ extension BleTransport: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard let link = link(forPeripheral: peripheral.identifier), characteristic.uuid == rxUUID else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier), characteristic.uuid == rxUUID else { return }
         link.reliableWatchdog?.cancel()
         link.reliableWatchdog = nil
 
@@ -1353,12 +1359,12 @@ extension BleTransport: CBPeripheralDelegate {
     /// The stack's write-without-response queue has room again. Ignoring this is
     /// the classic way to lose data on iOS without a single error being reported.
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
-        guard let link = link(forPeripheral: peripheral.identifier) else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         pumpOutbound(link)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
-        guard error == nil, let link = link(forPeripheral: peripheral.identifier) else { return }
+        guard error == nil, let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         let value = RSSI.intValue
         link.metrics.rssi = value == 127 ? 0 : value
         publishMetrics(link)
@@ -1366,7 +1372,7 @@ extension BleTransport: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
         guard let serviceUUID, invalidatedServices.contains(where: { $0.uuid == serviceUUID }) else { return }
-        guard let link = link(forPeripheral: peripheral.identifier) else { return }
+        guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         // The peer tore down and rebuilt its GATT database - usually the app
         // restarting. Our characteristic handles are stale, so the link is over.
         closeLink(link, state: .closed, reason: "peer restarted its Bluetooth service", notify: true)
@@ -1376,7 +1382,7 @@ extension BleTransport: CBPeripheralDelegate {
     /// `peripheral(_:didOpen:error:)`; `didOpenL2CAPChannel` was obsoleted in
     /// Swift 3 and does not exist to be implemented.
     func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
-        guard let link = link(forPeripheral: peripheral.identifier) else {
+        guard let link = activeLink(forPeripheral: peripheral.identifier) else {
             return
         }
         guard let channel, error == nil else {
@@ -1404,7 +1410,7 @@ extension BleTransport: CBPeripheralManagerDelegate {
             publishedPSM = 0
             l2capPublishInFlight = false
             let reason = peripheral.state == .poweredOff ? "Bluetooth was switched off" : "Bluetooth became unavailable"
-            for link in links.values where link.role == .peripheral {
+            for link in Array(links.values) where link.role == .peripheral {
                 closeLink(link, state: .failed, reason: reason, notify: true)
             }
         }
@@ -1420,11 +1426,12 @@ extension BleTransport: CBPeripheralManagerDelegate {
             serviceAdded = true
             for characteristic in restored.characteristics ?? [] {
                 guard let mutable = characteristic as? CBMutableCharacteristic else { continue }
-                switch mutable.uuid {
-                case rxUUID: rxCharacteristic = mutable
-                case txUUID: txCharacteristic = mutable
-                case identityUUID: identityCharacteristic = mutable
-                default: break
+                if mutable.uuid == rxUUID {
+                    rxCharacteristic = mutable
+                } else if mutable.uuid == txUUID {
+                    txCharacteristic = mutable
+                } else if mutable.uuid == identityUUID {
+                    identityCharacteristic = mutable
                 }
             }
         }
@@ -1493,8 +1500,10 @@ extension BleTransport: CBPeripheralManagerDelegate {
     func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
         if let error {
             log("error", "advertising failed: \(error.localizedDescription)")
+        } else if advertisedName.isEmpty {
+            log("info", "advertising the AirLink service, no display name")
         } else {
-            log("info", "advertising\(advertisedName.isEmpty ? "" : " as \"\(advertisedName)\"")")
+            log("info", "advertising the AirLink service as '\(advertisedName)'")
         }
     }
 
@@ -1516,7 +1525,7 @@ extension BleTransport: CBPeripheralManagerDelegate {
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
         guard characteristic.uuid == txUUID else { return }
-        if let existing = link(forCentral: central.identifier), existing.opened { return }
+        if let existing = activeLink(forCentral: central.identifier), existing.opened { return }
 
         // The peer subscribing is the peripheral-side definition of "connected":
         // it can now hear us, and it already knows how to write to us.
@@ -1535,7 +1544,7 @@ extension BleTransport: CBPeripheralManagerDelegate {
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
-        guard characteristic.uuid == txUUID, let link = link(forCentral: central.identifier) else { return }
+        guard characteristic.uuid == txUUID, let link = activeLink(forCentral: central.identifier) else { return }
         closeLink(link, state: .closed, reason: "peer unsubscribed", notify: true)
     }
 
@@ -1571,15 +1580,14 @@ extension BleTransport: CBPeripheralManagerDelegate {
          * safe in both directions.
          */
         var result: CBATTError.Code = .success
+        var sawWritableCharacteristic = false
         var datagrams: [(central: CBCentral, data: Data)] = []
         var currentCentral: CBCentral?
         var currentData = Data()
 
         for request in requests {
-            guard request.characteristic.uuid == rxUUID else {
-                result = .requestNotSupported
-                continue
-            }
+            guard request.characteristic.uuid == rxUUID else { continue }
+            sawWritableCharacteristic = true
             let value = request.value ?? Data()
 
             if request.offset == 0 {
@@ -1603,6 +1611,8 @@ extension BleTransport: CBPeripheralManagerDelegate {
                 break
             }
 
+            // A peer decides how long its writes are; we decide how much we are
+            // willing to hold for it.
             if currentData.count > Self.maxInboundGattDatagram {
                 result = .invalidAttributeValueLength
                 currentCentral = nil
@@ -1611,11 +1621,12 @@ extension BleTransport: CBPeripheralManagerDelegate {
             }
         }
         if let central = currentCentral { datagrams.append((central, currentData)) }
+        if !sawWritableCharacteristic { result = .writeNotPermitted }
 
         peripheral.respond(to: first, withResult: result)
 
         for entry in datagrams where !entry.data.isEmpty {
-            guard let link = link(forCentral: entry.central.identifier) else { continue }
+            guard let link = activeLink(forCentral: entry.central.identifier) else { continue }
             accountReceived(link, bytes: entry.data.count)
             events?.received(linkId: link.id, data: entry.data)
         }
@@ -1624,7 +1635,7 @@ extension BleTransport: CBPeripheralManagerDelegate {
     /// The notification queue drained. Every peripheral-role link shares it, so
     /// every one of them gets a chance to move.
     func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
-        for link in links.values where link.role == .peripheral {
+        for link in Array(links.values) where link.role == .peripheral {
             pumpOutbound(link)
         }
     }
@@ -1636,7 +1647,7 @@ extension BleTransport: CBPeripheralManagerDelegate {
             log("warn", "inbound L2CAP channel failed: \(error?.localizedDescription ?? "unknown")")
             return
         }
-        guard let peer = channel.peer as? CBCentral, let link = link(forCentral: peer.identifier) else {
+        guard let peer = channel.peer as? CBCentral, let link = activeLink(forCentral: peer.identifier) else {
             // A channel we cannot attribute to a link is a channel we can never
             // read from. Closing its streams is the only way not to leak it.
             channel.inputStream?.close()

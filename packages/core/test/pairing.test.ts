@@ -656,6 +656,25 @@ describe('advertisement tokens', () => {
     expect(tokenRotation(friends, 1.5, WALL_EPOCH)).toBeNull();
     expect(tokenRotation([], 0, WALL_EPOCH)).toBeNull();
   });
+
+  it('keeps advertising to everyone else when one friend row is unusable', () => {
+    // The matcher already skips a corrupt candidate. The broadcaster has more to
+    // lose by disagreeing: throwing here stops the advertising loop, and this
+    // phone becomes invisible to every friend it has because of one bad row.
+    const good = generateAdvertisementKey(random);
+    const rows = [
+      { peerId: 'CORRUPT', advertisementKey: new Uint8Array(3) },
+      { peerId: 'MARIA00000000000', advertisementKey: good },
+    ];
+    for (const slot of [0, 1, 2, 3]) {
+      expect(tokenRotation(rows, slot, WALL_EPOCH)?.peerId).toBe('MARIA00000000000');
+    }
+    // Nothing usable at all is silence, not a crash.
+    expect(tokenRotation([{ peerId: 'CORRUPT', advertisementKey: new Uint8Array(3) }], 0, WALL_EPOCH)).toBeNull();
+    // And an unusable clock is silence too.
+    expect(tokenRotation(rows, 0, Number.NaN)).toBeNull();
+    expect(tokenRotation(rows, 0, -1)).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

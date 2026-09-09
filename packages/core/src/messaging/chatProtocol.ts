@@ -864,6 +864,15 @@ export class ChatProtocol {
 
   private onMessage(incoming: IncomingMessage): void {
     const message = decodeChatMessage(this.payloadOf(incoming));
+    // The id is the primary key both devices agree on, and the peer knows every
+    // id we have ever sent it - so a peer can name one of OUR messages as the
+    // id of an incoming one. An app that stores by id would then find what it
+    // believes it said replaced by what the peer wrote. Ids are 64 random bits
+    // on top of a timestamp, so an honest peer never collides with us here.
+    if (this.sentStatus.has(message.id) || this.outbox.has(message.id)) {
+      this.drop('id collision', message.id);
+      return;
+    }
     // Acknowledge a duplicate as well: the peer resent it precisely because our
     // first receipt did not make it back.
     this.queueDeliveryReceipt(message.id);

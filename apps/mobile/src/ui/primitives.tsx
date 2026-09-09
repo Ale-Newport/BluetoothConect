@@ -1,0 +1,444 @@
+import React from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type StyleProp,
+  type TextStyle,
+  type ViewStyle,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { avatarColorFor, initialsFor } from '@airlink/config';
+import { useTheme } from './theme.js';
+import { haptic } from './haptics.js';
+
+/**
+ * The design system.
+ *
+ * The look is the one Apple, Linear and Arc share: a quiet surface, generous
+ * space, one confident accent, and type doing the work rather than decoration.
+ * Games live inside this app, but the app is not a toy.
+ */
+
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+export function Screen({
+  children,
+  scroll = false,
+  padded = true,
+  style,
+}: {
+  children: React.ReactNode;
+  scroll?: boolean;
+  padded?: boolean;
+  style?: StyleProp<ViewStyle>;
+}): React.JSX.Element {
+  const theme = useTheme();
+  const insets = useSafeAreaInsets();
+  const content: StyleProp<ViewStyle> = [
+    padded ? { paddingHorizontal: theme.spacing.lg } : null,
+    { paddingBottom: insets.bottom + theme.spacing.lg },
+    style,
+  ];
+
+  if (scroll) {
+    return (
+      <ScrollView
+        style={{ flex: 1, backgroundColor: theme.colors.background }}
+        contentContainerStyle={content}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        {children}
+      </ScrollView>
+    );
+  }
+  return <View style={[{ flex: 1, backgroundColor: theme.colors.background }, content]}>{children}</View>;
+}
+
+/** Vertical spacer. Explicit beats a stray marginBottom. */
+export function Gap({ size = 'md' }: { size?: keyof typeof import('@airlink/config').spacing }): React.JSX.Element {
+  const theme = useTheme();
+  return <View style={{ height: theme.spacing[size] }} />;
+}
+
+export function Row({
+  children,
+  gap = 'md',
+  align = 'center',
+  style,
+}: {
+  children: React.ReactNode;
+  gap?: keyof typeof import('@airlink/config').spacing;
+  align?: ViewStyle['alignItems'];
+  style?: StyleProp<ViewStyle>;
+}): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <View style={[{ flexDirection: 'row', alignItems: align, gap: theme.spacing[gap] }, style]}>{children}</View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Type
+// ---------------------------------------------------------------------------
+
+type TypeVariant = keyof typeof import('@airlink/config').typography;
+
+export function Label({
+  children,
+  variant = 'body',
+  tone = 'primary',
+  align,
+  numberOfLines,
+  style,
+}: {
+  children: React.ReactNode;
+  variant?: TypeVariant;
+  tone?: 'primary' | 'secondary' | 'tertiary' | 'accent' | 'danger' | 'onAccent' | 'connected';
+  align?: TextStyle['textAlign'];
+  numberOfLines?: number;
+  style?: StyleProp<TextStyle>;
+}): React.JSX.Element {
+  const theme = useTheme();
+  const colorByTone = {
+    primary: theme.colors.text,
+    secondary: theme.colors.textSecondary,
+    tertiary: theme.colors.textTertiary,
+    accent: theme.colors.accent,
+    danger: theme.colors.danger,
+    onAccent: theme.colors.onAccent,
+    connected: theme.colors.connected,
+  };
+  return (
+    <Text
+      style={[theme.typography[variant] as TextStyle, { color: colorByTone[tone] }, align ? { textAlign: align } : null, style]}
+      numberOfLines={numberOfLines}
+    >
+      {children}
+    </Text>
+  );
+}
+
+/** A small uppercase section heading, as used above "NEARBY FRIENDS". */
+export function SectionHeading({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <Text
+      style={[
+        theme.typography.caption as TextStyle,
+        { color: theme.colors.textTertiary, letterSpacing: 1.2, marginBottom: theme.spacing.sm },
+      ]}
+    >
+      {String(children).toUpperCase()}
+    </Text>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Surfaces
+// ---------------------------------------------------------------------------
+
+export function Card({
+  children,
+  onPress,
+  style,
+  elevated = true,
+}: {
+  children: React.ReactNode;
+  onPress?: () => void;
+  style?: StyleProp<ViewStyle>;
+  elevated?: boolean;
+}): React.JSX.Element {
+  const theme = useTheme();
+  const base: StyleProp<ViewStyle> = [
+    {
+      backgroundColor: theme.colors.surface,
+      borderRadius: theme.radius.lg,
+      padding: theme.spacing.lg,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.separator,
+    },
+    elevated ? theme.shadows.card : null,
+    style,
+  ];
+  if (!onPress) return <View style={base}>{children}</View>;
+  return (
+    <Pressable
+      onPress={() => {
+        haptic('selection');
+        onPress();
+      }}
+      style={({ pressed }) => [base, pressed ? { opacity: 0.7, transform: [{ scale: 0.99 }] } : null]}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+export function Divider(): React.JSX.Element {
+  const theme = useTheme();
+  return <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.separator }} />;
+}
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+
+export function Button({
+  title,
+  onPress,
+  variant = 'primary',
+  disabled = false,
+  loading = false,
+  /** Why the button is disabled. Shown under it - never leave the user guessing. */
+  disabledReason,
+  style,
+}: {
+  title: string;
+  onPress: () => void;
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
+  disabled?: boolean;
+  loading?: boolean;
+  disabledReason?: string;
+  style?: StyleProp<ViewStyle>;
+}): React.JSX.Element {
+  const theme = useTheme();
+  const inactive = disabled || loading;
+
+  const background = {
+    primary: theme.colors.accent,
+    secondary: theme.colors.surfaceElevated,
+    ghost: 'transparent',
+    danger: theme.colors.danger,
+  }[variant];
+
+  const textTone = variant === 'primary' || variant === 'danger' ? 'onAccent' : variant === 'ghost' ? 'accent' : 'primary';
+
+  return (
+    <View style={style}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ disabled: inactive }}
+        disabled={inactive}
+        onPress={() => {
+          haptic(variant === 'danger' ? 'warning' : 'impactLight');
+          onPress();
+        }}
+        style={({ pressed }) => [
+          {
+            backgroundColor: background,
+            borderRadius: theme.radius.md,
+            paddingVertical: theme.spacing.md + 2,
+            paddingHorizontal: theme.spacing.lg,
+            alignItems: 'center',
+            justifyContent: 'center',
+            minHeight: 48,
+            opacity: inactive ? 0.45 : 1,
+          },
+          pressed ? { opacity: 0.75 } : null,
+        ]}
+      >
+        {loading ? (
+          <ActivityIndicator color={variant === 'primary' || variant === 'danger' ? theme.colors.onAccent : theme.colors.accent} />
+        ) : (
+          <Label variant="headline" tone={textTone}>
+            {title}
+          </Label>
+        )}
+      </Pressable>
+      {disabled && disabledReason ? (
+        <Label variant="footnote" tone="tertiary" align="center" style={{ marginTop: theme.spacing.xs }}>
+          {disabledReason}
+        </Label>
+      ) : null}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+export function Avatar({
+  name,
+  peerId,
+  emoji,
+  size = 44,
+}: {
+  name: string;
+  peerId?: string | null;
+  emoji?: string | null;
+  size?: number;
+}): React.JSX.Element {
+  const theme = useTheme();
+  // Derived from the peer id so a friend's colour never changes, and so two
+  // people with the same name still look different.
+  const background = avatarColorFor(peerId ?? name);
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: emoji ? theme.colors.surfaceElevated : background,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <Text style={{ fontSize: size * (emoji ? 0.5 : 0.38), fontWeight: '600', color: '#FFFFFF' }}>
+        {emoji ?? initialsFor(name)}
+      </Text>
+    </View>
+  );
+}
+
+export type StatusTone = 'connected' | 'connecting' | 'disconnected' | 'warning';
+
+/** The small coloured dot next to a name. The whole status vocabulary. */
+export function StatusDot({ tone, size = 8 }: { tone: StatusTone; size?: number }): React.JSX.Element {
+  const theme = useTheme();
+  const color = {
+    connected: theme.colors.connected,
+    connecting: theme.colors.connecting,
+    disconnected: theme.colors.disconnected,
+    warning: theme.colors.warning,
+  }[tone];
+  return <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color }} />;
+}
+
+// ---------------------------------------------------------------------------
+// Lists and empty states
+// ---------------------------------------------------------------------------
+
+export function ListRow({
+  title,
+  subtitle,
+  left,
+  right,
+  onPress,
+  destructive = false,
+}: {
+  title: string;
+  subtitle?: string;
+  left?: React.ReactNode;
+  right?: React.ReactNode;
+  onPress?: () => void;
+  destructive?: boolean;
+}): React.JSX.Element {
+  const theme = useTheme();
+  const body = (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.spacing.md,
+        paddingVertical: theme.spacing.md,
+        minHeight: 56,
+      }}
+    >
+      {left}
+      <View style={{ flex: 1 }}>
+        <Label variant="body" tone={destructive ? 'danger' : 'primary'} numberOfLines={1}>
+          {title}
+        </Label>
+        {subtitle ? (
+          <Label variant="footnote" tone="secondary" numberOfLines={1}>
+            {subtitle}
+          </Label>
+        ) : null}
+      </View>
+      {right}
+    </View>
+  );
+  if (!onPress) return body;
+  return (
+    <Pressable
+      onPress={() => {
+        haptic('selection');
+        onPress();
+      }}
+      style={({ pressed }) => (pressed ? { opacity: 0.6 } : null)}
+    >
+      {body}
+    </Pressable>
+  );
+}
+
+export function EmptyState({
+  icon,
+  title,
+  body,
+  action,
+}: {
+  icon: string;
+  title: string;
+  body?: string;
+  action?: React.ReactNode;
+}): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <View style={{ alignItems: 'center', paddingVertical: theme.spacing.xxxl, paddingHorizontal: theme.spacing.xl }}>
+      <Text style={{ fontSize: 44, marginBottom: theme.spacing.lg }}>{icon}</Text>
+      <Label variant="headline" align="center">
+        {title}
+      </Label>
+      {body ? (
+        <Label variant="subheadline" tone="secondary" align="center" style={{ marginTop: theme.spacing.xs }}>
+          {body}
+        </Label>
+      ) : null}
+      {action ? <View style={{ marginTop: theme.spacing.lg }}>{action}</View> : null}
+    </View>
+  );
+}
+
+/**
+ * The offline banner.
+ *
+ * Deliberately not an error. AirLink is FOR being offline, so no internet is the
+ * normal state and is shown in the same calm grey as everything else. The only
+ * red in the app is a genuine failure.
+ */
+export function StatusBanner({
+  tone,
+  title,
+  detail,
+  action,
+}: {
+  tone: StatusTone;
+  title: string;
+  detail?: string;
+  action?: React.ReactNode;
+}): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.spacing.sm,
+        backgroundColor: theme.colors.surfaceElevated,
+        borderRadius: theme.radius.md,
+        paddingVertical: theme.spacing.sm + 2,
+        paddingHorizontal: theme.spacing.md,
+      }}
+    >
+      <StatusDot tone={tone} />
+      <View style={{ flex: 1 }}>
+        <Label variant="footnote">{title}</Label>
+        {detail ? (
+          <Label variant="caption" tone="tertiary">
+            {detail}
+          </Label>
+        ) : null}
+      </View>
+      {action}
+    </View>
+  );
+}
