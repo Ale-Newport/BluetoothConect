@@ -19,9 +19,24 @@ export interface Clock {
 
 export type TimerHandle = { readonly __timer: unique symbol } | number | object;
 
+/**
+ * Optional globals this package uses when present.
+ *
+ * Declared by probing rather than by importing a lib, so `@airlink/core` makes
+ * no assumption about whether a consumer's tsconfig includes dom, node or
+ * neither - React Native's includes neither.
+ */
+interface OptionalGlobals {
+  performance?: { now(): number };
+  queueMicrotask?: (fn: () => void) => void;
+}
+const optional = globalThis as unknown as OptionalGlobals;
+
 export const systemClock: Clock = {
-  now: () =>
-    typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now(),
+  // A monotonic source where one exists: Date.now() jumps when the user or the
+  // network changes the wall clock, and a jump backwards would make every
+  // measured duration and timeout nonsense.
+  now: () => (typeof optional.performance?.now === 'function' ? optional.performance.now() : Date.now()),
   wallNow: () => Date.now(),
   setTimeout: (fn, ms) => setTimeout(fn, ms) as unknown as TimerHandle,
   clearTimeout: (h) => clearTimeout(h as unknown as ReturnType<typeof setTimeout>),
@@ -137,7 +152,10 @@ export class VirtualClock implements Clock {
       this.advance(step);
       left -= step;
       await Promise.resolve();
-      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => {
+        if (optional.queueMicrotask) optional.queueMicrotask(resolve);
+        else void Promise.resolve().then(resolve);
+      });
     }
   }
 }

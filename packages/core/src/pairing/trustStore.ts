@@ -96,8 +96,17 @@ export function hasControlCharacters(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
     if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) return true;
+    // Arabic letter mark: an invisible bidi control like the ones below.
+    if (code === 0x061c) return true;
+    // Left/right-to-left marks. Weaker than the overrides but the same trick:
+    // invisible, and they reorder the glyphs either side of them.
+    if (code === 0x200e || code === 0x200f) return true;
     // Bidi overrides and embeddings: legitimate text uses the isolates, never these.
     if (code >= 0x202a && code <= 0x202e) return true;
+    // Line and paragraph separators. Not C0, but a line break all the same: a
+    // name carrying one renders as two rows, which is how "Maria" becomes
+    // "Maria" above a forged second line the user reads as ours.
+    if (code === 0x2028 || code === 0x2029) return true;
     if (code >= 0x2066 && code <= 0x2069) return true;
   }
   return false;
@@ -180,6 +189,31 @@ export function validateTrustedPeer(peer: TrustedPeer): void {
     throw new Error('trustStore: timestamps must be finite');
   }
   if (typeof peer.blocked !== 'boolean') throw new Error('trustStore: blocked must be a boolean');
+}
+
+/**
+ * A row handed OUT of the store.
+ *
+ * `set` already copies every buffer on the way in, for the stated reason that a
+ * stored identity key which can be mutated from outside is not a trust anchor.
+ * That argument does not stop at the door: handing back the live `Uint8Array`
+ * would let any caller - a UI list, a token matcher, a future feature - reach
+ * into the table and rewrite the key the handshake authenticates against, and
+ * the row would still look untouched. Rows are a handful of 32-byte keys, so
+ * the copy is cheap and the invariant holds in both directions.
+ */
+function copyRow(peer: TrustedPeer): TrustedPeer {
+  return {
+    peerId: peer.peerId,
+    identityKey: peer.identityKey.slice(),
+    displayName: peer.displayName,
+    method: peer.method,
+    pairedAt: peer.pairedAt,
+    lastSeenAt: peer.lastSeenAt,
+    ...(peer.advertisementKey ? { advertisementKey: peer.advertisementKey.slice() } : {}),
+    ...(peer.selfAdvertisementKey ? { selfAdvertisementKey: peer.selfAdvertisementKey.slice() } : {}),
+    blocked: peer.blocked,
+  };
 }
 
 /**

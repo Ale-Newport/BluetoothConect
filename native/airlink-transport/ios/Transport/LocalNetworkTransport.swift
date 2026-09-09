@@ -166,6 +166,23 @@ private final class NetworkPeerLink: @unchecked Sendable {
 }
 
 /// A peer we can still reach by name, and the browse result needed to dial it.
+/**
+ * Carries a completion handler across a queue hop under Swift 6.
+ *
+ * The AirLinkTransport protocol in AirLinkTypes.swift declares its completions
+ * as plain `@escaping (Result<...>) -> Void`. Swift 6 will not let a `@Sendable`
+ * closure - which is what `DispatchQueue.async` takes - capture one. That
+ * protocol is shared with the other iOS transports and is not this file's to
+ * change, so the handler is boxed here instead of the signature being widened.
+ *
+ * The promise this makes good on: every boxed handler is invoked exactly once,
+ * on this transport's serial queue, and is never touched from anywhere else.
+ */
+private struct NetworkSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
+}
+
 private struct NetworkDiscoveredEndpoint {
     let id: String
     let result: NWBrowser.Result
@@ -721,17 +738,18 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
     // MARK: - Connecting
 
     func connect(endpointId: String, timeoutMs: Int, completion: @escaping (Result<String, Error>) -> Void) {
+        let boxed = NetworkSendableBox(completion)
         queue.async {
             guard self.isStarted else {
-                completion(.failure(AirLinkError.notStarted))
+                boxed.value(.failure(AirLinkError.notStarted))
                 return
             }
             guard let entry = self.endpoints[endpointId] else {
-                completion(.failure(AirLinkError.unknownEndpoint(endpointId)))
+                boxed.value(.failure(AirLinkError.unknownEndpoint(endpointId)))
                 return
             }
             guard self.links.count < NetworkFraming.maxConcurrentLinks else {
-                completion(.failure(AirLinkError.failed("too many open links on \(self.kind.rawValue)")))
+                boxed.value(.failure(AirLinkError.failed("too many open links on \(self.kind.rawValue)")))
                 return
             }
 
@@ -742,7 +760,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
             let link = NetworkPeerLink(
                 id: self.makeLinkId(), endpointId: endpointId, connection: connection, incoming: false
             )
-            link.connectCompletion = completion
+            link.connectCompletion = boxed.value
             self.links[link.id] = link
             self.resetMetrics(for: link)
 
@@ -948,21 +966,22 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
     // MARK: - Sending
 
     func send(linkId: String, data: Data, reliable: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        let boxed = NetworkSendableBox(completion)
         // Everything hops onto the serial queue, which is also what guarantees
         // no event is ever delivered re-entrantly from inside this call.
         queue.async {
             guard let link = self.links[linkId] else {
-                completion(.failure(AirLinkError.unknownLink(linkId)))
+                boxed.value(.failure(AirLinkError.unknownLink(linkId)))
                 return
             }
             guard link.isOpen, !link.didReportTerminal else {
-                completion(.failure(AirLinkError.failed("link \(linkId) is not connected")))
+                boxed.value(.failure(AirLinkError.failed("link \(linkId) is not connected")))
                 return
             }
             // Loud, never truncating. Truncation would corrupt a frame the peer
             // then fails to authenticate, which is a far worse bug to chase.
             guard data.count <= NetworkFraming.maxDatagramSize else {
-                completion(.failure(AirLinkError.payloadTooLarge(data.count, NetworkFraming.maxDatagramSize)))
+                boxed.value(.failure(AirLinkError.payloadTooLarge(data.count, NetworkFraming.maxDatagramSize)))
                 return
             }
 
@@ -972,11 +991,11 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
                 // buys on this transport, and it is the right trade: the next
                 // realtime update supersedes this one anyway.
                 self.setMetrics(for: link) { $0.packetsDropped += 1 }
-                completion(.success(()))
+                boxed.value(.success(()))
                 return
             }
             guard link.queuedBytes <= NetworkFraming.sendQueueHardLimit else {
-                completion(.failure(AirLinkError.failed("send queue for link \(linkId) is full")))
+                boxed.value(.failure(AirLinkError.failed("send queue for link \(linkId) is full")))
                 return
             }
 
@@ -990,12 +1009,12 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
             // JavaScript side must never be left unsettled.
             link.connection.send(content: frame, completion: .contentProcessed { [weak self] error in
                 guard let self else {
-                    completion(.failure(AirLinkError.failed("transport was torn down mid-send")))
+                    boxed.value(.failure(AirLinkError.failed("transport was torn down mid-send")))
                     return
                 }
                 link.queuedBytes = max(0, link.queuedBytes - frame.count)
                 if let error {
-                    completion(.failure(AirLinkError.failed("send failed: \(error)")))
+                    boxed.value(.failure(AirLinkError.failed("send failed: \(error)")))
                     self.fail(link, reason: "send failed: \(error)")
                     return
                 }
@@ -1006,7 +1025,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
                 self.noteTransfer(link, bytes: data.count)
                 // Resolved when the transport has accepted the bytes, which is
                 // what the contract promises - not when the peer has them.
-                completion(.success(()))
+                boxed.value(.success(()))
             })
         }
     }

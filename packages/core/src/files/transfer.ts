@@ -349,9 +349,13 @@ export class OutgoingTransfer extends BaseTransfer {
     if (!this.isState(TransferState.TRANSFERRING)) return;
     // Anything in flight when the link went away has to be assumed lost, and
     // the measured throughput of the OLD radio must not be used to estimate the
-    // new one.
+    // new one. The attempt counters are cleared too: a chunk that vanished
+    // because the phone went into a pocket has not failed on its own merits,
+    // and counting it would kill a long transfer after a handful of ordinary
+    // reconnections.
     for (const entry of this.inFlight.values()) this.reopen(entry);
     this.inFlight.clear();
+    this.attempts.clear();
     this.throughput.reset(this.transferredBytes, this.clock.now());
     void this.pump();
   }

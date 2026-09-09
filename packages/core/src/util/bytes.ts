@@ -128,9 +128,25 @@ export function toBase32(bytes: Uint8Array): string {
   return out;
 }
 
+/**
+ * The platform's UTF-8 codecs, if it has them.
+ *
+ * Node, Hermes and every browser provide these, but the exact lib they are
+ * declared in differs (dom, node, or neither, under React Native's tsconfig).
+ * Probing globalThis keeps this package free of any assumption about which
+ * TypeScript lib a consumer happens to have configured, and the hand-written
+ * fallbacks below mean correctness never depends on the answer.
+ */
+interface Utf8Globals {
+  TextEncoder?: new () => { encode(input: string): Uint8Array };
+  TextDecoder?: new (label?: string, options?: { fatal?: boolean }) => { decode(input: Uint8Array): string };
+}
+const utf8Globals = globalThis as unknown as Utf8Globals;
+
 /** UTF-8 encode without depending on a global TextEncoder. */
 export function utf8Encode(str: string): Uint8Array {
-  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(str);
+  const Encoder = utf8Globals.TextEncoder;
+  if (Encoder) return new Encoder().encode(str);
   const out: number[] = [];
   for (let i = 0; i < str.length; i++) {
     let c = str.charCodeAt(i);
@@ -156,7 +172,8 @@ export function utf8Encode(str: string): Uint8Array {
 
 /** UTF-8 decode without depending on a global TextDecoder. */
 export function utf8Decode(bytes: Uint8Array): string {
-  if (typeof TextDecoder !== 'undefined') return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  const Decoder = utf8Globals.TextDecoder;
+  if (Decoder) return new Decoder('utf-8', { fatal: false }).decode(bytes);
   let out = '';
   let i = 0;
   while (i < bytes.length) {

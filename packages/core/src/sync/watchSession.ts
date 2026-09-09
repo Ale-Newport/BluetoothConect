@@ -114,6 +114,14 @@ export interface WatchTogetherEvents {
   /** Our own query came back. */
   contentAnswered: { readonly reply: ContentReply; readonly match: ContentMatch | null };
   /**
+   * A query went unanswered for `queryTimeoutMs`.
+   *
+   * Without this the UI would spin on "checking..." for ever whenever the peer
+   * backgrounded the app, disposed its watch session, or simply stopped
+   * answering - none of which produce a packet to react to.
+   */
+  contentQueryTimedOut: { readonly queryId: string };
+  /**
    * The peer cannot watch this: it has no copy, or a different one.
    *
    * This is the hand-off point to the file-transfer module. This module
@@ -157,6 +165,11 @@ export interface WatchTogetherOptions {
   readonly heartbeatIntervalMs?: number;
   /** How often the clock offset is re-measured while a session is live. */
   readonly clockSyncIntervalMs?: number;
+  /**
+   * How long to wait for an answer to a content query before giving up. A peer
+   * that never answers must not strand the state machine in MATCHING.
+   */
+  readonly queryTimeoutMs?: number;
   /** Accept a peer's session automatically. False surfaces `invited` instead. */
   readonly autoJoin?: boolean;
   /**
@@ -169,6 +182,12 @@ export interface WatchTogetherOptions {
 const DEFAULT_CORRECTION_INTERVAL_MS = 500;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 2_000;
 const DEFAULT_CLOCK_SYNC_INTERVAL_MS = 15_000;
+/**
+ * How long a content query may go unanswered. Generous, because on a hostile
+ * BLE link the reliable channel legitimately spends several seconds retrying -
+ * but finite, because "waiting" is not a state a user can get out of.
+ */
+const DEFAULT_QUERY_TIMEOUT_MS = 30_000;
 /**
  * Smallest gap between two guest requests the host will honour. A guest that
  * spams "play" cannot make the host publish an anchor - and burn a reliable
@@ -189,6 +208,7 @@ export class WatchTogetherSession {
   private readonly correctionIntervalMs: number;
   private readonly heartbeatIntervalMs: number;
   private readonly clockSyncIntervalMs: number;
+  private readonly queryTimeoutMs: number;
   private readonly autoJoin: boolean;
   private readonly resolveContent: ((content: ContentIdentity) => ContentDescriptor | null) | undefined;
 
@@ -207,10 +227,11 @@ export class WatchTogetherSession {
   private lastHonouredRequestAt = Number.NEGATIVE_INFINITY;
   private clockSyncRunning = false;
 
-  private unsubscribe: Unsubscribe | null = null;
+  private subscriptions: Unsubscribe[] = [];
   private correctionTimer: TimerHandle | undefined;
   private heartbeatTimer: TimerHandle | undefined;
   private startTimer: TimerHandle | undefined;
+  private queryTimer: TimerHandle | undefined;
   private disposed = false;
 
   /** Developer-mode counters. */
@@ -230,10 +251,17 @@ export class WatchTogetherSession {
     this.correctionIntervalMs = options.correctionIntervalMs ?? DEFAULT_CORRECTION_INTERVAL_MS;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.clockSyncIntervalMs = options.clockSyncIntervalMs ?? DEFAULT_CLOCK_SYNC_INTERVAL_MS;
+    this.queryTimeoutMs = options.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
     this.autoJoin = options.autoJoin ?? true;
     this.resolveContent = options.resolveContent;
 
-    this.unsubscribe = this.session.events.on('message', (message) => this.onMessage(message));
+    this.subscriptions = [
+      this.session.events.on('message', (message) => this.onMessage(message)),
+      // A link that merely drops is repaired by PeerSession and must NOT end the
+      // watch party. `closed` is the other thing: the session is gone for good,
+      // and nothing will ever publish another anchor.
+      this.session.events.on('closed', ({ reason }) => this.onPeerSessionClosed(reason)),
+    ];
   }
 
   // -- public surface --------------------------------------------------------
@@ -282,11 +310,27 @@ export class WatchTogetherSession {
   queryPeerContent(): string {
     this.requireLiveSession();
     const local = this.requireContent();
+    this.cancelQuery();
     const queryId = this.newId();
     this.pendingQueryId = queryId;
+    // MATCHING is a waiting state, and every waiting state needs a way out that
+    // does not depend on the peer choosing to send something.
+    this.queryTimer = this.clock.setTimeout(() => this.onQueryTimeout(queryId), this.queryTimeoutMs);
     this.setState(WatchState.MATCHING);
     this.send(MessageType.SYNC_CONTENT_QUERY, encodeContentQuery({ queryId, content: identityOf(local) }));
     return queryId;
+  }
+
+  /**
+   * Stop waiting for a reply. Nothing is retried and the peer is told nothing:
+   * a query is a question, and the user is entitled to stop asking.
+   */
+  cancelQuery(): void {
+    if (this.queryTimer !== undefined) {
+      this.clock.clearTimeout(this.queryTimer);
+      this.queryTimer = undefined;
+    }
+    this.pendingQueryId = null;
   }
 
   /**
@@ -300,6 +344,7 @@ export class WatchTogetherSession {
     const rate = options.rate ?? 1;
     if (!isValidPlaybackRate(rate)) throw new Error('WatchTogetherSession: rate is out of range');
 
+    this.cancelQuery();
     const sessionId = this.newId();
     this.sessionId = sessionId;
     this.role = SyncRole.HOST;
@@ -442,6 +487,14 @@ export class WatchTogetherSession {
       this.decline(reason);
       return;
     }
+    // Nothing has been created yet, so there is nothing to tell the peer - but
+    // an outstanding query has to stop, or the user cannot get out of the
+    // waiting state they just asked to leave.
+    if (this.state === WatchState.MATCHING || this.state === WatchState.READY) {
+      this.cancelQuery();
+      this.setState(WatchState.IDLE);
+      return;
+    }
     if (!this.sessionId || !this.isActive) return;
     const type = this.role === SyncRole.HOST ? MessageType.SYNC_END : MessageType.SYNC_LEAVE;
     this.send(type, encodeFarewell({ sessionId: this.sessionId, reason }));
@@ -457,9 +510,10 @@ export class WatchTogetherSession {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.unsubscribe?.();
-    this.unsubscribe = null;
+    for (const off of this.subscriptions) off();
+    this.subscriptions = [];
     this.stopLoops();
+    this.cancelQuery();
     this.stopClockSync();
     this.events.removeAllListeners();
   }
@@ -675,18 +729,23 @@ export class WatchTogetherSession {
     }
     const local = this.resolve(query.content);
     let availability: ContentAvailability = ContentAvailability.MISSING;
+    // Whether our own descriptor - which carries the file's TITLE - goes back.
+    let describe = false;
     if (local) {
-      availability =
-        compareContent(local, query.content) === ContentMatch.MATCH
-          ? ContentAvailability.HAVE
-          : ContentAvailability.MISMATCH;
+      if (compareContent(local, query.content) === ContentMatch.MATCH) {
+        availability = ContentAvailability.HAVE;
+        describe = true;
+      } else if (isPlausibleAlternative(local, query.content)) {
+        availability = ContentAvailability.MISMATCH;
+        describe = true;
+      }
     }
     this.send(
       MessageType.SYNC_CONTENT_REPLY,
       encodeContentReply({
         queryId: query.queryId,
         availability,
-        ...(local ? { content: identityOf(local) } : {}),
+        ...(local && describe ? { content: identityOf(local) } : {}),
       }),
     );
     this.events.emit('contentQueried', { query, availability });
@@ -706,24 +765,32 @@ export class WatchTogetherSession {
       this.reject(SyncRejectReason.WRONG_SESSION, 'reply for an unknown query', MessageType.SYNC_CONTENT_REPLY);
       return;
     }
-    this.pendingQueryId = null;
+    this.cancelQuery();
     const match =
       this.localContent && reply.content ? compareContent(this.localContent, reply.content) : null;
     this.events.emit('contentAnswered', { reply, match });
 
-    // Trust but verify: a peer that claims HAVE while sending back a descriptor
-    // that does not match ours is broken or lying, and either way is not
-    // somebody to start a session with.
-    if (reply.availability === ContentAvailability.HAVE && (match === null || match === ContentMatch.MATCH)) {
-      this.setState(WatchState.READY);
-      return;
+    let availability = reply.availability;
+    if (availability === ContentAvailability.HAVE) {
+      // Trust but VERIFY. "I have it" is a claim, and the only thing that backs
+      // it is a descriptor that matches ours byte for byte. A peer that claims
+      // HAVE while sending back a different descriptor - or, the hole this
+      // check used to have, while sending back NO descriptor at all - has
+      // proved nothing and is not somebody to start a session with.
+      if (reply.content !== undefined && match === ContentMatch.MATCH) {
+        this.setState(WatchState.READY);
+        return;
+      }
+      this.reject(
+        SyncRejectReason.CONTENT_MISMATCH,
+        reply.content === undefined ? 'claimed HAVE with no descriptor' : `claimed HAVE but ${match}`,
+        MessageType.SYNC_CONTENT_REPLY,
+      );
+      availability = ContentAvailability.MISMATCH;
     }
     this.setState(WatchState.IDLE);
     if (this.localContent) {
-      this.events.emit('contentUnavailable', {
-        content: identityOf(this.localContent),
-        availability: reply.availability,
-      });
+      this.events.emit('contentUnavailable', { content: identityOf(this.localContent), availability });
     }
   }
 

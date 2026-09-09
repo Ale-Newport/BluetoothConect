@@ -17,7 +17,7 @@
  * Controlled flooding. There is no routing table, because building one costs
  * more messages than it saves at this size and because a stale route fails
  * silently, which is the worst possible failure on a radio that comes and goes.
- * A relay sends a packet on to every member it did not receive it from. Three
+ * A relay sends a packet on to every member it did not receive it from. Four
  * bounds keep that affordable and safe:
  *
  *  1. A HOP LIMIT in the packet, decremented by every relay. At zero the packet
@@ -30,7 +30,16 @@
  *  3. MEMBERSHIP CHECKS on both ends of every forward. We do not relay for a
  *     neighbour who is not in the group, we do not relay a packet whose claimed
  *     origin is not in the group, and we do not relay to a destination who is
- *     not in the group. A stranger gets nothing carried for them.
+ *     not in the group. A stranger gets nothing carried for them - and nothing
+ *     told to them either: group control traffic carries the whole roster, so
+ *     it goes to members only (see `sendToMembers`).
+ *  4. A RELAY BUDGET per origin. The first three bound how FAR a packet travels
+ *     and how often the same one is carried; none of them bounds how many
+ *     distinct packets one member may originate. Every packet accepted for
+ *     forwarding becomes up to seven outbound sends, and a reliable channel
+ *     queues whatever the radio cannot yet carry - so without this bound one
+ *     member can grow every other member's outbound queue until the OS kills
+ *     the app. See MESH_LIMITS.relayWindowMs.
  *
  * ## The security property, stated plainly
  *
@@ -526,6 +535,8 @@ export class GroupSession {
       packetsDropped: this.packetsDropped,
       malformedPackets: this.malformedPackets,
       sendFailures: this.sendFailures,
+      packetsRateLimited: this.packetsRateLimited,
+      relayBudgetEntries: this.relayBudget.size,
     };
   }
 
@@ -535,6 +546,7 @@ export class GroupSession {
     for (const [, neighbour] of this.neighbours) neighbour.off();
     this.neighbours.clear();
     this.seen.clear();
+    this.relayBudget.clear();
     this.events.removeAllListeners();
   }
 
@@ -816,11 +828,12 @@ export class GroupSession {
 
   private deliver(packet: RelayPacket, via: string, relayed: boolean): void {
     this.packetsDelivered++;
-    // The envelope's own senderId is preferred when the session supplies one;
-    // today it never does on this path (see the note in codec.ts), so the
-    // header's originId is what identifies the sender. Both are claims made by
-    // the link peer and neither is a signature - within a group, membership is
-    // the trust boundary.
+    // The sender is the relay header's originId, checked against the member
+    // list above. The envelope's own senderId is NOT consulted, even when a
+    // session supplies one: it is set by whichever peer built the envelope -
+    // the last relay, not the author - so trusting it would let any member
+    // rewrite the authorship of a message it merely carried. Neither field is a
+    // signature; within a group, membership is the trust boundary.
     this.events.emit('message', {
       groupId: packet.groupId,
       from: packet.originId,
@@ -836,11 +849,54 @@ export class GroupSession {
     });
   }
 
+  /**
+   * Spend one packet from this origin's relay budget, or refuse it.
+   *
+   * A sliding window per origin, read from the injected clock. Per origin so a
+   * greedy member spends only its own share; the map is keyed by member id and
+   * pruned on insert, so it cannot grow beyond a couple of group-fulls however
+   * membership churns.
+   */
+  private admitRelay(packet: RelayPacket): boolean {
+    const now = this.options.clock.now();
+    let budget = this.relayBudget.get(packet.originId);
+    if (budget === undefined || now - budget.windowStart >= MESH_LIMITS.relayWindowMs) {
+      if (budget === undefined) this.pruneRelayBudgets(now);
+      budget = { windowStart: now, packets: 0, bytes: 0 };
+      this.relayBudget.set(packet.originId, budget);
+    }
+    if (budget.packets >= MESH_LIMITS.relayPacketsPerWindow) return false;
+    if (budget.bytes + packet.payload.length > MESH_LIMITS.relayBytesPerWindow) return false;
+    budget.packets++;
+    budget.bytes += packet.payload.length;
+    return true;
+  }
+
+  /** Keep the budget map bounded: closed windows go, then the oldest entries. */
+  private pruneRelayBudgets(now: number): void {
+    for (const [id, budget] of this.relayBudget) {
+      if (now - budget.windowStart >= MESH_LIMITS.relayWindowMs) this.relayBudget.delete(id);
+    }
+    // Insertion order is age order, so the first key is the oldest live window.
+    while (this.relayBudget.size >= MESH_LIMITS.maxMembers * 2) {
+      const oldest = this.relayBudget.keys().next();
+      if (oldest.done === true) break;
+      this.relayBudget.delete(oldest.value);
+    }
+  }
+
   // -- state mutation --------------------------------------------------------
 
+  /**
+   * The one place the member list grows, and therefore the one place the cap
+   * has to hold. Every caller checks first; this is the check that is true even
+   * when a caller forgets, because a list one over the limit cannot be encoded
+   * and would leave this device unable to gossip at all.
+   */
   private applyJoin(member: GroupMember): void {
     const state = this.state;
     if (!state || state.members.some((m) => m.peerId === member.peerId)) return;
+    if (state.members.length >= MESH_LIMITS.maxMembers) return;
     const next: GroupSnapshot = {
       ...state,
       members: [...state.members, member],
@@ -914,7 +970,7 @@ export class GroupSession {
   private gossipState(except: string | null): void {
     const state = this.state;
     if (!state) return;
-    this.sendToAll(MessageType.GROUP_UPDATE, encodeGroupSnapshot(state), except);
+    this.sendToMembers(MessageType.GROUP_UPDATE, encodeGroupSnapshot(state), except);
   }
 
   // -- outbound plumbing -----------------------------------------------------
@@ -996,9 +1052,23 @@ export class GroupSession {
     }
   }
 
-  private sendToAll(messageType: number, value: CborValue, except: string | null): void {
+  /**
+   * Group control traffic goes to MEMBERS, and only to members.
+   *
+   * Every message this sends carries something private to the group: a
+   * GROUP_UPDATE is the entire roster - group id, group name, and every
+   * member's peer id and display name - and a JOIN or LEAVE is a statement
+   * about who is in a room with whom. A peer we merely hold a session with, and
+   * who was never added, is as much an outsider on this path as it is on the
+   * relay path (see `forwardTargets`), and gets exactly as much: nothing.
+   *
+   * The one deliberate exception is the invitation itself, which `addMember`
+   * sends with `sendCborTo` to a peer it has just made a member.
+   */
+  private sendToMembers(messageType: number, value: CborValue, except: string | null): void {
     for (const [id, neighbour] of this.neighbours) {
       if (id === except) continue;
+      if (!this.isMember(id)) continue;
       this.sendCbor(id, neighbour.peer, messageType, value);
     }
   }

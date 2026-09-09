@@ -184,6 +184,8 @@ async function connectPair(
   return {
     clock,
     network,
+    transportA,
+    transportB,
     sessionA,
     sessionB,
     pairingA,
@@ -425,6 +427,33 @@ describe('TrustStore', () => {
     expect(store.get(maria.peerId)).toEqual(maria.signing.publicKey);
   });
 
+  it('copies buffers on the way out too, so a returned row is not a handle on the anchor', () => {
+    const store = new InMemoryTrustStore();
+    const random = new SeededRandom(555);
+    store.set(
+      friendRow(maria, {
+        advertisementKey: generateAdvertisementKey(random),
+        selfAdvertisementKey: generateAdvertisementKey(random),
+      }),
+    );
+    const before = store.record(maria.peerId);
+    const advertisement = before?.advertisementKey?.slice();
+
+    // A caller with a row in hand must not be able to rewrite the key the
+    // handshake authenticates against.
+    before?.identityKey.fill(0);
+    before?.advertisementKey?.fill(0);
+    for (const row of store.list()) {
+      row.identityKey.fill(0);
+      row.selfAdvertisementKey?.fill(0);
+    }
+
+    expect(store.get(maria.peerId)).toEqual(maria.signing.publicKey);
+    expect(store.record(maria.peerId)?.identityKey).toEqual(maria.signing.publicKey);
+    expect(store.record(maria.peerId)?.advertisementKey).toEqual(advertisement);
+    expect(advertisableFriends(store)[0]?.advertisementKey).not.toEqual(new Uint8Array(ADVERTISEMENT_KEY_LENGTH));
+  });
+
   it('treats a blocked peer as a stranger, never as trusted', () => {
     const store = new InMemoryTrustStore();
     store.set(friendRow(maria));
@@ -507,6 +536,24 @@ describe('TrustStore', () => {
     // An emoji is never split down the middle by truncation.
     const emoji = sanitiseDisplayName('a'.repeat(63) + '\u{1F600}');
     expect(emoji).toBe('a'.repeat(63));
+  });
+
+  it('spots the invisible characters that turn one friend row into two', () => {
+    // A line separator is not a C0 control, but it is still a line break: a name
+    // carrying one renders as two rows, and the second one is whatever the peer
+    // wants the user to read.
+    expect(hasControlCharacters('Maria\u2028Verified')).toBe(true);
+    expect(hasControlCharacters('Maria\u2029Verified')).toBe(true);
+    expect(sanitiseDisplayName('Maria\u2028 Verified')).toBe('Maria Verified');
+    // Bidi marks: invisible, and they reorder the glyphs around them just as the
+    // overrides do.
+    expect(hasControlCharacters('Mar\u200eia')).toBe(true);
+    expect(hasControlCharacters('Mar\u200fia')).toBe(true);
+    expect(hasControlCharacters('Mar\u061cia')).toBe(true);
+    expect(sanitiseDisplayName('Mar\u200fia')).toBe('Maria');
+    // Ordinary names, including non-Latin ones and emoji, are untouched.
+    expect(hasControlCharacters('Mar\u00eda \u{1F3A7}')).toBe(false);
+    expect(hasControlCharacters('\u0645\u0631\u064a\u0645')).toBe(false);
   });
 
   it('feeds the handshake’s lookupTrustedKey', () => {
@@ -956,6 +1003,99 @@ describe('SAS pairing state machine', () => {
     sas.dispose();
   });
 
+  it('never hands the advertisement key to a peer it is declining', () => {
+    // The key is a permanent tracking secret: whoever holds it recognises this
+    // device's broadcasts in every future window. A decline is exactly the case
+    // where the other end may be an attacker caught relaying the handshake.
+    const clock = new VirtualClock(0, WALL_EPOCH);
+    const sent: Array<{ type: number; value: CborValue }> = [];
+    const ours = generateAdvertisementKey(new SeededRandom(77));
+    const sas = makeSas(clock, sent, { advertisementKey: ours, resendIntervalMs: 100, timeoutMs: 60_000 });
+
+    sas.decline();
+    clock.advance(1_000);
+    const confirms = sent.filter((m) => m.type === PAIRING_CONFIRM);
+    expect(confirms.length).toBeGreaterThan(1); // the retransmissions too
+    for (const message of confirms) {
+      const body = message.value as Record<string, CborValue>;
+      expect(body.a).toBe(false);
+      expect(body.k).toBeUndefined();
+    }
+    sas.dispose();
+  });
+
+  it('never stores the advertisement key of a peer that declined', () => {
+    const clock = new VirtualClock(0, WALL_EPOCH);
+    const sent: Array<{ type: number; value: CborValue }> = [];
+    const theirs = generateAdvertisementKey(new SeededRandom(78));
+    const sas = makeSas(clock, sent);
+    sas.handlePeerMessage(PAIRING_CONFIRM, { b: binding, a: false, k: theirs });
+    expect(sas.current).toBe(SasPairingState.REJECTED);
+    expect(sas.remoteAdvertisementKey).toBeNull();
+    sas.dispose();
+  });
+
+  it('ignores an acknowledgement for a decision it has not made', () => {
+    // The peer only ever acks in reply to our confirmation. One that arrives
+    // first is either a bug or an attempt to switch off our retransmission
+    // before it has sent anything.
+    const clock = new VirtualClock(0, WALL_EPOCH);
+    const sent: Array<{ type: number; value: CborValue }> = [];
+    const sas = makeSas(clock, sent, { resendIntervalMs: 100, timeoutMs: 60_000 });
+
+    expect(sas.handlePeerMessage(PAIRING_CONFIRM_ACK, { b: binding })).toBe(false);
+    expect(sas.isAcknowledged).toBe(false);
+
+    sas.confirm();
+    clock.advance(550);
+    // The user's tap is still repeated on a lossy link.
+    expect(sent.filter((m) => m.type === PAIRING_CONFIRM).length).toBeGreaterThan(3);
+    sas.dispose();
+  });
+
+  it('bounds the acknowledgements a flooding peer can pull out of the radio', () => {
+    const clock = new VirtualClock(0, WALL_EPOCH);
+    const sent: Array<{ type: number; value: CborValue }> = [];
+    const sas = makeSas(clock, sent, { timeoutMs: 600_000 });
+    const budget = sas.acknowledgementsLeft;
+
+    for (let i = 0; i < 20_000; i++) sas.handlePeerMessage(PAIRING_CONFIRM, { b: binding, a: true });
+
+    const acks = sent.filter((m) => m.type === PAIRING_CONFIRM_ACK).length;
+    expect(acks).toBe(budget);
+    expect(sas.acknowledgementsLeft).toBe(0);
+    expect(sas.suppressedAcks).toBeGreaterThan(0);
+    // Still far more than a genuinely lossy peer's own retry limit needs.
+    expect(budget).toBeGreaterThan(24);
+    // And the decision itself was still recorded.
+    expect(sas.remoteDecision).toBe('accept');
+    sas.dispose();
+  });
+
+  it('repeats an unacknowledged decision again when the link is replaced', () => {
+    const clock = new VirtualClock(0, WALL_EPOCH);
+    const sent: Array<{ type: number; value: CborValue }> = [];
+    const sas = makeSas(clock, sent, { resendIntervalMs: 100, timeoutMs: 600_000 });
+    sas.confirm();
+    clock.advance(60_000);
+    const exhausted = sent.filter((m) => m.type === PAIRING_CONFIRM).length;
+    // The whole budget went into a link that was not carrying anything.
+    clock.advance(60_000);
+    expect(sent.filter((m) => m.type === PAIRING_CONFIRM).length).toBe(exhausted);
+
+    sas.resumeRetransmission();
+    clock.advance(1_000);
+    expect(sent.filter((m) => m.type === PAIRING_CONFIRM).length).toBeGreaterThan(exhausted);
+
+    // Bounded: an acknowledged, or an abandoned, ceremony resumes nothing.
+    sas.handlePeerMessage(PAIRING_CONFIRM_ACK, { b: binding });
+    const settledCount = sent.filter((m) => m.type === PAIRING_CONFIRM).length;
+    sas.resumeRetransmission();
+    clock.advance(5_000);
+    expect(sent.filter((m) => m.type === PAIRING_CONFIRM).length).toBe(settledCount);
+    sas.dispose();
+  });
+
   it('refuses an advertisement key of the wrong length at construction', () => {
     const clock = new VirtualClock(0, WALL_EPOCH);
     expect(
@@ -1180,6 +1320,79 @@ describe('pairing over two real sessions', () => {
     // Duplicated confirmations must not have paired anyone twice.
     expect(ctx.alejandro.trust.list()).toHaveLength(1);
     expect(ctx.maria.trust.list()).toHaveLength(1);
+
+    ctx.pairingA.dispose();
+    ctx.pairingB.dispose();
+    await ctx.sessionA.close();
+    await ctx.sessionB.close();
+  });
+
+  it('tells the screen when the session dies with the digits still showing', async () => {
+    // Maria walks out of range for good, or closes the app. Alejandro's sheet is
+    // still up. Disposing quietly would take the ceremony's timeout with it and
+    // leave those six digits on screen with nothing alive to ever remove them.
+    const ctx = await connectPair();
+    const refused: Array<{ peerId: string | null; reason: string }> = [];
+    const paired: string[] = [];
+    ctx.pairingA.events.on('refused', (e) => refused.push(e));
+    ctx.pairingA.events.on('paired', ({ peer }) => paired.push(peer.peerId));
+    expect(ctx.pairingA.state).toBe(SasPairingState.AWAITING_BOTH);
+
+    await ctx.sessionB.close('user closed the app');
+    await ctx.clock.advanceAsync(1_000);
+
+    expect(refused).toHaveLength(1);
+    expect(refused[0]?.reason).toMatch(/session closed/);
+    expect(refused[0]?.peerId).toBe(ctx.maria.identity.peerId);
+    expect(paired).toEqual([]);
+    expect(ctx.alejandro.trust.list()).toHaveLength(0);
+    // And nothing is left ticking.
+    expect(ctx.clock.pendingTimers).toBe(0);
+  });
+
+  it('does not report a refusal twice when the session closes after a decline', async () => {
+    const ctx = await connectPair();
+    const refusedA: string[] = [];
+    ctx.pairingA.events.on('refused', ({ reason }) => refusedA.push(reason));
+    ctx.pairingA.decline();
+    await ctx.clock.advanceAsync(2_000);
+    expect(refusedA).toEqual(['pairing declined']);
+  });
+
+  it('finishes the ceremony after the radio dies and comes back on a new link', async () => {
+    // The link carrying the ceremony goes away between the tap and the peer
+    // hearing about it. When a new one is found, both phones must end up in the
+    // same place - one of them thinking it has a new friend while the other is
+    // still waiting is the worst of the two possible outcomes.
+    const ctx = await connectPair({ resendIntervalMs: 200 });
+    expect(ctx.pairingA.state).toBe(SasPairingState.AWAITING_BOTH);
+
+    await ctx.linkA.close('radio off');
+    await ctx.clock.advanceAsync(100);
+
+    // Alejandro taps confirm into a dead link, and every retry drains into it.
+    ctx.pairingA.confirm();
+    await ctx.clock.advanceAsync(30_000);
+    expect(ctx.pairingB.remoteDecision).toBeNull();
+
+    // A new link, on a fresh transport instance, carrying the same session.
+    const pending = ctx.transportA.connect('endpoint-b');
+    await ctx.clock.advanceAsync(300);
+    const secondLink = await pending;
+    ctx.sessionA.migrateToLink(secondLink);
+    await ctx.clock.advanceAsync(2_000);
+
+    // Maria taps hers.
+    ctx.pairingB.confirm();
+    await ctx.clock.advanceAsync(5_000);
+
+    expect(ctx.pairingA.state).toBe(SasPairingState.BOTH_CONFIRMED);
+    expect(ctx.pairingB.state).toBe(SasPairingState.BOTH_CONFIRMED);
+    // Both friend lists agree, and the advertisement keys still line up.
+    const mariaRow = ctx.alejandro.trust.record(ctx.maria.identity.peerId);
+    const alejandroRow = ctx.maria.trust.record(ctx.alejandro.identity.peerId);
+    expect(mariaRow?.advertisementKey).toEqual(alejandroRow?.selfAdvertisementKey);
+    expect(alejandroRow?.advertisementKey).toEqual(mariaRow?.selfAdvertisementKey);
 
     ctx.pairingA.dispose();
     ctx.pairingB.dispose();

@@ -265,8 +265,10 @@ internal object Permissions {
         if (permissions.isEmpty()) return
         try {
             val prefs = prefs(context)
-            val updated = prefs.getStringSet(KEY_REQUESTED, emptySet()).orEmpty() + permissions
-            prefs.edit().putStringSet(KEY_REQUESTED, updated).apply()
+            // The set handed back by SharedPreferences must not be mutated, so
+            // build a fresh one.
+            val existing: Set<String> = prefs.getStringSet(KEY_REQUESTED, emptySet()) ?: emptySet()
+            prefs.edit().putStringSet(KEY_REQUESTED, existing + permissions).apply()
         } catch (t: Throwable) {
             // Losing this record only costs us the ability to say "denied
             // permanently"; it must never cost us the permission request.
@@ -276,7 +278,7 @@ internal object Permissions {
 
     private fun wasRequested(context: Context, permission: String): Boolean =
         try {
-            prefs(context).getStringSet(KEY_REQUESTED, emptySet()).orEmpty().contains(permission)
+            prefs(context).getStringSet(KEY_REQUESTED, emptySet())?.contains(permission) == true
         } catch (t: Throwable) {
             Log.w(TAG, "could not read the permission record", t)
             false

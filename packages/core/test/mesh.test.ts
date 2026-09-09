@@ -1202,11 +1202,172 @@ describe('diagnostics', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PROBES (temporary)
+// A synchronous stand-in for a neighbour.
+//
+// The MockNetwork tests above are the ones that prove the module works on a
+// real radio. These are for the rules that have to hold WITHIN one window of
+// the clock - a rate limit is not observable when every message you send also
+// advances time - and for the one thing a real PeerSession cannot be made to
+// do on demand: authenticate as somebody other than who it was attached as.
 // ---------------------------------------------------------------------------
 
-describe('PROBE', () => {
-  const withOutsider2 = {
+class FakePeer implements MeshPeer {
+  peerId: string | null;
+  /** Message types this neighbour was handed, in order. */
+  readonly sent: number[] = [];
+  private listener: ((message: IncomingMessage) => void) | null = null;
+
+  readonly events = {
+    on: (_event: 'message', listener: (message: IncomingMessage) => void): Unsubscribe => {
+      this.listener = listener;
+      return () => {
+        this.listener = null;
+      };
+    },
+  };
+
+  constructor(peerId: string | null) {
+    this.peerId = peerId;
+  }
+
+  sendReliable(messageType: number, _value: CborValue): number {
+    this.sent.push(messageType);
+    return this.sent.length;
+  }
+
+  sendReliableRaw(messageType: number, _payload: Uint8Array): number {
+    this.sent.push(messageType);
+    return this.sent.length;
+  }
+
+  /** Deliver a message to the GroupSession as if it had arrived on the link. */
+  deliver(type: number, value: CborValue | null, raw: Uint8Array = new Uint8Array(0)): void {
+    this.listener?.({
+      type,
+      typeName: 'test',
+      channel: Channel.RELIABLE,
+      value,
+      raw,
+      remoteTimestamp: 0,
+      receivedAt: 0,
+      seq: this.sent.length,
+    });
+  }
+}
+
+/** B in the middle of A-B-C, with both neighbours under the test's control. */
+function relayRig(): {
+  clock: VirtualClock;
+  group: GroupSession;
+  a: FakePeer;
+  c: FakePeer;
+  drops: { reason: string; via: string }[];
+} {
+  const clock = new VirtualClock();
+  const group = new GroupSession({ localPeerId: 'BBBB', clock, random: new SeededRandom(77) });
+  group.adopt(
+    snapshot({
+      hostId: 'AAAA',
+      members: [
+        { peerId: 'AAAA', displayName: 'A', joinedAt: 1 },
+        { peerId: 'BBBB', displayName: 'B', joinedAt: 2 },
+        { peerId: 'CCCC', displayName: 'C', joinedAt: 3 },
+      ],
+    }),
+  );
+  const a = new FakePeer('AAAA');
+  const c = new FakePeer('CCCC');
+  group.attach('AAAA', a);
+  group.attach('CCCC', c);
+  return { clock, group, a, c, drops: collectDrops(group) };
+}
+
+const relayFrom = (origin: string, id: string, payloadBytes: number, destination = 'CCCC'): Uint8Array =>
+  encodeRelayPacket(
+    packet({ originId: origin, destinationId: destination, messageId: id, payload: new Uint8Array(payloadBytes) }),
+  );
+
+// ---------------------------------------------------------------------------
+// Bounding what one member can make us spend
+// ---------------------------------------------------------------------------
+
+describe('the relay budget', () => {
+  it('refuses to fan out without limit for one origin inside a single window', () => {
+    const rig = relayRig();
+    const over = MESH_LIMITS.relayPacketsPerWindow + 20;
+
+    // Distinct message ids, so neither the seen-set nor the hop limit says a
+    // word about any of them: this is the bound that stops a member simply
+    // originating packets until every other phone's outbound queue is the size
+    // of its free memory.
+    for (let i = 0; i < over; i++) rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('AAAA', `m${i}`, 16));
+
+    expect(rig.c.sent).toHaveLength(MESH_LIMITS.relayPacketsPerWindow);
+    expect(rig.group.packetsRateLimited).toBe(over - MESH_LIMITS.relayPacketsPerWindow);
+    expect(rig.drops.filter((d) => d.reason === MeshDropReason.RATE_LIMITED)).toHaveLength(
+      over - MESH_LIMITS.relayPacketsPerWindow,
+    );
+  });
+
+  it('bounds relayed bytes as well as relayed packets', () => {
+    const rig = relayRig();
+    const big = 32 * 1024;
+    const affordable = Math.floor(MESH_LIMITS.relayBytesPerWindow / big);
+    expect(affordable).toBeLessThan(MESH_LIMITS.relayPacketsPerWindow); // the byte arm is the binding one
+
+    for (let i = 0; i < affordable + 5; i++) {
+      rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('AAAA', `b${i}`, big));
+    }
+    expect(rig.c.sent).toHaveLength(affordable);
+  });
+
+  it('reopens the window as time passes, so an honest member is never cut off', () => {
+    const rig = relayRig();
+    for (let i = 0; i < MESH_LIMITS.relayPacketsPerWindow + 1; i++) {
+      rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('AAAA', `w${i}`, 16));
+    }
+    expect(rig.c.sent).toHaveLength(MESH_LIMITS.relayPacketsPerWindow);
+
+    rig.clock.advance(MESH_LIMITS.relayWindowMs);
+    rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('AAAA', 'after', 16));
+    expect(rig.c.sent).toHaveLength(MESH_LIMITS.relayPacketsPerWindow + 1);
+  });
+
+  it('charges the budget per origin, so one greedy member cannot silence another', () => {
+    const rig = relayRig();
+    // A spends its entire share...
+    for (let i = 0; i < MESH_LIMITS.relayPacketsPerWindow + 5; i++) {
+      rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('AAAA', `g${i}`, 16));
+    }
+    const afterA = rig.c.sent.length;
+    // ...and C's traffic, handed to us by A, still goes through to A's side.
+    rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('CCCC', 'fromC', 16, 'AAAA'));
+    expect(rig.a.sent).toHaveLength(1);
+    expect(rig.c.sent).toHaveLength(afterA);
+    // Bounded map: one entry per origin, never one per packet.
+    expect(rig.group.diagnostics().relayBudgetEntries).toBe(2);
+  });
+
+  it('never rate-limits a packet addressed to us: only work done for others', () => {
+    const rig = relayRig();
+    const received: GroupMessageEvent[] = [];
+    rig.group.events.on('message', (m) => received.push(m));
+
+    const many = MESH_LIMITS.relayPacketsPerWindow + 30;
+    for (let i = 0; i < many; i++) {
+      rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('AAAA', `d${i}`, 16, 'BBBB'));
+    }
+    expect(received).toHaveLength(many);
+    expect(rig.group.packetsRateLimited).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group control traffic is private to the group
+// ---------------------------------------------------------------------------
+
+describe('an attached non-member is told nothing about the group', () => {
+  const withOutsider = {
     names: ['A', 'B', 'C', 'D'] as const,
     edges: [
       ['A', 'B'],
@@ -1215,59 +1376,211 @@ describe('PROBE', () => {
     ] as const,
   };
 
-  it('PROBE roster leak to an attached non-member', async () => {
-    const ctx = await buildMesh(withOutsider2);
+  it('never gossips the roster to a peer that is merely attached', async () => {
+    const ctx = await buildMesh(withOutsider);
     await formGroupAlongPath(ctx, ['A', 'B', 'C']);
     ctx.group('B').attach(ctx.pid('D'), ctx.session('B', 'D'));
 
-    const seenAtD: number[] = [];
-    ctx.session('D', 'B').events.on('message', (m) => {
-      if (m.type >= 0x60 && m.type <= 0x66) seenAtD.push(m.type);
-    });
+    const groupTraffic = (session: PeerSession, into: number[]): void => {
+      session.events.on('message', (m) => {
+        if (m.type >= MessageType.GROUP_CREATE && m.type <= MessageType.GROUP_STATE_RESPONSE) into.push(m.type);
+      });
+    };
+    const atD: number[] = [];
+    const atC: number[] = [];
+    groupTraffic(ctx.session('D', 'B'), atD);
+    groupTraffic(ctx.session('C', 'B'), atC);
 
+    // A change worth gossiping, made two hops from D.
     ctx.group('A').promoteHost(ctx.pid('B'));
     await ctx.clock.advanceAsync(10_000);
-    console.log('PROBE leak types at D:', JSON.stringify(seenAtD));
-    expect(seenAtD).toEqual([]);
+
+    // C is a member and hears about it; D holds a live session to the very same
+    // relay and hears nothing. A GROUP_UPDATE is the whole roster - group id,
+    // group name, and every member's id and display name.
+    expect(atC.length).toBeGreaterThan(0);
+    expect(atD).toEqual([]);
+    for (const name of ['A', 'B', 'C']) expect(ctx.group(name).hostId).toBe(ctx.pid('B'));
   });
 
-  it('PROBE announceSelf can exceed maxMembers', async () => {
-    const clock = new VirtualClock();
-    const g = new GroupSession({
-      localPeerId: 'ZZZZ',
-      clock,
-      random: new SeededRandom(5),
-      localDisplayName: 'Z',
-    });
-    const full: GroupSnapshot = snapshot({
-      members: Array.from({ length: MESH_LIMITS.maxMembers }, (_, i) => ({
-        peerId: `P${i}`,
-        displayName: 'x',
-        joinedAt: 1,
-      })),
-    });
-    g.adopt(full);
-    g.announceSelf();
-    console.log('PROBE members after announceSelf:', g.members.length);
-    expect(g.members.length).toBeLessThanOrEqual(MESH_LIMITS.maxMembers);
-  });
-
-  it('PROBE adopt takes an unvalidated snapshot', async () => {
-    const clock = new VirtualClock();
-    const g = new GroupSession({ localPeerId: 'ZZZZ', clock, random: new SeededRandom(5) });
-    expect(() => g.adopt(snapshot({ groupId: 'has space' }))).toThrow(MeshError);
-  });
-
-  it('PROBE a member can pin the epoch at the ceiling', async () => {
+  it('tells a peer it has just removed, even though that peer is no longer a member', async () => {
     const ctx = await buildMesh(LINE_ABC);
     await formGroupAlongPath(ctx, ['A', 'B', 'C']);
-    const before = must(ctx.group('A').snapshot, 'A');
+
+    ctx.group('A').removeMember(ctx.pid('B'), 'wrong row');
+    await ctx.clock.advanceAsync(10_000);
+
+    expect(ctx.group('A').isMember(ctx.pid('B'))).toBe(false);
+    // B learns it was removed rather than going on believing it is in a group
+    // that no longer contains it.
+    expect(ctx.group('B').isMember(ctx.pid('B'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// State a peer can put us into
+// ---------------------------------------------------------------------------
+
+describe('local state can never go past the group limit', () => {
+  it('refuses to announce into a group that is already full', () => {
+    const clock = new VirtualClock();
+    const group = new GroupSession({ localPeerId: 'ZZZZ', clock, random: new SeededRandom(5), localDisplayName: 'Z' });
+    // The state a peer can genuinely leave us in: a full roster that we are not
+    // on, because it changed while we were out of range.
+    group.adopt(
+      snapshot({
+        members: Array.from({ length: MESH_LIMITS.maxMembers }, (_, i) => ({
+          peerId: `P${i}`,
+          displayName: 'x',
+          joinedAt: 1,
+        })),
+      }),
+    );
+
+    expect(() => group.announceSelf()).toThrow(MeshError);
+    expect(group.members).toHaveLength(MESH_LIMITS.maxMembers);
+    // A list one over the limit cannot be encoded, so this device would have
+    // been silently unable to gossip anything ever again.
+    expect(() => encodeGroupSnapshot(must(group.snapshot, 'state'))).not.toThrow();
+  });
+});
+
+describe('adopt validates the snapshot it is handed', () => {
+  const fresh = (): GroupSession =>
+    new GroupSession({ localPeerId: 'ZZZZ', clock: new VirtualClock(), random: new SeededRandom(5) });
+
+  it('refuses a group id outside the shared identifier alphabet', () => {
+    expect(() => fresh().adopt(snapshot({ groupId: 'has space' }))).toThrow(MeshError);
+    expect(() => fresh().adopt(snapshot({ hostId: 'not/an/id' }))).toThrow(/hostId/);
+  });
+
+  it('refuses a duplicated member, which would make membership ambiguous', () => {
+    expect(() =>
+      fresh().adopt(
+        snapshot({
+          members: [
+            { peerId: 'AAAA', displayName: 'A', joinedAt: 1 },
+            { peerId: 'AAAA', displayName: 'A again', joinedAt: 2 },
+          ],
+        }),
+      ),
+    ).toThrow(/duplicate member/);
+  });
+
+  it('refuses values the wire codec would reject, so we cannot gossip what nobody will accept', () => {
+    expect(() => fresh().adopt(snapshot({ epoch: 1.5 }))).toThrow(/epoch/);
+    expect(() => fresh().adopt(snapshot({ epoch: -1 }))).toThrow(/epoch/);
+    expect(() => fresh().adopt(snapshot({ name: 'x'.repeat(MESH_LIMITS.maxGroupNameLength + 1) }))).toThrow(/name/);
+    expect(() => fresh().adopt(snapshot({ updatedAt: -1 }))).toThrow(/updatedAt/);
+    expect(() =>
+      fresh().adopt(snapshot({ members: [{ peerId: 'AAAA', displayName: 'A', joinedAt: -5 }] })),
+    ).toThrow(/joinedAt/);
+    expect(() =>
+      fresh().adopt(
+        snapshot({
+          members: Array.from({ length: MESH_LIMITS.maxMembers + 1 }, (_, i) => ({
+            peerId: `P${i}`,
+            displayName: 'x',
+            joinedAt: 1,
+          })),
+        }),
+      ),
+    ).toThrow(/members/);
+    // ...and a well-formed one is still adopted without complaint.
+    const group = fresh();
+    group.adopt(snapshot());
+    expect(group.groupId).toBe('grp1');
+  });
+
+  it('accepts exactly what the wire decoder accepts', () => {
+    expect(snapshotProblem(decodeGroupSnapshot(encodeGroupSnapshot(snapshot())))).toBeNull();
+  });
+});
+
+describe('the epoch a peer may claim', () => {
+  it('refuses a jump that would pin the counter at its ceiling forever', async () => {
+    const ctx = await buildMesh(LINE_ABC);
+    await formGroupAlongPath(ctx, ['A', 'B', 'C']);
+    const before = must(ctx.group('A').snapshot, 'A state');
+    const dropsA = collectDrops(ctx.group('A'));
+
+    // B is a real member, so every membership check passes. The only thing
+    // wrong with this update is that it is four billion epochs ahead.
     ctx.session('B', 'A').sendReliable(
       MessageType.GROUP_UPDATE,
-      encodeGroupSnapshot({ ...before, epoch: 4_000_000_000 }),
+      encodeGroupSnapshot({ ...before, epoch: MESH_LIMITS.maxMembers === 0 ? 0 : 4_000_000_000 }),
     );
     await ctx.clock.advanceAsync(10_000);
-    console.log('PROBE A epoch:', ctx.group('A').snapshot?.epoch);
-    expect(ctx.group('A').snapshot?.epoch).toBeLessThan(1000);
+
+    expect(dropsA.map((d) => d.reason)).toContain(MeshDropReason.EPOCH_JUMP);
+    expect(must(ctx.group('A').snapshot, 'A state').epoch).toBe(before.epoch);
+
+    // And the group still works: a promotion made afterwards still converges,
+    // which is exactly what a pinned epoch would have made impossible.
+    ctx.group('A').promoteHost(ctx.pid('B'));
+    await ctx.clock.advanceAsync(10_000);
+    for (const name of ['A', 'B', 'C']) expect(ctx.group(name).hostId).toBe(ctx.pid('B'));
+  });
+
+  it('still accepts an epoch that is merely ahead, which is what catching up looks like', async () => {
+    const ctx = await buildMesh(LINE_ABC);
+    await formGroupAlongPath(ctx, ['A', 'B', 'C']);
+    const before = must(ctx.group('A').snapshot, 'A state');
+
+    ctx.session('B', 'A').sendReliable(
+      MessageType.GROUP_UPDATE,
+      encodeGroupSnapshot({ ...before, epoch: before.epoch + MAX_EPOCH_ADVANCE, hostId: ctx.pid('C') }),
+    );
+    await ctx.clock.advanceAsync(10_000);
+    expect(must(ctx.group('A').snapshot, 'A state').epoch).toBe(before.epoch + MAX_EPOCH_ADVANCE);
+  });
+});
+
+describe('a neighbour that turns out to be somebody else', () => {
+  it('drops everything from a session that authenticated as a different peer', () => {
+    const clock = new VirtualClock();
+    const group = new GroupSession({ localPeerId: 'ZZZZ', clock, random: new SeededRandom(5) });
+    const drops = collectDrops(group);
+
+    // Attached before the handshake finished, which `attach` permits.
+    const peer = new FakePeer(null);
+    group.attach('AAAA', peer);
+
+    // The handshake completes - as somebody else entirely.
+    peer.peerId = 'EVIL';
+    peer.deliver(
+      MessageType.GROUP_CREATE,
+      encodeGroupSnapshot(
+        snapshot({
+          members: [
+            { peerId: 'AAAA', displayName: 'A', joinedAt: 1 },
+            { peerId: 'ZZZZ', displayName: 'Z', joinedAt: 2 },
+          ],
+        }),
+      ),
+    );
+
+    expect(group.snapshot).toBeNull();
+    expect(drops.map((d) => d.reason)).toContain(MeshDropReason.IDENTITY_MISMATCH);
+  });
+
+  it('accepts a session that authenticated as the peer it was attached as', () => {
+    const clock = new VirtualClock();
+    const group = new GroupSession({ localPeerId: 'ZZZZ', clock, random: new SeededRandom(5) });
+    const peer = new FakePeer(null);
+    group.attach('AAAA', peer);
+    peer.peerId = 'AAAA';
+    peer.deliver(
+      MessageType.GROUP_CREATE,
+      encodeGroupSnapshot(
+        snapshot({
+          members: [
+            { peerId: 'AAAA', displayName: 'A', joinedAt: 1 },
+            { peerId: 'ZZZZ', displayName: 'Z', joinedAt: 2 },
+          ],
+        }),
+      ),
+    );
+    expect(group.groupId).toBe('grp1');
   });
 });

@@ -8,6 +8,7 @@
  */
 export {
   MESH_LIMITS,
+  MAX_EPOCH_ADVANCE,
   MAX_GROUP_EPOCH,
   RELAY_WIRE_VERSION,
   MeshError,
@@ -39,6 +40,7 @@ export {
   encodeMemberLeave,
   encodeRelayPacket,
   encodeStateRequest,
+  snapshotProblem,
   type MemberJoinSignal,
   type MemberLeaveSignal,
 } from './codec.js';
