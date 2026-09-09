@@ -1,6 +1,5 @@
 package com.airlink.transport.wifi
 
-import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
@@ -8,13 +7,18 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import com.airlink.transport.AirLinkError
-import com.airlink.transport.Availability
+import com.airlink.transport.HotspotCredentials
+import com.airlink.transport.Permissions
 import com.airlink.transport.TransportEventSink
-import com.airlink.transport.UnavailableReason
 
 /**
  * The local-only hotspot: the ONLY high-bandwidth path between an iPhone and an
  * Android phone when there is no network at all.
+ *
+ * This class is the WifiManager half; LocalNetworkTransport implements the
+ * module-facing `HotspotHost` interface and delegates here, because the two
+ * belong together - the whole point of starting a hotspot is to give NSD and
+ * TCP somewhere to run.
  *
  * How the handoff works, end to end:
  *
@@ -39,37 +43,31 @@ import com.airlink.transport.UnavailableReason
  *     once. Only offer this when there is no shared network already.
  *   - Only one app may hold a local-only hotspot at a time, and it will not
  *     start at all while system tethering is on.
+ *   - On API 31 and 32 this cannot run at all: it needs ACCESS_FINE_LOCATION,
+ *     which the manifest caps at API 30, and NEARBY_WIFI_DEVICES only exists
+ *     from API 33. See the matrix in Permissions.kt - the gap is deliberate.
  *
  * THE CREDENTIALS ARE SECRETS. They are never logged, never written to disk and
  * never put in an analytics event; they exist in memory and travel exactly once
  * over the authenticated BLE link. Every log line in this file deliberately
  * mentions lengths and outcomes only.
- *
- * ASSUMED CONTRACT: AirLinkError, Availability and TransportEventSink from the
- * parent package, as listed at the top of LocalNetworkTransport.
  */
-class HotspotHost(private val context: Context) {
+internal class LocalOnlyHotspot(private val context: Context) {
 
     private companion object {
         const val SCOPE = "hotspot"
 
-        /**
-         * The system can take a few seconds to bring a soft AP up, and on some
-         * devices it never calls back at all when tethering is in a bad state -
-         * hence a deadline rather than an open-ended wait.
-         */
-        const val START_TIMEOUT_MS = 20_000L
-
         /** WPA2 rejects anything shorter; a shorter one means we misread the config. */
         const val MIN_PASSPHRASE_LENGTH = 8
-    }
 
-    /** What the peer needs in order to join. Handed over the BLE link, never logged. */
-    data class Credentials(val ssid: String, val passphrase: String, val active: Boolean)
+        /** Clamp on the caller's deadline, so a bad argument cannot mean "never". */
+        const val MIN_TIMEOUT_MS = 5_000
+        const val MAX_TIMEOUT_MS = 60_000
+    }
 
     var events: TransportEventSink? = null
 
-    /** Called when the SYSTEM stops the hotspot - user tethering, Wi-Fi off, a reboot of the AP. */
+    /** Called when the SYSTEM stops the hotspot - tethering, Wi-Fi off, a vendor policy. */
     var onStoppedBySystem: (() -> Unit)? = null
 
     private val controlThread = HandlerThread("airlink-hotspot").apply {
@@ -82,65 +80,21 @@ class HotspotHost(private val context: Context) {
         context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
     private var reservation: WifiManager.LocalOnlyHotspotReservation? = null
-    private var credentials: Credentials? = null
-    private var pending: ((Result<Credentials>) -> Unit)? = null
+    private var credentials: HotspotCredentials? = null
+    private var pending: ((Result<HotspotCredentials>) -> Unit)? = null
     private var timeout: Runnable? = null
 
-    // -- availability ---------------------------------------------------------
-
-    fun availability(): Availability {
-        if (wifiManager == null ||
-            !context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI)
-        ) {
-            return Availability(
-                false,
-                UnavailableReason.UNSUPPORTED_HARDWARE,
-                "This device cannot create a Wi-Fi hotspot.",
-            )
-        }
-        if (!hasHotspotPermission()) {
-            return Availability(
-                false,
-                UnavailableReason.PERMISSION_NOT_REQUESTED,
-                "AirLink needs permission to create a Wi-Fi hotspot for your friend to join.",
-            )
-        }
-        return Availability(true, UnavailableReason.NONE, "")
-    }
-
-    /**
-     * startLocalOnlyHotspot has always needed CHANGE_WIFI_STATE (an install-time
-     * permission) plus a runtime one: ACCESS_FINE_LOCATION historically, and
-     * NEARBY_WIFI_DEVICES from Android 13, which is what we would rather ask for
-     * because it carries the neverForLocation promise. Either is accepted so a
-     * user who granted location for BLE scanning on an older phone is not asked
-     * twice.
-     */
-    private fun hasHotspotPermission(): Boolean {
-        val granted = { permission: String ->
-            context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            granted(Manifest.permission.NEARBY_WIFI_DEVICES)
-        ) {
-            return true
-        }
-        return granted(Manifest.permission.ACCESS_FINE_LOCATION)
-    }
-
     /** The credentials of the running hotspot, or null when none is running. */
-    fun credentials(): Credentials? = credentials
-
-    // -- start / stop ---------------------------------------------------------
+    fun credentials(): HotspotCredentials? = credentials
 
     /**
      * Starts a hotspot and reports its credentials.
      *
-     * Idempotent: calling it while one is already running resolves immediately
-     * with the credentials that are already live, because the bridge may be
-     * asked twice by two features that both want the fast path.
+     * Idempotent in the useful direction: called while one is already running it
+     * resolves immediately with the live credentials, because two features may
+     * both want the fast path and neither should tear down the other's hotspot.
      */
-    fun start(completion: (Result<Credentials>) -> Unit) {
+    fun start(timeoutMs: Int, completion: (Result<HotspotCredentials>) -> Unit) {
         control.post {
             val existing = credentials
             if (existing != null && reservation != null) {
@@ -148,7 +102,7 @@ class HotspotHost(private val context: Context) {
                 return@post
             }
             if (pending != null) {
-                completion(Result.failure(AirLinkError.Failed("a hotspot is already starting")))
+                completion(Result.failure(AirLinkError.Busy("Starting a hotspot")))
                 return@post
             }
 
@@ -156,24 +110,33 @@ class HotspotHost(private val context: Context) {
             if (manager == null ||
                 !context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI)
             ) {
-                completion(Result.failure(AirLinkError.Unsupported("hotspot")))
+                completion(Result.failure(AirLinkError.Unsupported("Starting a hotspot")))
                 return@post
             }
-            if (!hasHotspotPermission()) {
-                completion(Result.failure(AirLinkError.Failed("permission to create a hotspot was not granted")))
-                return@post
+            for (permission in Permissions.hotspotPermissions()) {
+                if (!Permissions.isGranted(context, permission)) {
+                    completion(
+                        Result.failure(
+                            AirLinkError.Failed(
+                                "AirLink does not have permission to start a Wi-Fi hotspot on this device.",
+                            ),
+                        ),
+                    )
+                    return@post
+                }
             }
 
             pending = completion
 
+            // The system can take several seconds to bring a soft AP up, and on
+            // some devices it never calls back at all when tethering is in a bad
+            // state - hence a deadline rather than an open-ended wait.
+            val budget = timeoutMs.coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS).toLong()
             val deadline = Runnable {
-                // Some devices simply never call back. Fail the caller, and if a
-                // reservation turns up afterwards it is closed on arrival rather
-                // than left running invisibly.
-                settle(Result.failure(AirLinkError.Timeout("starting the hotspot")))
+                settle(Result.failure(AirLinkError.Timeout("starting a local-only hotspot")))
             }
             timeout = deadline
-            control.postDelayed(deadline, START_TIMEOUT_MS)
+            control.postDelayed(deadline, budget)
 
             val callback = object : WifiManager.LocalOnlyHotspotCallback() {
                 override fun onStarted(started: WifiManager.LocalOnlyHotspotReservation?) {
@@ -183,8 +146,8 @@ class HotspotHost(private val context: Context) {
                             return@post
                         }
                         if (pending == null) {
-                            // We already gave up. Do not leave a hotspot running
-                            // that nobody is going to use.
+                            // We already gave up, or someone called stop(). Do not
+                            // leave a hotspot running that nobody will use.
                             closeQuietly(started)
                             return@post
                         }
@@ -216,8 +179,9 @@ class HotspotHost(private val context: Context) {
 
                 override fun onFailed(reason: Int) {
                     control.post {
-                        log("error", "hotspot failed: ${hotspotError(reason)}")
-                        settle(Result.failure(AirLinkError.Failed("could not start the hotspot: ${hotspotError(reason)}")))
+                        val detail = hotspotError(reason)
+                        log("error", "hotspot failed: $detail")
+                        settle(Result.failure(AirLinkError.Failed("could not start the hotspot: $detail")))
                     }
                 }
             }
@@ -239,18 +203,19 @@ class HotspotHost(private val context: Context) {
     /** Idempotent. Safe to call when nothing is running. */
     fun stop() {
         control.post {
+            val running = reservation != null
             reservation?.let { closeQuietly(it) }
             reservation = null
             credentials = null
             settle(Result.failure(AirLinkError.Failed("the hotspot was stopped")))
-            log("info", "hotspot stopped")
+            if (running) log("info", "hotspot stopped")
         }
     }
 
     // -- internals ------------------------------------------------------------
 
     /** Must run on the control thread. Delivers at most one result per start(). */
-    private fun settle(result: Result<Credentials>) {
+    private fun settle(result: Result<HotspotCredentials>) {
         timeout?.let { control.removeCallbacks(it) }
         timeout = null
         val completion = pending ?: return
@@ -276,7 +241,7 @@ class HotspotHost(private val context: Context) {
      *
      * Each is used only on the releases where it is the newest thing available.
      */
-    private fun credentialsOf(target: WifiManager.LocalOnlyHotspotReservation): Credentials? {
+    private fun credentialsOf(target: WifiManager.LocalOnlyHotspotReservation): HotspotCredentials? {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 fromSoftApConfiguration(target)
@@ -290,40 +255,40 @@ class HotspotHost(private val context: Context) {
         }
     }
 
-    private fun fromSoftApConfiguration(target: WifiManager.LocalOnlyHotspotReservation): Credentials? {
+    private fun fromSoftApConfiguration(
+        target: WifiManager.LocalOnlyHotspotReservation,
+    ): HotspotCredentials? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         val configuration = target.softApConfiguration
         val ssid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             // getSsid() is deprecated from Android 13 because an SSID is bytes,
-            // not text; we decode as UTF-8, which is what the platform writes.
+            // not text. The platform writes UTF-8, so that is how we read it.
             configuration.wifiSsid?.bytes?.toString(Charsets.UTF_8)
         } else {
             @Suppress("DEPRECATION")
             configuration.ssid
         }
-        val passphrase = configuration.passphrase
-        return validated(ssid, passphrase)
+        return validated(ssid, configuration.passphrase)
     }
 
-    private fun fromWifiConfiguration(target: WifiManager.LocalOnlyHotspotReservation): Credentials? {
-        @Suppress("DEPRECATION")
+    @Suppress("DEPRECATION")
+    private fun fromWifiConfiguration(
+        target: WifiManager.LocalOnlyHotspotReservation,
+    ): HotspotCredentials? {
         val configuration = target.wifiConfiguration ?: return null
-        @Suppress("DEPRECATION")
-        val ssid = configuration.SSID
-        @Suppress("DEPRECATION")
-        val passphrase = configuration.preSharedKey
-        return validated(ssid, passphrase)
+        return validated(configuration.SSID, configuration.preSharedKey)
     }
 
-    private fun validated(rawSsid: String?, rawPassphrase: String?): Credentials? {
+    private fun validated(rawSsid: String?, rawPassphrase: String?): HotspotCredentials? {
         val ssid = stripQuotes(rawSsid)
         val passphrase = stripQuotes(rawPassphrase)
         if (ssid.isEmpty()) return null
-        // An open local-only hotspot would put the transfer on the air in the
-        // clear for anyone in range. The AirLink session above is encrypted
-        // regardless, but we still refuse to advertise this as the fast path.
+        // An open local-only hotspot would put a photo transfer on the air in
+        // the clear for anyone in range. The AirLink session above is encrypted
+        // regardless, but we still refuse to hand this out as the fast path -
+        // and iOS would reject a passphrase this short anyway.
         if (passphrase.length < MIN_PASSPHRASE_LENGTH) return null
-        return Credentials(ssid, passphrase, active = true)
+        return HotspotCredentials(ssid, passphrase, active = true)
     }
 
     /** WifiConfiguration stores both fields quoted; SoftApConfiguration does not. */

@@ -95,6 +95,9 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
      */
     private val linkLimits = HashMap<String, Int>()
 
+    /** The local-only hotspot. Null until something actually asks for one. */
+    private var hotspot: HotspotHost? = null
+
     private var configuration: TransportConfiguration? = null
     private var started = false
 
@@ -586,6 +589,13 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                 Log.w(TAG, "$kind failed to stop cleanly", t)
             }
         }
+        // A hotspot outliving the session it was raised for would keep the
+        // phone's own Wi-Fi down for nothing.
+        try {
+            hotspot?.stop()
+        } catch (t: Throwable) {
+            Log.w(TAG, "the hotspot failed to stop cleanly", t)
+        }
         unregisterBluetoothStateReceiver()
         linkOwners.clear()
         linkLimits.clear()
@@ -775,11 +785,15 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         handler.post {
             try {
                 requireStarted()
-                val host = transports.values.filterIsInstance<HotspotHost>().firstOrNull()
-                    ?: throw AirLinkError.Unsupported("Starting a hotspot")
+                if (!hasSystemFeature(PackageManager.FEATURE_WIFI)) {
+                    throw AirLinkError.Unsupported("Starting a hotspot")
+                }
 
-                // startLocalOnlyHotspot needs the same Wi-Fi permission as
-                // discovery, and on API 31-32 there is none this build can hold.
+                // Checked before the host is constructed, because constructing
+                // one starts a thread and there is no point paying for it when
+                // the answer is already no. startLocalOnlyHotspot needs the same
+                // Wi-Fi permission as discovery, and on API 31-32 there is none
+                // this build can hold - see the matrix in Permissions.kt.
                 for (permission in Permissions.hotspotPermissions()) {
                     if (!Permissions.isGranted(appContext, permission)) {
                         throw AirLinkError.Failed(
@@ -788,18 +802,33 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                     }
                 }
 
+                val host = hotspotHost()
+                val availability = host.availability()
+                if (!availability.available) {
+                    throw AirLinkError.Failed(
+                        availability.detail.ifBlank { "A Wi-Fi hotspot cannot be started right now." }
+                    )
+                }
+
+                // The host has its own deadline; this one is longer on purpose,
+                // so its more specific failure wins the race and this only fires
+                // if the host itself never answers.
                 val watchdog = Runnable {
                     once.reject(AirLinkError.Timeout("starting a local-only hotspot"))
                 }
-                handler.postDelayed(watchdog, HOTSPOT_TIMEOUT_MS)
+                handler.postDelayed(watchdog, HOTSPOT_WATCHDOG_MS)
 
-                host.createHotspot(HOTSPOT_TIMEOUT_MS.toInt()) { result ->
+                host.start { result ->
                     handler.post {
                         handler.removeCallbacks(watchdog)
                         result.fold(
                             onSuccess = { credentials ->
                                 once.resolve(
                                     Arguments.createMap().apply {
+                                        // These are secrets. They go straight to
+                                        // JavaScript, which hands them to the peer
+                                        // over the already-authenticated link, and
+                                        // they are never logged here or anywhere.
                                         putString("ssid", credentials.ssid)
                                         putString("passphrase", credentials.passphrase)
                                         putBoolean("active", credentials.active)
@@ -819,16 +848,36 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
     override fun stopHotspot(promise: Promise) {
         val once = Once(promise)
         handler.post {
-            for (host in transports.values.filterIsInstance<HotspotHost>()) {
-                try {
-                    host.stopHotspot()
-                } catch (t: Throwable) {
-                    Log.w(TAG, "stopping the hotspot failed", t)
-                }
+            try {
+                hotspot?.stop()
+            } catch (t: Throwable) {
+                Log.w(TAG, "stopping the hotspot failed", t)
             }
             // Stopping a hotspot that is not running is not an error.
             once.resolve(null)
         }
+    }
+
+    /**
+     * The local-only hotspot, created on first use.
+     *
+     * Deliberately not built with the transports: it owns a thread and a
+     * `WifiManager` reservation, and the overwhelming majority of sessions -
+     * every Bluetooth-only conversation - never ask for one.
+     */
+    private fun hotspotHost(): HotspotHost {
+        hotspot?.let { return it }
+        val host = HotspotHost(appContext)
+        host.events = this
+        host.onStoppedBySystem = {
+            // The system takes the hotspot away when the user turns tethering
+            // on, switches Wi-Fi off, or leaves. JavaScript learns through the
+            // diagnostic channel; the link over it dies on its own and reports
+            // its own closed state.
+            log("warn", "hotspot", "the system stopped the hotspot")
+        }
+        hotspot = host
+        return host
     }
 
     override fun joinHotspot(ssid: String, passphrase: String, promise: Promise) {
@@ -1345,7 +1394,11 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
          */
         private const val SEND_WATCHDOG_MS = 30_000L
 
-        private const val HOTSPOT_TIMEOUT_MS = 20_000L
+        /**
+         * Longer than the hotspot host's own 20s deadline on purpose, so its
+         * specific failure reaches JavaScript rather than this generic one.
+         */
+        private const val HOTSPOT_WATCHDOG_MS = 25_000L
 
         /**
          * Long enough that a user reading the dialog is never cut off, short

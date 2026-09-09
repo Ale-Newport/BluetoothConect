@@ -21,6 +21,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.ParcelUuid
+import com.airlink.transport.LinkState
 
 /**
  * The peripheral half: our own GATT service, our advertisement, and the links
@@ -379,7 +380,7 @@ internal class BleGattServer(
     private val advertisingSetCallback = object : AdvertisingSetCallback() {
         override fun onAdvertisingSetStarted(set: AdvertisingSet?, txPower: Int, status: Int) {
             handler.post {
-                if (status == ADVERTISE_SUCCESS) {
+                if (status == AdvertisingSetCallback.ADVERTISE_SUCCESS) {
                     advertisingSet = set
                     advertising = true
                     host.log("info", "advertising at ${txPower}dBm")
@@ -427,11 +428,14 @@ internal class BleGattServer(
             handler.post {
                 advertising = false
                 val detail = when (errorCode) {
-                    ADVERTISE_FAILED_DATA_TOO_LARGE -> "the advertisement does not fit in 31 bytes"
-                    ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "too many apps are advertising"
-                    ADVERTISE_FAILED_ALREADY_STARTED -> "already advertising"
-                    ADVERTISE_FAILED_INTERNAL_ERROR -> "the Bluetooth stack reported an internal error"
-                    ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "this device cannot advertise"
+                    AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE ->
+                        "the advertisement does not fit in 31 bytes"
+                    AdvertiseCallback.ADVERTISE_FAILED_TOO_MANY_ADVERTISERS ->
+                        "too many apps are advertising"
+                    AdvertiseCallback.ADVERTISE_FAILED_ALREADY_STARTED -> "already advertising"
+                    AdvertiseCallback.ADVERTISE_FAILED_INTERNAL_ERROR ->
+                        "the Bluetooth stack reported an internal error"
+                    AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "this device cannot advertise"
                     else -> "error $errorCode"
                 }
                 host.log("error", "advertising failed: $detail")
@@ -476,11 +480,11 @@ internal class BleGattServer(
         val subscribeTimeout = Runnable {
             if (!opened) {
                 host.log("info", "dropping $address: connected but never subscribed")
-                closePeer(this, "the peer never subscribed", failed = true)
+                closePeer(this@ServerPeer, "the peer never subscribed", failed = true)
             }
         }
 
-        val l2capGrace = Runnable { if (!opened) openOverGatt(this) }
+        val l2capGrace = Runnable { if (!opened) openOverGatt(this@ServerPeer) }
 
         val notifyTimeout = Runnable {
             val done = notifyDone
@@ -506,7 +510,11 @@ internal class BleGattServer(
 
     private fun openOverGatt(peer: ServerPeer) {
         if (peer.opened) return
-        val tx = txCharacteristic ?: return
+        val tx = txCharacteristic
+        if (tx == null) {
+            closePeer(peer, "the GATT service is not registered", failed = true)
+            return
+        }
         handler.removeCallbacks(peer.l2capGrace)
         handler.removeCallbacks(peer.subscribeTimeout)
         peer.opened = true
@@ -685,7 +693,7 @@ internal class BleGattServer(
                         if (peers.containsKey(address)) return@post
                         val peer = ServerPeer(target, address)
                         peers[address] = peer
-                        host.onLinkState(peer.link, com.airlink.transport.LinkState.CONNECTING, "")
+                        host.onLinkState(peer.link, LinkState.CONNECTING, "")
                         handler.postDelayed(peer.subscribeTimeout, BleTuning.SUBSCRIBE_GRACE_MS)
                     }
 
@@ -837,13 +845,21 @@ internal class BleGattServer(
                     return@post
                 }
                 if (responseNeeded) {
-                    respond(target, requestId, BluetoothGatt.GATT_SUCCESS, offset, payload)
+                    respond(
+                        target,
+                        requestId,
+                        BluetoothGatt.GATT_SUCCESS,
+                        offset,
+                        if (preparedWrite) payload else null,
+                    )
                 }
 
                 val peer = peers[address] ?: return@post
+                // 0x0001 is notify, 0x0002 indicate; either means "start
+                // sending". 0x0000 means the peer is switching us off.
                 val enabling = payload != null &&
                     payload.size >= 2 &&
-                    payload[0].toInt() and 0x03 != 0
+                    ((payload[0].toInt() and 0x03) != 0)
 
                 if (!enabling) {
                     peer.subscribed = false
@@ -922,15 +938,16 @@ internal class BleGattServer(
                     // does not have to - but a peer that does must not be able to
                     // prepare writes until we run out of heap, and must not
                     // silently lose the tail.
-                    if (offset != peer.prepared.size ||
+                    val misaligned = offset != peer.prepared.size
+                    val tooLong =
                         peer.prepared.size + payload.size > BleTuning.MAX_PREPARED_WRITE_BYTES
-                    ) {
+                    if (misaligned || tooLong) {
                         peer.prepared = ByteArray(0)
                         if (responseNeeded) {
                             respond(
                                 target,
                                 requestId,
-                                if (offset != peer.prepared.size) {
+                                if (misaligned) {
                                     BluetoothGatt.GATT_INVALID_OFFSET
                                 } else {
                                     BluetoothGatt.GATT_INVALID_ATTRIBUTE_LENGTH
@@ -962,6 +979,15 @@ internal class BleGattServer(
                 if (responseNeeded) {
                     respond(target, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                 }
+                if (!peer.opened) {
+                    // A datagram before the subscription that opens the link has
+                    // nowhere to go: JavaScript has never been told this link
+                    // exists, so an onData for it would be an event about
+                    // nothing. Acknowledged on the wire, dropped here, counted
+                    // nowhere - and no correct peer sends one.
+                    host.log("warn", "datagram from $address before the link opened; dropped")
+                    return@post
+                }
                 // One ATT write is one datagram. Nothing is parsed, joined or
                 // split - the boundary came from the protocol below us.
                 peer.link.deliver(payload)
@@ -980,7 +1006,9 @@ internal class BleGattServer(
                 val assembled = peer?.prepared ?: ByteArray(0)
                 peer?.prepared = ByteArray(0)
                 respond(target, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-                if (execute && assembled.isNotEmpty()) peer?.link?.deliver(assembled)
+                if (execute && assembled.isNotEmpty() && peer != null && peer.opened) {
+                    peer.link.deliver(assembled)
+                }
             }
         }
     }

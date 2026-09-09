@@ -565,22 +565,11 @@ final class BleTransport: NSObject, AirLinkTransport {
             }
 
             if link.fastPath == .active, let session = link.l2cap {
-                // The session owns its own bounded queue and settles the promise
-                // when the bytes are in the stream. Counting optimistically and
-                // correcting on refusal keeps one code path for the common case
-                // without ever reporting a datagram as sent that was not.
-                accountSent(link, bytes: data.count)
-                let item = BleOutboundDatagram(data: data, reliable: reliable) { [weak self, weak link] result in
-                    if case .failure = result, let self, let link {
-                        link.metrics.packetsSent -= 1
-                        link.metrics.bytesSent -= Double(data.count)
-                        link.throughputWindowBytes -= Double(data.count)
-                        link.metrics.packetsDropped += 1
-                        self.publishMetrics(link)
-                    }
-                    deliver(result)
-                }
-                session.send(item)
+                // The session owns its own bounded queue and reports through
+                // onDatagramSettled when a datagram is really in the stream.
+                // Accounting there rather than here is what keeps a datagram
+                // that falls back to GATT from being counted on both paths.
+                session.send(BleOutboundDatagram(data: data, reliable: reliable, completion: deliver))
                 return
             }
 
@@ -609,6 +598,9 @@ final class BleTransport: NSObject, AirLinkTransport {
 
     private func publishMetrics(_ link: BleLink) {
         link.metrics.maxDatagramSize = link.currentDatagramSize
+        // A late callback for a link that has already closed must not resurrect
+        // its row - closeLink removed it, and nothing would remove it again.
+        guard links[link.id] != nil else { return }
         let snapshot = link.metrics
         snapshotLock.lock()
         metricsSnapshots[link.id] = snapshot
@@ -775,8 +767,14 @@ final class BleTransport: NSObject, AirLinkTransport {
         link.cancelTimers()
         link.state = state
 
-        link.l2cap?.onClosed = nil
-        link.l2cap?.onDatagram = nil
+        /*
+         * The session's callbacks are left wired up on purpose. Clearing them
+         * from this queue would race the stream thread that reads them, and it
+         * would strand every datagram still inside the session - those promises
+         * would never settle and JavaScript would wait for ever. The link is
+         * already out of `links` by this point, so handleFastPathClosed takes
+         * its "link is gone" branch and fails them instead.
+         */
         link.l2cap?.close(reason: reason)
         link.l2cap = nil
         link.fastPath = .unavailable
@@ -803,6 +801,11 @@ final class BleTransport: NSObject, AirLinkTransport {
                 }
             }
         case .peripheral:
+            // iOS gives a peripheral no way to hang up on a central - only the
+            // central can drop the connection. Forgetting the link is therefore
+            // the whole of what "disconnect" can mean on this side; anything the
+            // peer keeps writing lands with no link to route it to and is
+            // discarded, which is the honest outcome rather than a pretend one.
             if let central = link.subscribedCentral {
                 linkIdByCentral.removeValue(forKey: central.identifier)
             }
@@ -858,6 +861,15 @@ final class BleTransport: NSObject, AirLinkTransport {
             self.accountReceived(link, bytes: datagram.count)
             self.events?.received(linkId: link.id, data: datagram)
         }
+        session.onDatagramSettled = { [weak self, weak link] bytes, written in
+            guard let self, let link else { return }
+            if written {
+                self.accountSent(link, bytes: bytes)
+            } else {
+                link.metrics.packetsDropped += 1
+                self.publishMetrics(link)
+            }
+        }
         session.onClosed = { [weak self, weak link] reason, unsent in
             guard let self, let link else { return }
             self.handleFastPathClosed(link, reason: reason, unsent: unsent)
@@ -881,11 +893,16 @@ final class BleTransport: NSObject, AirLinkTransport {
         guard link.fastPath != .unavailable else { return }
         link.l2capTimer?.cancel()
         link.l2capTimer = nil
-        link.l2cap?.onClosed = nil
-        link.l2cap?.onDatagram = nil
-        link.l2cap?.close(reason: reason)
-        link.l2cap = nil
         link.fastPath = .unavailable
+
+        if let session = link.l2cap {
+            // Callbacks stay attached: handleFastPathClosed is what puts
+            // anything the channel never wrote back onto the GATT queue, and it
+            // is also what clears link.l2cap. Clearing them here would race the
+            // stream thread that reads them.
+            session.close(reason: reason)
+            return
+        }
         announceDatagramSize(link)
         log("warn", "link \(link.id): staying on GATT - \(reason)")
     }

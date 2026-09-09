@@ -13,8 +13,11 @@ import com.airlink.transport.AirLinkError
 import com.airlink.transport.AirLinkTransport
 import com.airlink.transport.Availability
 import com.airlink.transport.DiscoveredEndpoint
+import com.airlink.transport.HotspotCredentials
+import com.airlink.transport.HotspotHost
 import com.airlink.transport.LinkMetricsSnapshot
 import com.airlink.transport.LinkState
+import com.airlink.transport.Permissions
 import com.airlink.transport.TransportConfiguration
 import com.airlink.transport.TransportEventSink
 import com.airlink.transport.TransportKind
@@ -59,22 +62,11 @@ import java.util.concurrent.atomic.AtomicLong
  * TypeScript layer matches it against a paired identity.
  * ===========================================================================
  *
- * ASSUMED CONTRACT. This file is written against the Kotlin translation of
- * ios/Transport/AirLinkTypes.swift that lives in the parent package
- * (TransportTypes.kt, owned by another agent). It depends on exactly these
- * symbols, and nothing else:
- *
- *   AirLinkTransport, TransportEventSink, TransportConfiguration(bonjourServiceType),
- *   TransportKind.LOCAL_NETWORK, LinkState.*, UnavailableReason.*,
- *   Availability(available, reason, detail), DiscoveredEndpoint(transport,
- *   endpointId, name, token, rssi), LinkMetricsSnapshot(named args),
- *   AirLinkError.{NotStarted, Failed, Timeout, UnknownLink, UnknownEndpoint,
- *   PayloadTooLarge, PermissionDenied}
- *
- * If the shared file names something differently, those lines are the only ones
- * that need to change; none of the radio logic depends on them.
+ * This transport also owns the local-only hotspot (see LocalOnlyHotspot), which
+ * is why it implements HotspotHost: a hotspot exists solely so that NSD and TCP
+ * have somewhere to run when there is no shared network at all.
  */
-class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
+class LocalNetworkTransport(private val context: Context) : AirLinkTransport, HotspotHost {
 
     private companion object {
         const val SCOPE = "localNetwork"
@@ -116,7 +108,20 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     override val kind: TransportKind = TransportKind.LOCAL_NETWORK
+
+    /**
+     * The Android side of the cross-platform handoff. It lives here rather than
+     * in its own transport because it is not one: it produces a Wi-Fi network
+     * for THIS transport to run over. Declared before `events` so the setter
+     * below always has something to hand the sink to.
+     */
+    private val hotspot = LocalOnlyHotspot(context)
+
     override var events: TransportEventSink? = null
+        set(value) {
+            field = value
+            hotspot.events = value
+        }
 
     /**
      * Every mutation of the state below happens on this one thread, so none of
@@ -220,15 +225,21 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     /**
-     * On Android 17 and later an app that has not been granted
-     * ACCESS_LOCAL_NETWORK gets timeouts on local TCP and EPERM on multicast,
-     * with no error that would tell a user what went wrong. Checking up front
-     * turns that into a permission prompt.
+     * NSD plus a TCP socket needs no dangerous permission today - Android has no
+     * equivalent of the iOS local-network prompt - which is why
+     * Permissions.runtimePermissions(LOCAL_NETWORK) is empty.
+     *
+     * Android 17 (SDK 37) changes that: an app targeting it that has not been
+     * granted ACCESS_LOCAL_NETWORK gets timeouts on local TCP and EPERM on
+     * multicast, with no error that tells the user anything. We only enforce it
+     * when the merged manifest actually declares the permission, because an app
+     * whose targetSdk is still below 37 keeps the implicit grant and asking
+     * about a permission it never declared would report a false negative.
      */
     private fun hasLocalNetworkPermission(): Boolean {
         if (Build.VERSION.SDK_INT < ANDROID_17) return true
-        return context.checkSelfPermission(ACCESS_LOCAL_NETWORK) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!Permissions.isDeclared(context, ACCESS_LOCAL_NETWORK)) return true
+        return Permissions.isGranted(context, ACCESS_LOCAL_NETWORK)
     }
 
     /**
@@ -288,6 +299,9 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             // Closing every link produces a `closed` state event for each, which
             // is what the layer above needs to stop waiting on them.
             links.values.toList().forEach { it.link.close("transport stopped") }
+            // A hotspot outliving the transport stack would be a radio nobody is
+            // watching and a network nobody can use.
+            hotspot.stop()
             started = false
             configuration = null
         }
@@ -350,9 +364,9 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
 
     override fun startAdvertising(token: ByteArray, displayName: String) {
         val manager = nsdManager ?: throw AirLinkError.Failed("network service discovery is unavailable")
-        val config = configuration ?: throw AirLinkError.NotStarted
-        val tcpServer = server ?: throw AirLinkError.NotStarted
-        if (tcpServer.port == 0) throw AirLinkError.NotStarted
+        val config = configuration ?: throw AirLinkError.NotStarted()
+        val tcpServer = server ?: throw AirLinkError.NotStarted()
+        if (tcpServer.port == 0) throw AirLinkError.NotStarted()
 
         val tokenBase64 = if (token.isEmpty()) "" else Base64.encodeToString(token, Base64.NO_WRAP)
         // The instance name is public, so it is derived from the rotating token
@@ -444,7 +458,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
 
     override fun startDiscovery() {
         val manager = nsdManager ?: throw AirLinkError.Failed("network service discovery is unavailable")
-        val config = configuration ?: throw AirLinkError.NotStarted
+        val config = configuration ?: throw AirLinkError.NotStarted()
         if (!hasLocalNetworkPermission()) throw AirLinkError.PermissionDenied(kind)
         val serviceType = normaliseServiceType(config.bonjourServiceType)
 
@@ -719,7 +733,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     override fun connect(endpointId: String, timeoutMs: Int, completion: (Result<String>) -> Unit) {
         control.execute {
             if (!started) {
-                completion(Result.failure(AirLinkError.NotStarted))
+                completion(Result.failure(AirLinkError.NotStarted()))
                 return@execute
             }
             val endpoint = endpoints[endpointId]
@@ -778,7 +792,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                     socket.close()
                 } catch (_: IOException) {
                 }
-                completion(Result.failure(AirLinkError.NotStarted))
+                completion(Result.failure(AirLinkError.NotStarted()))
                 return@execute
             }
             val linkId = adopt(socket, endpointId, incoming = false)
@@ -899,6 +913,16 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             bytesReceived = stats.bytesReceived,
             throughput = stats.throughput,
         )
+    }
+
+    // -- hotspot (HotspotHost) -------------------------------------------------
+
+    override fun createHotspot(timeoutMs: Int, completion: (Result<HotspotCredentials>) -> Unit) {
+        hotspot.start(timeoutMs, completion)
+    }
+
+    override fun stopHotspot() {
+        hotspot.stop()
     }
 
     // -- helpers --------------------------------------------------------------

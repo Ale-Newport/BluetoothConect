@@ -1160,23 +1160,28 @@ describe('an upgrade attempt is only ended by news about ITSELF', () => {
 describe('an unproven stranger cannot take over a reconnecting session', () => {
   it('refuses an incoming link from an endpoint that is not the peer', async () => {
     const ctx = await connectPair();
-    // The radio goes out of range: the session keeps its keys and waits.
+    // Only Bluetooth in play, and it goes out of range: the session keeps its
+    // keys and waits for the peer to come back.
+    ctx.a.fast.setAvailable(false);
+    ctx.b.fast.setAvailable(false);
     ctx.network.partition(ctx.a.slow.trueEndpointId, ctx.b.slow.trueEndpointId);
     await ctx.clock.advanceAsync(100);
     expect(ctx.b.session.state).toBe(ConnectionState.RECONNECTING);
 
-    // Anybody at all can open a link on that radio. Adopting it hands the
+    // Anybody at all can open a link on that radio, and the app routes every
+    // incoming link through the controller. Adopting an unproven one hands the
     // conversation to a device that has proven nothing: every retransmission,
-    // every keepalive and every future message goes to the stranger, while the
-    // UI shows a healthy connection that carries nothing.
+    // every keepalive and every future message drains into it, while the UI
+    // reports a healthy connection that carries nothing.
+    const strangerLinks: string[] = [];
+    ctx.b.slow.events.on('incomingLink', ({ link }) => strangerLinks.push(link.id));
     const stranger = ctx.network.createTransport('stranger-ble');
-    const connecting = stranger.connect(ctx.b.slow.trueEndpointId);
-    await ctx.clock.advanceAsync(200);
-    const link = new LabelledLink(SLOW, await connecting);
+    void stranger.connect(ctx.b.slow.trueEndpointId).catch(() => undefined);
+    await ctx.clock.advanceAsync(3_000);
 
-    expect(ctx.b.controller.handleIncomingLink(link)).toBe(false);
-    expect(ctx.b.session.currentLink).toBeNull();
+    expect(strangerLinks).toHaveLength(1);
     expect(ctx.b.session.state).toBe(ConnectionState.RECONNECTING);
+    expect(ctx.b.session.currentLink?.id).not.toBe(strangerLinks[0]);
   });
 
   it('still adopts the real peer dialling back in after a dropout', async () => {

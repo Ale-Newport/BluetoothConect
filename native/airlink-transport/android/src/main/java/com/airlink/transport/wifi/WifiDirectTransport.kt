@@ -1,6 +1,5 @@
 package com.airlink.transport.wifi
 
-import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -25,6 +24,7 @@ import com.airlink.transport.Availability
 import com.airlink.transport.DiscoveredEndpoint
 import com.airlink.transport.LinkMetricsSnapshot
 import com.airlink.transport.LinkState
+import com.airlink.transport.Permissions
 import com.airlink.transport.TransportConfiguration
 import com.airlink.transport.TransportEventSink
 import com.airlink.transport.TransportKind
@@ -58,9 +58,8 @@ import java.util.concurrent.atomic.AtomicLong
  *   CONNECTION_CHANGED -> requestConnectionInfo -> groupOwnerAddress
  *   group owner listens on a fixed TCP port; the client dials it
  *
- * ASSUMED CONTRACT: the list at the top of LocalNetworkTransport, plus
- * TransportKind.WIFI_DIRECT, AirLinkError.Unsupported(String) and
- * AirLinkError.RadioOff(TransportKind).
+ * The framing, the maximum datagram size and every guarantee in the datagram
+ * contract come from FramedTcp, shared with LocalNetworkTransport.
  */
 class WifiDirectTransport(private val context: Context) : AirLinkTransport {
 
@@ -162,12 +161,9 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                 "This device does not support Wi-Fi Direct.",
             )
         }
-        if (!hasNearbyPermission()) {
-            return Availability(
-                false,
-                UnavailableReason.PERMISSION_NOT_REQUESTED,
-                "AirLink needs permission to find nearby devices over Wi-Fi.",
-            )
+        val permission = Permissions.transportState(context, null, kind)
+        if (permission != Permissions.State.GRANTED) {
+            return Availability(false, Permissions.reasonFor(permission), permissionDetail(permission))
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && !isLocationEnabled()) {
             // Below Android 13 the p2p scan is treated as a location capability,
@@ -190,17 +186,20 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     /**
-     * NEARBY_WIFI_DEVICES from Android 13, ACCESS_FINE_LOCATION before it. The
-     * manifest declares NEARBY_WIFI_DEVICES with neverForLocation, which is what
-     * lets us stop asking for a location permission we do not want.
+     * NEARBY_WIFI_DEVICES from Android 13, ACCESS_FINE_LOCATION before it - the
+     * matrix itself lives in Permissions.kt so BLE and Wi-Fi cannot drift apart.
      */
-    private fun hasNearbyPermission(): Boolean {
-        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.NEARBY_WIFI_DEVICES
-        } else {
-            Manifest.permission.ACCESS_FINE_LOCATION
-        }
-        return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    private fun hasNearbyPermission(): Boolean =
+        Permissions.runtimePermissions(kind).all { Permissions.isGranted(context, it) }
+
+    private fun permissionDetail(state: Permissions.State): String = when (state) {
+        // The honest one. On API 31 and 32 this build holds no permission that
+        // can unlock Wi-Fi Direct, and no dialog will ever change that; see the
+        // gap documented in Permissions.kt.
+        Permissions.State.NOT_DECLARED ->
+            "Wi-Fi Direct is not available on this version of Android. Bluetooth still works."
+        else ->
+            "AirLink needs permission to find nearby devices over Wi-Fi."
     }
 
     private fun p2pLikelyEnabled(): Boolean =
@@ -362,7 +361,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
 
     override fun startDiscovery() {
         val p2p = manager ?: throw AirLinkError.Unsupported("Wi-Fi Direct")
-        if (!started) throw AirLinkError.NotStarted
+        if (!started) throw AirLinkError.NotStarted()
         if (!hasNearbyPermission()) throw AirLinkError.PermissionDenied(kind)
         control.post {
             discovering = true
@@ -467,7 +466,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
             val p2p = manager
             val open = channel
             if (p2p == null || open == null || !started) {
-                completion(Result.failure(AirLinkError.NotStarted))
+                completion(Result.failure(AirLinkError.NotStarted()))
                 return@post
             }
             if (!p2pLikelyEnabled()) {
@@ -481,7 +480,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
             if (pending != null) {
                 // One negotiation at a time: the framework has a single p2p
                 // state machine and a second connect would cancel the first.
-                completion(Result.failure(AirLinkError.Failed("another Wi-Fi Direct connection is in progress")))
+                completion(Result.failure(AirLinkError.Busy("A Wi-Fi Direct connection")))
                 return@post
             }
             if (links.size >= MAX_LINKS) {

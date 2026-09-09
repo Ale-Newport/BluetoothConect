@@ -684,15 +684,16 @@ export class TransportUpgradeController {
       const transport = this.capabilities.get(candidate.kind);
       if (endpoint === null || !transport) continue;
       try {
-        const link = await this.withTimeout(
-          transport.connect(endpoint, { timeoutMs: this.timings.connectTimeoutMs }),
-          this.timings.connectTimeoutMs,
-          UpgradeFailureReason.CONNECT_FAILED,
-          `connect to ${candidate.kind} timed out`,
-        );
+        const link = await this.connectLink(transport, endpoint, candidate.kind);
         if (this.disposed) {
           void link.close('controller disposed').catch(() => undefined);
           return fail(candidate.kind, UpgradeFailureReason.ABORTED, 'controller disposed');
+        }
+        // Dialling takes time, and the peer may have dialled us in the meantime.
+        // Migrating now would tear down a link that is already working.
+        if (this.session.state === ConnectionState.CONNECTED && this.session.currentLink !== null) {
+          void link.close('the session reconnected by other means').catch(() => undefined);
+          return { upgraded: true, kind: this.session.currentLink.transport, reason: UpgradeFailureReason.UNKNOWN };
         }
         this.adoptLink(link, 'reconnected');
         this.downgrades++;
@@ -1204,6 +1205,34 @@ export class TransportUpgradeController {
     waiter.resolve(payload);
   }
 
+  /**
+   * A radio appeared or disappeared.
+   *
+   * When the session is up this is an upgrade opportunity. When it is DOWN it is
+   * something more important: the reconnect ladder is finite on purpose - a
+   * phone in a pocket must not dial for ever - but once it is exhausted nothing
+   * ever retries, and the conversation sits on "Reconnecting" for good even
+   * though the Wi-Fi came back thirty seconds later. A transport becoming
+   * available is new evidence, and the only signal that can tell the difference
+   * between "there is no way back" and "there is one now", so it earns the
+   * ladder a fresh run. That cannot become a retry storm: `scheduleDowngrade`
+   * still refuses to queue a second dial while one is pending, so a flapping
+   * radio costs at most one attempt per backoff step.
+   */
+  private handleTransportsChanged(): void {
+    if (this.disposed || !this.started) return;
+
+    if (this.session.isSecure && this.session.state === ConnectionState.RECONNECTING) {
+      if (this.options.autoDowngrade === false || !this.isInitiator) return;
+      this.downgradeAttempts = 0;
+      this.scheduleDowngrade();
+      return;
+    }
+
+    if (this.options.autoUpgrade === false) return;
+    void this.considerUpgrade();
+  }
+
   private handleSessionState(state: ConnectionState): void {
     if (this.disposed) return;
 
@@ -1379,28 +1408,70 @@ export class TransportUpgradeController {
     });
   }
 
-  private withTimeout<T>(
-    promise: Promise<T>,
-    timeoutMs: number,
-    reason: UpgradeFailureReason,
-    message: string,
+  /**
+   * Open a link, giving up after `connectTimeoutMs`.
+   *
+   * The part that matters is what happens to a link that arrives LATE. A radio
+   * answering after we stopped waiting is ordinary - a BLE connect can take many
+   * seconds - and the link it hands back is live, owned by nobody, and closed by
+   * nobody. Dropping it on the floor leaks one connection per slow attempt, and
+   * an app that keeps retrying in the background accumulates them until the OS
+   * takes the whole process away. So the late arrival is closed explicitly.
+   */
+  private connectLink(
+    transport: { connect: (endpointId: string, options?: { timeoutMs?: number }) => Promise<Link> },
+    endpoint: string,
+    kind: TransportKind,
     scope?: AttemptScope,
-  ): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
+  ): Promise<Link> {
+    return new Promise<Link>((resolve, reject) => {
       let settled = false;
+      let timer: TimerHandle | undefined;
       let offAbort: Unsubscribe = () => undefined;
-      const timer = this.clock.setTimeout(() => finish(() => reject(new UpgradeAbort(reason, message))), timeoutMs);
+
       const finish = (action: () => void): void => {
         if (settled) return;
         settled = true;
-        this.clock.clearTimeout(timer);
+        if (timer !== undefined) this.clock.clearTimeout(timer);
         offAbort();
         action();
       };
+
+      timer = this.clock.setTimeout(
+        () =>
+          finish(() =>
+            reject(new UpgradeAbort(UpgradeFailureReason.CONNECT_FAILED, `connect to ${kind} timed out`)),
+          ),
+        this.timings.connectTimeoutMs,
+      );
       if (scope) offAbort = scope.onAbort((err) => finish(() => reject(err)));
-      promise.then(
-        (value) => finish(() => resolve(value)),
-        (err: unknown) => finish(() => reject(new UpgradeAbort(reason, `${message}: ${String(err)}`))),
+
+      let pending: Promise<Link>;
+      try {
+        pending = transport.connect(endpoint, { timeoutMs: this.timings.connectTimeoutMs });
+      } catch (err) {
+        // A transport that throws synchronously is a bridge bug, not a reason
+        // to take the caller down with it.
+        finish(() =>
+          reject(new UpgradeAbort(UpgradeFailureReason.CONNECT_FAILED, `connect to ${kind} failed: ${String(err)}`)),
+        );
+        return;
+      }
+
+      pending.then(
+        (link) => {
+          if (settled) {
+            this.log.debug('closing a link that opened after we stopped waiting', { kind, link: link.id });
+            void link.close('connect finished after the attempt ended').catch(() => undefined);
+            return;
+          }
+          finish(() => resolve(link));
+        },
+        (err: unknown) => {
+          finish(() =>
+            reject(new UpgradeAbort(UpgradeFailureReason.CONNECT_FAILED, `connect to ${kind} failed: ${String(err)}`)),
+          );
+        },
       );
     });
   }
@@ -1527,19 +1598,22 @@ export class TransportUpgradeController {
    */
   private safeResolveEndpoint(kind: TransportKind): string | null {
     try {
-      const value = this.options.resolveEndpoint(kind);
-      return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : null;
+      return sanitizeEndpoint(this.options.resolveEndpoint(kind));
     } catch (err) {
       this.log.warn('resolveEndpoint threw', { kind, err: String(err) });
       return null;
     }
   }
 
-  /** Our own handle on a transport, if it exposes one. Sent in TRANSPORT_ACCEPT. */
+  /**
+   * Our own handle on a transport, if it exposes one. Sent in TRANSPORT_ACCEPT,
+   * so it is validated on the way OUT as well as on the way in: a bridge that
+   * reports a junk handle should cost us nothing more than the peer falling
+   * back to what discovery told it.
+   */
   private localEndpoint(kind: TransportKind): string | null {
     const transport = this.capabilities.get(kind) as { endpointId?: unknown } | undefined;
-    const value = transport?.endpointId;
-    return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : null;
+    return sanitizeEndpoint(transport?.endpointId);
   }
 
   private sampleQuality(): void {

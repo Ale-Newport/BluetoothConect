@@ -31,11 +31,13 @@ import {
   decodeFileAccept,
   decodeFileChunk,
   decodeFileChunkAck,
+  decodeFileDecline,
   decodeFileOffer,
   decodeFileResume,
   encodeFileChunk,
   encodeFileOffer,
   peekOfferBasics,
+  type FileDeclineMessage,
 } from '../src/files/codec.js';
 import {
   ThroughputEstimator,
@@ -46,7 +48,14 @@ import {
 } from '../src/files/progress.js';
 import { MemoryFileStore } from '../src/files/memoryStore.js';
 import { FileTransferProtocol } from '../src/files/protocol.js';
-import { OutgoingTransfer, type TransferListener, type TransferWire } from '../src/files/transfer.js';
+import {
+  DEFAULT_TUNING,
+  IncomingTransfer,
+  OutgoingTransfer,
+  type TransferListener,
+  type TransferTuning,
+  type TransferWire,
+} from '../src/files/transfer.js';
 import {
   FILE_LIMITS,
   FileErrorCode,
@@ -54,6 +63,7 @@ import {
   TransferState,
   isSafeFilename,
   type FileOffer,
+  type FileStore,
   type ResumeState,
   type TransferProgress,
 } from '../src/files/types.js';
@@ -166,7 +176,12 @@ interface FilePair {
 
 async function connectFilePair(
   options: (Parameters<typeof connectPair>[0] & { idSeed?: number }) = {},
-  protocolOptions: { maxFileBytes?: number; maxConcurrentIncoming?: number } = {},
+  protocolOptions: {
+    maxFileBytes?: number;
+    maxConcurrentIncoming?: number;
+    maxConcurrentOutgoing?: number;
+    tuning?: TransferTuning;
+  } = {},
 ): Promise<FilePair> {
   const ctx = await connectPair({ preTrusted: true, ...options });
   const idSeed = options.idSeed ?? 7;
@@ -211,6 +226,22 @@ interface Completion {
 function collectCompletions(proto: FileTransferProtocol): Completion[] {
   const out: Completion[] = [];
   proto.events.on('completed', (e) => out.push({ transferId: e.transferId, direction: e.direction, fileBytes: e.fileBytes }));
+  return out;
+}
+
+/**
+ * Every FILE_DECLINE that reaches this session, read straight off the wire.
+ *
+ * Needed wherever the offer was hand-built rather than made through the
+ * protocol: there is no local transfer for the answer to land on, so watching
+ * the protocol's own `declined` event would watch something that can never
+ * fire - and a test built on that watches nothing at all.
+ */
+function collectDeclineMessages(session: PeerSession): FileDeclineMessage[] {
+  const out: FileDeclineMessage[] = [];
+  session.events.on('message', (message) => {
+    if (message.type === MessageType.FILE_DECLINE) out.push(decodeFileDecline(message.value));
+  });
   return out;
 }
 
@@ -1026,8 +1057,9 @@ describe('a hostile peer', () => {
     const { ctx, protoA, protoB } = await connectFilePair();
     const offers: FileOffer[] = [];
     protoB.events.on('offer', ({ offer }) => offers.push(offer));
-    const declines: { code: number }[] = [];
-    protoA.events.on('declined', (e) => declines.push(e));
+    // Read off the wire, not off protoA's events: the offer below is hand-built
+    // and protoA has no transfer for it, so nothing local would ever fire.
+    const declines = collectDeclineMessages(ctx.sessionA);
 
     // Hand-built offer, bypassing our own encoder's checks.
     ctx.sessionA.sendReliable(MessageType.FILE_OFFER, {
@@ -1046,8 +1078,10 @@ describe('a hostile peer', () => {
     expect(protoB.malformedPackets).toBe(1);
     // The sender is told why rather than left waiting for a timeout, and the
     // reason names the filename specifically.
-    const declined = await runUntil(ctx.clock, () => protoB.diagnostics().incoming === 0, 2000);
-    expect(declined).toBe(true);
+    expect(await runUntil(ctx.clock, () => declines.length > 0, 5000)).toBe(true);
+    expect(declines[0]?.transferId).toBe('EVIL01');
+    expect(declines[0]?.code).toBe(FileErrorCode.BAD_FILENAME);
+    expect(protoB.diagnostics().incoming).toBe(0);
     // ...and the session is still perfectly healthy afterwards.
     const sink = new MemoryFileStore(1024);
     protoB.events.on('offer', ({ offer }) => protoB.accept(offer.transferId, sink));
@@ -1156,8 +1190,7 @@ describe('a hostile peer', () => {
     const { ctx, protoA, protoB } = await connectFilePair({}, { maxFileBytes: 4096 });
     const offers: FileOffer[] = [];
     protoB.events.on('offer', ({ offer }) => offers.push(offer));
-    const declines: { code: number }[] = [];
-    protoA.events.on('declined', (e) => declines.push(e));
+    const declines = collectDeclineMessages(ctx.sessionA);
 
     // Straight from the wire, so our own outbound limit is not what is tested.
     ctx.sessionA.sendReliable(
@@ -1176,6 +1209,10 @@ describe('a hostile peer', () => {
 
     expect(offers).toHaveLength(0);
     expect(protoB.activeTransfers).toHaveLength(0);
+    // The peer is told the size is the problem, so its UI can say so.
+    expect(await runUntil(ctx.clock, () => declines.length > 0, 5000)).toBe(true);
+    expect(declines[0]?.transferId).toBe('HUGE01');
+    expect(declines[0]?.code).toBe(FileErrorCode.TOO_LARGE);
     // Our own side refuses to even start such a transfer.
     await expect(
       protoA.offer({ filename: 'enormous.iso', fileBytes: 64 * 1024 * 1024, store: new MemoryFileStore(16) }),

@@ -34,8 +34,19 @@ final class BleL2CAPSession: NSObject, StreamDelegate {
     private static let maxQueuedBytes = 4 * 1024 * 1024
     private static let readChunkSize = 16 * 1024
 
+    /*
+     * All three are set by the owner before `open()` and never afterwards, which
+     * is what makes reading them from the stream thread safe: `open()` hops onto
+     * that thread, so the assignments happen-before any read.
+     */
+
     /// Delivered on `callbackQueue`, one call per datagram, boundaries intact.
     var onDatagram: ((Data) -> Void)?
+    /// One call per outbound datagram that this session settled itself, on
+    /// `callbackQueue`: `written` true once it is in the stream, false when the
+    /// session refused it. Datagrams handed back by `onClosed` are settled by
+    /// the owner instead, so this never counts the same one twice.
+    var onDatagramSettled: ((_ bytes: Int, _ written: Bool) -> Void)?
     /// Delivered on `callbackQueue` exactly once. `unsent` are datagrams that
     /// provably never reached the peer, for the owner to re-queue elsewhere.
     var onClosed: ((_ reason: String?, _ unsent: [BleOutboundDatagram]) -> Void)?
@@ -257,13 +268,21 @@ final class BleL2CAPSession: NSObject, StreamDelegate {
         let sink = onClosed
         onClosed = nil
         onDatagram = nil
+        onDatagramSettled = nil
         callbackQueue.async { sink?(reason, unsent) }
     }
 
     private func finish(_ item: BleOutboundDatagram, _ result: Result<Void, Error>) {
+        var written = false
+        if case .success = result { written = true }
+        let bytes = item.data.count
+        let settled = onDatagramSettled
         // Off the stream thread, always: rule 4 of the datagram contract says a
         // callback is never delivered re-entrantly from inside a send.
-        callbackQueue.async { item.finish(result) }
+        callbackQueue.async {
+            item.finish(result)
+            settled?(bytes, written)
+        }
     }
 }
 
