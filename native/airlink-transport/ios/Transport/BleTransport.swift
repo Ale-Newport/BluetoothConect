@@ -129,8 +129,10 @@ final class BleTransport: NSObject, AirLinkTransport {
 
     // MARK: - Cross-queue snapshots
 
+    private typealias Availability = (available: Bool, reason: UnavailableReason, detail: String)
+
     private let snapshotLock = NSLock()
-    private var availabilitySnapshot: (available: Bool, reason: UnavailableReason, detail: String)
+    private var availabilitySnapshot: Availability
     private var metricsSnapshots: [String: LinkMetricsSnapshot] = [:]
 
     private struct DiscoveryRecord {

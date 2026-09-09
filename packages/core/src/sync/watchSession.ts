@@ -566,12 +566,12 @@ export class WatchTogetherSession {
     const hostNow = this.hostNow();
 
     if (!anchor.playing) {
-      this.media.pause();
+      this.mediaPause();
       this.applyRate(anchor.rate);
       this.seekIfOff(anchor.positionMs, this.driftPolicy.ignoreThresholdMs);
     } else if (!hasStarted(anchor, hostNow)) {
       // Scheduled start: park exactly on the frame and wait for the instant.
-      this.media.pause();
+      this.mediaPause();
       this.seekIfOff(anchor.positionMs, this.driftPolicy.ignoreThresholdMs);
       this.applyRate(anchor.rate);
       this.scheduleStart(anchor);
@@ -581,7 +581,7 @@ export class WatchTogetherSession {
       const target = targetPositionAt(anchor, hostNow, this.localContent?.durationMs);
       this.seekIfOff(target, this.driftPolicy.ignoreThresholdMs);
       this.applyRate(anchor.rate);
-      this.media.play();
+      this.mediaPlay();
       this.events.emit('playbackStarted', { anchor });
     }
 
@@ -604,7 +604,7 @@ export class WatchTogetherSession {
 
   private beginPlayback(anchor: PlaybackAnchor): void {
     this.applyRate(anchor.rate);
-    this.media.play();
+    this.mediaPlay();
     this.events.emit('playbackStarted', { anchor });
   }
 
@@ -809,8 +809,19 @@ export class WatchTogetherSession {
       // no extra negotiation: the lexicographically smaller session id wins.
       // The loser is us only when the peer's id sorts lower - and the peer,
       // running this same comparison, will keep hosting.
-      if (create.sessionId >= this.sessionId) {
-        this.reject(SyncRejectReason.UNEXPECTED_ROLE, 'already hosting a session that wins the tie-break', MessageType.SYNC_CREATE);
+      //
+      // `peerPresent` is what keeps that from being a takeover primitive. Once
+      // the peer has JOINED our session it is our guest, and a guest does not
+      // get to promote itself to host by minting a create with a low id: it
+      // would seize the epoch, the rate and the content, and both users' UIs
+      // would flap from hosting to following mid-film. A genuinely simultaneous
+      // create is, by definition, one where neither side has joined yet.
+      if (this.peerPresent || create.sessionId >= this.sessionId) {
+        this.reject(
+          SyncRejectReason.UNEXPECTED_ROLE,
+          this.peerPresent ? 'create from a peer that already joined our session' : 'already hosting a session that wins the tie-break',
+          MessageType.SYNC_CREATE,
+        );
         return;
       }
       this.finish('yielded to the peer');
@@ -900,6 +911,21 @@ export class WatchTogetherSession {
       this.reject(SyncRejectReason.MALFORMED, String(err), messageType);
       return;
     }
+
+    // An invitation WITHDRAWN before it was accepted. There is no sessionId on
+    // this side yet, so the plain comparison below would drop the packet as
+    // "another session" and leave the invite card on screen for ever - and a
+    // later join() would then send a SYNC_JOIN into a session that no longer
+    // exists, stranding this device in FOLLOWING with nobody publishing.
+    const invite = this.pendingInvite;
+    if (invite && this.sessionId === null && farewell.sessionId === invite.sessionId) {
+      this.pendingInvite = null;
+      this.remoteContent = null;
+      this.setState(WatchState.IDLE);
+      this.events.emit('ended', { sessionId: invite.sessionId, reason: farewell.reason ?? reason });
+      return;
+    }
+
     if (farewell.sessionId !== this.sessionId) {
       this.reject(SyncRejectReason.WRONG_SESSION, 'farewell for another session', messageType);
       return;
@@ -1045,13 +1071,48 @@ export class WatchTogetherSession {
     this.events.emit('stateChanged', { state: next, role: this.role });
   }
 
+  /**
+   * The peer session is gone for good.
+   *
+   * A link that merely DROPS is not this: PeerSession keeps the keys and the
+   * queued messages and repairs it, and the watch party must survive that
+   * untouched. `closed` means there will never be another anchor - and without
+   * reacting to it the correction and heartbeat intervals would keep firing for
+   * the life of the process, each one nudging a player against a line frozen at
+   * the moment the peer vanished, while the UI sat in FOLLOWING with no way out.
+   */
+  private onPeerSessionClosed(reason: string): void {
+    if (this.state === WatchState.IDLE || this.state === WatchState.ENDED) {
+      this.cancelQuery();
+      return;
+    }
+    this.finish(`peer session closed: ${reason}`);
+  }
+
+  private onQueryTimeout(queryId: string): void {
+    this.queryTimer = undefined;
+    if (this.pendingQueryId !== queryId) return;
+    this.pendingQueryId = null;
+    if (this.state === WatchState.MATCHING) this.setState(WatchState.IDLE);
+    this.events.emit('contentQueryTimedOut', { queryId });
+  }
+
   private finish(reason: string): void {
     const id = this.sessionId;
+    const anchor = this.anchor;
     this.stopLoops();
     this.stopClockSync();
+    this.cancelQuery();
+    // Retire OUR OWN drift nudge. Ending the session does not stop the film -
+    // but the sub-percent rate correction this module applied is ours, the
+    // correction loop that would have retired it has just been stopped, and
+    // leaving it on means the film plays 0.8% fast for the rest of the evening.
+    // Back to the LINE's rate, not to 1: the speed the user chose is theirs.
+    if (anchor && this.appliedRate !== anchor.rate) this.applyRate(anchor.rate);
     this.peerPresent = false;
     this.anchor = null;
     this.pendingInvite = null;
+    this.lastHonouredRequestAt = Number.NEGATIVE_INFINITY;
     this.setState(WatchState.ENDED);
     this.role = null;
     this.sessionId = null;
@@ -1136,6 +1197,33 @@ export class WatchTogetherSession {
     const position = this.readPosition();
     if (position !== null && Math.abs(position - target) < thresholdMs) return;
     this.mediaSeek(target);
+  }
+
+  /**
+   * play() and pause() are guarded exactly like seek() and setRate().
+   *
+   * A `react-native-video` ref whose component has unmounted throws, and both
+   * of these run inside timer callbacks - beginPlayback from the scheduled-start
+   * timeout, pause from the end-of-content publish in the correction interval.
+   * An exception there does not just skip a frame: it escapes the timer with
+   * nobody to catch it, and it abandons the rest of applyAnchor, so the anchor
+   * would be adopted with no seek, no rate, no scheduled start and no
+   * `anchorChanged` for the UI.
+   */
+  private mediaPlay(): void {
+    try {
+      this.media.play();
+    } catch (err) {
+      this.log.debug('media play failed', { err: String(err) });
+    }
+  }
+
+  private mediaPause(): void {
+    try {
+      this.media.pause();
+    } catch (err) {
+      this.log.debug('media pause failed', { err: String(err) });
+    }
   }
 
   private mediaSeek(positionMs: number): void {

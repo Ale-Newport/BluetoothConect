@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MessageType, PROTOCOL_VERSION } from '../src/protocol/constants.js';
+import { Channel, MessageType, PROTOCOL_VERSION } from '../src/protocol/constants.js';
 import { encodeCbor, type CborValue } from '../src/protocol/cbor.js';
 import { TransportKind, type PeerCapabilities } from '../src/protocol/capabilities.js';
 import { SeededRandom } from '../src/crypto/random.js';
 import { createIdentity, type LocalIdentity } from '../src/crypto/identity.js';
 import type { HandshakeConfig } from '../src/crypto/handshake.js';
-import { PeerSession } from '../src/session/peerSession.js';
+import { PeerSession, type IncomingMessage } from '../src/session/peerSession.js';
 import { ConnectionState } from '../src/session/stateMachine.js';
 import {
   BLE_LIKE_CONDITIONS,
@@ -16,10 +16,12 @@ import {
   type NetworkConditions,
 } from '../src/transport/mock.js';
 import type { Link } from '../src/transport/types.js';
+import type { Unsubscribe } from '../src/util/emitter.js';
 import { VirtualClock } from '../src/util/time.js';
 import { DecodeError } from '../src/util/varint.js';
 import {
   GroupSession,
+  MAX_EPOCH_ADVANCE,
   MESH_LIMITS,
   MeshDropReason,
   MeshError,
@@ -31,8 +33,10 @@ import {
   encodeGroupSnapshot,
   encodeRelayPacket,
   seenKey,
+  snapshotProblem,
   type GroupMessageEvent,
   type GroupSnapshot,
+  type MeshPeer,
   type RelayPacket,
 } from '../src/mesh/index.js';
 
@@ -1340,8 +1344,8 @@ describe('the relay budget', () => {
       rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('AAAA', `g${i}`, 16));
     }
     const afterA = rig.c.sent.length;
-    // ...and C's traffic, handed to us by A, still goes through to A's side.
-    rig.a.deliver(MessageType.GROUP_RELAY, null, relayFrom('CCCC', 'fromC', 16, 'AAAA'));
+    // ...and C's traffic, on its own budget, still goes through.
+    rig.c.deliver(MessageType.GROUP_RELAY, null, relayFrom('CCCC', 'fromC', 16, 'AAAA'));
     expect(rig.a.sent).toHaveLength(1);
     expect(rig.c.sent).toHaveLength(afterA);
     // Bounded map: one entry per origin, never one per packet.
