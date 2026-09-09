@@ -655,6 +655,15 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 }
 
+/**
+ * The same, but deep enough for a whole send window: `pump` awaits the store
+ * once per message, so filling a twelve-message window costs several times as
+ * many microtask turns as sending one.
+ */
+async function settleWindow(): Promise<void> {
+  for (let i = 0; i < 128; i++) await Promise.resolve();
+}
+
 async function makeOffer(contents: Uint8Array, chunkSize: number): Promise<FileOffer> {
   return {
     transferId: 'T1',
@@ -1291,5 +1300,185 @@ describe('a hostile peer', () => {
     expect(failures[0]?.code).toBe(FileErrorCode.HASH_MISMATCH);
     expect(protoB.progressOf(id)).toBeNull();
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Resources a peer would otherwise control
+// ---------------------------------------------------------------------------
+
+describe('bounded resources', () => {
+  it('does not buffer an unbounded number of chunk payloads when the store is slow', async () => {
+    const chunkSize = 256;
+    const totalChunks = 400;
+    const contents = pattern(chunkSize * totalChunks);
+    const offer = await makeOffer(contents, chunkSize);
+    const { wire } = stubWire(180);
+
+    // A store that accepts writes and never finishes them - a phone whose flash
+    // is busy, which is the ordinary case, not the exotic one.
+    const pending: (() => void)[] = [];
+    const store: FileStore = {
+      readChunk: async () => new Uint8Array(0),
+      writeChunk: () => new Promise<void>((resolve) => pending.push(resolve)),
+    };
+
+    const transfer = new IncomingTransfer(offer, wire, new VirtualClock(), NOOP_LISTENER);
+    transfer.accept(store);
+
+    // A peer that ignores the window it was granted and sends the whole file.
+    for (let index = 0; index < totalChunks; index++) {
+      const data = contents.slice(index * chunkSize, (index + 1) * chunkSize);
+      transfer.handleChunk({
+        transferId: offer.transferId,
+        index,
+        run: 1,
+        digest: chunkDigest(offer.transferId, index, 1, data),
+        data,
+      });
+    }
+    await settle();
+
+    // Each accepted chunk pins its payload until the write lands, so the number
+    // of outstanding writes IS the memory this peer can make us hold.
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.length).toBeLessThanOrEqual(DEFAULT_TUNING.receiveWindowMessages * 2);
+    // Nothing was written twice, and nothing was silently accepted: the chunks
+    // that were refused are counted.
+    expect(transfer.rejectedChunks).toBe(totalChunks - pending.length);
+    expect(transfer.receivedChunks).toBe(0);
+  });
+
+  it('gives up on an offer nobody answers, freeing the slot it was holding', async () => {
+    const { ctx, protoA, protoB } = await connectFilePair(
+      {},
+      { maxConcurrentIncoming: 1, tuning: { ...DEFAULT_TUNING, offerTimeoutMs: 5_000 } },
+    );
+    const declines = collectDeclineMessages(ctx.sessionA);
+    const offers: FileOffer[] = [];
+    // Deliberately never accepted or declined: the phone is in a pocket.
+    protoB.events.on('offer', ({ offer }) => offers.push(offer));
+
+    // Straight from the wire, so only the RECEIVER's clock is under test.
+    ctx.sessionA.sendReliable(
+      MessageType.FILE_OFFER,
+      encodeFileOffer({
+        transferId: 'IGNORED1',
+        filename: 'ignored.bin',
+        fileBytes: 4096,
+        mimeType: '',
+        chunkSize: 256,
+        totalChunks: totalChunksFor(4096, 256),
+        fileHash: new Uint8Array(32),
+      }),
+    );
+    expect(await runUntil(ctx.clock, () => offers.length > 0, 5_000)).toBe(true);
+    expect(protoB.diagnostics().incoming).toBe(1);
+
+    // The offer expires, and the peer is told so its own prompt can go away.
+    expect(await runUntil(ctx.clock, () => declines.length > 0, 30_000)).toBe(true);
+    expect(declines[0]?.transferId).toBe('IGNORED1');
+    expect(declines[0]?.code).toBe(FileErrorCode.TIMED_OUT);
+    expect(protoB.activeTransfers).toHaveLength(0);
+
+    // ...and the single incoming slot it was holding is genuinely free again,
+    // which is the whole point: one silent peer must not end file transfer.
+    const sink = new MemoryFileStore(2048);
+    protoB.events.on('offer', ({ offer }) => protoB.accept(offer.transferId, sink));
+    const doneA = collectCompletions(protoA);
+    await protoA.offer({ filename: 'after.bin', fileBytes: 2048, store: new MemoryFileStore(pattern(2048)) });
+    expect(await runUntil(ctx.clock, () => doneA.length > 0, 30_000)).toBe(true);
+  }, 60_000);
+
+  it('gives up on an offer the peer never answers', async () => {
+    const { ctx, protoA, protoB } = await connectFilePair(
+      {},
+      { maxConcurrentOutgoing: 1, tuning: { ...DEFAULT_TUNING, offerTimeoutMs: 5_000 } },
+    );
+    // Nothing on the far side is listening for files any more.
+    protoB.dispose();
+    const failures: { transferId: string; code: FileErrorCode }[] = [];
+    protoA.events.on('failed', (e) => failures.push({ transferId: e.transferId, code: e.code }));
+
+    const id = await protoA.offer({
+      filename: 'into-the-void.bin',
+      fileBytes: 4096,
+      store: new MemoryFileStore(pattern(4096)),
+    });
+    expect(protoA.activeTransfers).toHaveLength(1);
+
+    expect(await runUntil(ctx.clock, () => failures.length > 0, 30_000)).toBe(true);
+    expect(failures[0]?.transferId).toBe(id);
+    expect(failures[0]?.code).toBe(FileErrorCode.TIMED_OUT);
+    // The outgoing slot is free, so the user can try again.
+    expect(protoA.activeTransfers).toHaveLength(0);
+    expect(protoA.progressOf(id)).toBeNull();
+    await expect(
+      protoA.offer({ filename: 'retry.bin', fileBytes: 16, store: new MemoryFileStore(pattern(16)) }),
+    ).resolves.toBeTypeOf('string');
+  }, 60_000);
+
+  it('does not re-send chunks the receiver has no way to acknowledge', async () => {
+    const chunkSize = 256;
+    const contents = pattern(chunkSize * 1000);
+    const offer = await makeOffer(contents, chunkSize);
+    // A Wi-Fi sized datagram: 64 grid chunks per message, and a window of 12
+    // messages reaches 768 chunks - six times what one ack bitmap can describe.
+    const { wire, chunks } = stubWire(64 * chunkSize + 72 + chunkHeaderBytes(offer.transferId.length));
+    const clock = new VirtualClock();
+    const transfer = new OutgoingTransfer(offer, new MemoryFileStore(contents), wire, clock, NOOP_LISTENER);
+
+    transfer.handleAccept(16);
+    await settleWindow();
+    expect(chunks).toHaveLength(DEFAULT_TUNING.maxInFlightMessages);
+    expect(decodeFileChunk(chunks[0] as Uint8Array).run).toBe(FILE_LIMITS.maxRunChunks);
+
+    // The receiver holds chunks 64..127 but is still missing the very first
+    // run, so its contiguous prefix is stuck at 0 and its 16-byte selective
+    // bitmap cannot describe anything at or above chunk 128.
+    const bitmap = new Uint8Array(FILE_LIMITS.maxAckBitmapBytes);
+    for (let bit = 64; bit < 128; bit++) bitmap[bit >> 3] = (bitmap[bit >> 3] as number) | (1 << (bit & 7));
+    transfer.handleAck({ transferId: offer.transferId, prefix: 0, bitmap, missing: [], window: 16 });
+    await settleWindow();
+
+    chunks.length = 0;
+    clock.advance(DEFAULT_TUNING.chunkTimeoutMs + 1);
+    transfer.tick();
+    await settleWindow();
+
+    const resent = chunks.map((c) => decodeFileChunk(c));
+    // The run that really is missing goes again...
+    expect(resent.some((c) => c.index === 0)).toBe(true);
+    // ...and the 640 chunks the receiver was never able to mention do not. Silence
+    // above the ack window is not evidence of loss.
+    expect(resent.filter((c) => c.index >= FILE_LIMITS.maxAckBitmapBytes * 8)).toHaveLength(0);
+  });
+
+  it('does not let a peer reset the retry budget by repeating FILE_RESUME', async () => {
+    const chunkSize = 256;
+    const contents = pattern(chunkSize * 8);
+    const offer = await makeOffer(contents, chunkSize);
+    const { wire } = stubWire(180);
+    const clock = new VirtualClock();
+    const failures: { code: FileErrorCode }[] = [];
+    const listener: TransferListener = { ...NOOP_LISTENER, onFailed: (_t, code) => failures.push({ code }) };
+    const transfer = new OutgoingTransfer(offer, new MemoryFileStore(contents), wire, clock, listener);
+
+    transfer.handleAccept(16);
+    await settle();
+
+    // "I have nothing, start again" - over and over, acknowledging nothing. A
+    // few bytes of theirs must not buy an unbounded number of ours.
+    const nothing = new ChunkBitmap(offer.totalChunks).encodeResume();
+    for (let round = 0; round < 20 && !transfer.isFinished; round++) {
+      transfer.handleResume({ transferId: offer.transferId, prefix: nothing.prefix, bitmap: nothing.bytes });
+      await settle();
+      clock.advance(DEFAULT_TUNING.chunkTimeoutMs + 1);
+      transfer.tick();
+      await settle();
+    }
+
+    expect(transfer.state).toBe(TransferState.FAILED);
+    expect(failures[0]?.code).toBe(FileErrorCode.TOO_MANY_RETRIES);
+  });
 });
 

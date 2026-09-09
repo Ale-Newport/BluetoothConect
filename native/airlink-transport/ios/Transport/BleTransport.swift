@@ -112,6 +112,8 @@ final class BleTransport: NSObject, AirLinkTransport {
     private var wantsAdvertising = false
     private var advertisedToken = Data()
     private var advertisedName = ""
+    /// What is actually on the air, so a no-op update does not restart it.
+    private var broadcastName: String?
     private var publishedPSM: CBL2CAPPSM = 0
     private var l2capPublishInFlight = false
     /// Channels a central opened before it subscribed to TX. Our own central
@@ -356,6 +358,7 @@ final class BleTransport: NSObject, AirLinkTransport {
         wantsScanning = false
         advertisedToken = Data()
         advertisedName = ""
+        broadcastName = nil
         discovered.removeAll()
         knownPeripherals.removeAll()
 
@@ -379,6 +382,7 @@ final class BleTransport: NSObject, AirLinkTransport {
     func stopAdvertising() {
         queue.async { [self] in
             wantsAdvertising = false
+            broadcastName = nil
             if peripheralManager?.state == .poweredOn { peripheralManager?.stopAdvertising() }
         }
     }
@@ -391,7 +395,13 @@ final class BleTransport: NSObject, AirLinkTransport {
         }
         guard wantsAdvertising else { return }
 
+        // The rotating token is not in the advertisement, so a rotation changes
+        // nothing a scanner can see. Restarting anyway would punch a hole in our
+        // advertising several times an hour for no gain, so only a change to
+        // what is genuinely broadcast restarts it.
+        if manager.isAdvertising, broadcastName == advertisedName { return }
         if manager.isAdvertising { manager.stopAdvertising() }
+        broadcastName = advertisedName
 
         /*
          * Only two keys mean anything to CBPeripheralManager - the local name
@@ -1457,6 +1467,7 @@ extension BleTransport: CBPeripheralManagerDelegate {
             gattService = nil
             publishedPSM = 0
             l2capPublishInFlight = false
+            broadcastName = nil
             for held in unmatchedInboundChannels.values {
                 discard(channel: held.channel, why: "Bluetooth went away")
             }

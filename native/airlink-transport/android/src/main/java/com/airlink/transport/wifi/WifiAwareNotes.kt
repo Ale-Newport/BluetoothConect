@@ -1,11 +1,14 @@
 package com.airlink.transport.wifi
 
 /*
- * WHY THERE IS NO WifiAwareTransport IN THIS PACKAGE
- * ==================================================
+ * WHY WifiAwareTransport IS AN ADAPTER AND NOT A TRANSPORT
+ * ========================================================
  *
  * This file exists so the next person to read this directory knows that Wi-Fi
- * Aware (NAN) was considered and deliberately left out, not forgotten.
+ * Aware (NAN) was considered and deliberately left out, not forgotten. The
+ * class next door, WifiAwareTransport.kt, keeps the identifier alive in the
+ * capability vocabulary and reports "unavailable" honestly; it opens no radio
+ * and moves no bytes.
  *
  * The pitch is genuinely attractive: Wi-Fi Aware gives peer-to-peer discovery
  * and a high-bandwidth data path with no access point, no group owner
@@ -40,13 +43,13 @@ package com.airlink.transport.wifi
  *
  * WHAT THE CODE DOES INSTEAD
  * --------------------------
- * The capability layer reports the 'wifiAware' transport as supported only when
+ * AirLinkTransportModule reports 'wifiAware' as supported only when
  * FEATURE_WIFI_AWARE is present, and available never - with the reason
  * 'unsupportedHardware' on devices without the feature and a documented
- * "unavailable" path everywhere else. That keeps the transport identifier alive
- * in the negotiation protocol, so if the interop story ever changes this
- * becomes one new file implementing AirLinkTransport and no feature code
- * changes at all. Nothing in the product promises it today.
+ * "unavailable" path on the ones that have it. That keeps the identifier alive
+ * in the negotiation protocol, so if the interop story ever changes this becomes
+ * one file's worth of work and no feature code changes at all. Nothing in the
+ * product promises it today.
  *
  * If you do revisit it: android.net.wifi.aware.WifiAwareManager, an
  * attach/publish/subscribe session, then WifiAwareNetworkSpecifier through

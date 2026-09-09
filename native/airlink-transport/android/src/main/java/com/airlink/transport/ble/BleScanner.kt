@@ -124,6 +124,16 @@ internal class BleScanner(
     }
 
     /**
+     * The signal strength last measured from this peer's advertisement, if we
+     * have seen one.
+     *
+     * It is the only reading available for a link the peer opened to us: a GATT
+     * *server* has no equivalent of `readRemoteRssi`, so an incoming link would
+     * otherwise report a flat zero forever.
+     */
+    fun lastRssi(endpointId: String): Int? = sightings[endpointId]?.endpoint?.rssi
+
+    /**
      * Folds better information into a peer we already know about.
      *
      * An Android advertisement has 31 bytes and an iPhone in the background

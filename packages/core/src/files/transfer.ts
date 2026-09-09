@@ -721,20 +721,6 @@ export class IncomingTransfer extends BaseTransfer {
     this.ackPending = true;
     if (!novel) return;
 
-    // Back-pressure, and the only bound on how much of this peer's data we hold
-    // in memory at once.
-    //
-    // Every accepted chunk pins its payload until the store has written it, and
-    // the window we granted is a request, not a guarantee - a peer may ignore
-    // it, and a store on a phone whose flash is busy may simply be slower than
-    // the radio is fast. Dropping is safe and cheap: the chunk was never
-    // acknowledged, so the sender still owns it and will send it again. Holding
-    // it would be neither.
-    if (this.writesInFlight >= this.maxWritesInFlight()) {
-      this.reject(msg.index, 'too many writes already outstanding');
-      return;
-    }
-
     this.writesInFlight++;
     void this.writeRun(store, msg);
   }

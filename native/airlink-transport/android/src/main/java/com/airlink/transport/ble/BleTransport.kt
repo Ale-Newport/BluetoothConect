@@ -11,7 +11,6 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.os.Process
 import com.airlink.transport.AirLinkTransport
-import com.airlink.transport.DiscoveredEndpoint
 import com.airlink.transport.LinkMetricsSnapshot
 import com.airlink.transport.LinkState
 import com.airlink.transport.TransportAvailability
@@ -79,7 +78,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
     override var events: TransportEventSink? = null
 
     private val appContext: Context = context.applicationContext
-    private val availability = BleAvailability(appContext)
+    private val radio = BleAvailability(appContext)
 
     private var thread: HandlerThread? = null
     private var handlerRef: Handler? = null
@@ -111,14 +110,14 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
      * out from here.
      */
     var permissionsRequested: Boolean
-        get() = availability.permissionsRequested
+        get() = radio.permissionsRequested
         set(value) {
-            availability.permissionsRequested = value
+            radio.permissionsRequested = value
         }
 
     // -- AirLinkTransport: lifecycle ------------------------------------------
 
-    override fun availability(): TransportAvailability = availability.availability()
+    override fun availability(): TransportAvailability = radio.availability()
 
     override fun start(configuration: TransportConfiguration) {
         val uuids = try {
@@ -137,7 +136,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
             started = true
 
             if (uuids.identity == null) {
-                host_log(
+                emitLog(
                     "warn",
                     "the RX and TX UUIDs are not consecutive with the service UUID, so the " +
                         "identity characteristic cannot be derived: no L2CAP upgrade and no " +
@@ -149,15 +148,15 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
 
             scanner = BleScanner(
                 handler = handler,
-                availability = availability,
+                availability = radio,
                 onDiscovered = { endpoint -> emit { it.peerDiscovered(endpoint) } },
                 onLost = { endpoint -> emit { it.peerLost(endpoint) } },
-                log = { level, message -> host_log(level, message) },
+                log = { level, message -> emitLog(level, message) },
             )
 
             val server = BleGattServer(
                 context = appContext,
-                availability = availability,
+                availability = radio,
                 host = this,
                 newLinkId = { newLinkId() },
                 onIncomingLink = { link -> registerIncoming(link) },
@@ -165,7 +164,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
             gattServer = server
             server.start(uuids)
 
-            host_log("info", "BLE transport started for service ${uuids.service}")
+            emitLog("info", "BLE transport started for service ${uuids.service}")
         }
     }
 
@@ -176,7 +175,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
      * waiting on a link that has quietly stopped existing.
      */
     override fun stop() {
-        val h = handlerRef ?: return
+        if (handlerRef == null) return
         onHandler("stop") {
             if (!started) return@onHandler
             started = false
@@ -199,7 +198,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
             wantsDiscovery = false
             advertisedToken = null
             advertisedName = ""
-            host_log("info", "BLE transport stopped")
+            emitLog("info", "BLE transport stopped")
         }
 
         // Quit last and from the caller's thread, so the block above has
@@ -210,11 +209,6 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
             thread?.quitSafely()
             thread = null
             handlerRef = null
-        }
-        if (h.looper.thread === Thread.currentThread()) {
-            // Only reachable if the bridge called stop() from a callback we
-            // delivered. Nothing else to do; the looper ends on its own.
-            return
         }
     }
 
@@ -283,17 +277,17 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
                 return@post
             }
 
-            if (!availability.isRadioOn) {
+            if (!radio.isRadioOn) {
                 completion(Result.failure(BleErrors.radioOff()))
                 return@post
             }
-            if (!availability.canConnect) {
+            if (!radio.canConnect) {
                 completion(Result.failure(BleErrors.permissionDenied()))
                 return@post
             }
 
             val device = try {
-                availability.adapter?.getRemoteDevice(endpointId)
+                radio.adapter?.getRemoteDevice(endpointId)
             } catch (_: Throwable) {
                 // getRemoteDevice throws IllegalArgumentException for anything
                 // that is not a Bluetooth address - including a perfectly valid
@@ -314,7 +308,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
                 context = appContext,
                 device = device,
                 uuids = uuids,
-                availability = availability,
+                availability = radio,
                 host = this,
                 linkId = newLinkId(),
                 onIdentity = { endpoint, record ->
@@ -333,7 +327,11 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
                         completion(Result.success(link.id))
                     }
                 },
-                onRetired = { finished -> connections.remove(finished.endpointId, finished) },
+                onRetired = { finished ->
+                    if (connections[finished.endpointId] === finished) {
+                        connections.remove(finished.endpointId)
+                    }
+                },
             )
             connections[endpointId] = connection
             connection.start(budget)
@@ -423,7 +421,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
         links.remove(link.id)
     }
 
-    override fun log(level: String, message: String) = host_log(level, message)
+    override fun log(level: String, message: String) = emitLog(level, message)
 
     // -- radio state -----------------------------------------------------------
 
@@ -449,7 +447,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
             }
             adapterReceiver = receiver
         } catch (t: Throwable) {
-            host_log("warn", "could not observe the Bluetooth adapter: ${t.javaClass.simpleName}")
+            emitLog("warn", "could not observe the Bluetooth adapter: ${t.javaClass.simpleName}")
         }
     }
 
@@ -482,7 +480,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
         when (state) {
             BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                 if (!started) return
-                host_log("info", "Bluetooth is switching off; closing everything cleanly")
+                emitLog("info", "Bluetooth is switching off; closing everything cleanly")
 
                 scanner?.stop()
                 connections.values.toList().forEach { it.teardown("Bluetooth was switched off", failed = true) }
@@ -496,17 +494,13 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
 
             BluetoothAdapter.STATE_ON -> {
                 if (!started) return
-                host_log("info", "Bluetooth is back; restoring discovery and advertising")
+                emitLog("info", "Bluetooth is back; restoring discovery and advertising")
                 val uuids = configuration
-                if (uuids != null) {
-                    val server = BleGattServer(
-                        context = appContext,
-                        availability = availability,
-                        host = this,
-                        newLinkId = { newLinkId() },
-                        onIncomingLink = { link -> registerIncoming(link) },
-                    )
-                    gattServer = server
+                val server = gattServer
+                if (uuids != null && server != null) {
+                    // stop() left the server object reusable, so it is started
+                    // again rather than replaced: one fewer object whose
+                    // construction has to stay in step with start().
                     server.start(uuids)
 
                     val token = advertisedToken
@@ -514,20 +508,20 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
                         try {
                             server.startAdvertising(token, advertisedName)
                         } catch (t: Throwable) {
-                            host_log("warn", "could not resume advertising: ${t.message ?: "unknown"}")
+                            emitLog("warn", "could not resume advertising: ${t.message ?: "unknown"}")
                         }
                     }
                     if (wantsDiscovery) {
                         try {
                             scanner?.start(uuids.service)
                         } catch (t: Throwable) {
-                            host_log("warn", "could not resume discovery: ${t.message ?: "unknown"}")
+                            emitLog("warn", "could not resume discovery: ${t.message ?: "unknown"}")
                         }
                     }
                 }
-                val state = availability.availability()
+                val current = radio.availability()
                 emit {
-                    it.availabilityChanged(TransportKind.BLE, state.available, state.reason)
+                    it.availabilityChanged(TransportKind.BLE, current.available, current.reason)
                 }
             }
         }
@@ -549,7 +543,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
      * Hands an event to the sink, on the handler thread, without letting a
      * throwing sink take the radio down with it.
      */
-    private inline fun emit(block: (TransportEventSink) -> Unit) {
+    private fun emit(block: (TransportEventSink) -> Unit) {
         val sink = events ?: return
         try {
             block(sink)
@@ -562,9 +556,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
         }
     }
 
-    // Named with an underscore so it cannot be confused with the BleLinkHost
-    // override of the same idea, which delegates here.
-    private fun host_log(level: String, message: String) {
+    private fun emitLog(level: String, message: String) {
         val sink = events ?: return
         try {
             sink.log(level, "ble", message)
@@ -625,7 +617,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
             try {
                 block()
             } catch (t: Throwable) {
-                host_log("warn", "${t.javaClass.simpleName}: ${t.message ?: "no detail"}")
+                emitLog("warn", "${t.javaClass.simpleName}: ${t.message ?: "no detail"}")
             }
             return
         }
@@ -633,7 +625,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
             try {
                 block()
             } catch (t: Throwable) {
-                host_log("warn", "${t.javaClass.simpleName}: ${t.message ?: "no detail"}")
+                emitLog("warn", "${t.javaClass.simpleName}: ${t.message ?: "no detail"}")
             }
         }
     }

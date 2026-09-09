@@ -1268,6 +1268,40 @@ describe('probe slots cannot be squatted on', () => {
     expect((await running).upgraded).toBe(true);
     expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
   });
+
+  it('holds the slot for the endpoint the peer is actually at, under a flood', async () => {
+    // A squatter that keeps dialling, rather than opening a few links and
+    // stopping, churns the pool for as long as the negotiation lasts. Making
+    // room for whoever knocked last is then no defence at all: the peer's link
+    // is evicted moments after it arrives, every time. The endpoint the peer is
+    // known to be at is the one piece of evidence available before the probe,
+    // so it decides who keeps a slot.
+    const ctx = await connectPair();
+    const stranger = ctx.network.createTransport('stranger-flood');
+    const target = ctx.responder.fast.trueEndpointId;
+
+    let opened = 0;
+    const flood = (): void => {
+      if (opened >= 40) return;
+      opened++;
+      void stranger.connect(target).catch(() => undefined);
+    };
+    // Every arrival provokes two more, so the pool is being churned throughout.
+    ctx.responder.fast.events.on('incomingLink', () => {
+      flood();
+      flood();
+    });
+    ctx.responder.controller.events.on('stateChanged', ({ state }) => {
+      if (state === UpgradeState.AWAITING_LINK) flood();
+    });
+
+    const running = ctx.initiator.controller.considerUpgrade();
+    await ctx.clock.advanceAsync(40_000, 10);
+
+    expect(opened).toBeGreaterThan(8);
+    expect((await running).upgraded).toBe(true);
+    expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
+  });
 });
 
 describe('a radio handle from a native bridge is not trusted', () => {
