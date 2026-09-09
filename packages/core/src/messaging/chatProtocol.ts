@@ -165,11 +165,6 @@ const DEFAULTS = {
   maxPendingHistoryRequests: 4,
 } as const;
 
-interface PendingHistoryRequest {
-  readonly query: HistoryQuery;
-  timer: TimerHandle | undefined;
-}
-
 // ---------------------------------------------------------------------------
 
 export class ChatProtocol {
@@ -196,7 +191,8 @@ export class ChatProtocol {
   private readonly pendingDeliveryIds: string[] = [];
   private receiptTimer: TimerHandle | undefined;
 
-  private readonly pendingHistory = new Map<string, PendingHistoryRequest>();
+  /** Request id -> its deadline timer. Only ids in here accept a response. */
+  private readonly pendingHistory = new Map<string, TimerHandle>();
   private historyTokens: number = DEFAULTS.historyBurst;
   private historyTokensAt: number;
 
@@ -373,12 +369,17 @@ export class ChatProtocol {
     return handed;
   }
 
-  /** Clear the failure flag and try one more time. For a "retry" button. */
+  /**
+   * Clear the failure flag and try again. For a "retry" button.
+   * Returns whether THIS message is now on its way, not merely whether the
+   * flush did something.
+   */
   retry(messageId: string): boolean {
     const entry = this.outbox.get(messageId);
     if (!entry) return false;
     this.outbox.set(messageId, { ...entry, attempts: 0, failed: false });
-    return this.flush() > 0;
+    this.flush();
+    return this.inFlight.has(messageId);
   }
 
   private transmit(entry: OutboxEntry): boolean {
@@ -588,6 +589,9 @@ export class ChatProtocol {
       // the bytes may be on the radio. Cancel only what has not left.
       if (!entry || this.inFlight.has(id)) continue;
       this.outbox.delete(id);
+      // It never existed as far as this device is concerned, so it has no
+      // delivery status either.
+      this.sentStatus.delete(id);
       cancelled.push(id);
     }
     return cancelled;
@@ -624,15 +628,13 @@ export class ChatProtocol {
     if (this.trySendReliable(MessageType.MESSAGE_HISTORY_REQUEST, encodeHistoryRequest({ ...query, requestId })) === null) {
       return null;
     }
-    const pending: PendingHistoryRequest = { query, timer: undefined };
     // Every outstanding request carries its own deadline, so a peer that simply
     // never answers cannot leak an entry per attempt.
-    pending.timer = this.options.clock.setTimeout(() => {
-      pending.timer = undefined;
+    const timer = this.options.clock.setTimeout(() => {
       if (!this.pendingHistory.delete(requestId)) return;
       this.events.emit('historyFailed', { requestId, reason: 'timed out' });
     }, this.options.historyTimeoutMs ?? DEFAULTS.historyTimeoutMs);
-    this.pendingHistory.set(requestId, pending);
+    this.pendingHistory.set(requestId, timer);
     return requestId;
   }
 
@@ -747,9 +749,13 @@ export class ChatProtocol {
       // The only exception that may escape a decoder is DecodeError, and it
       // means one packet was rubbish - not that the conversation is broken.
       if (err instanceof DecodeError) {
+        this.malformedDropped++;
         this.drop('malformed', err.message);
         return;
       }
+      // Anything else is a bug on THIS side, not a hostile peer. It is logged
+      // loudly, and the conversation carries on regardless.
+      this.log.error('a chat handler threw', { type: incoming.type, err: String(err) });
       this.drop('handler error', String(err));
     }
   }
@@ -827,14 +833,15 @@ export class ChatProtocol {
 
   private onHistoryResponse(incoming: IncomingMessage): void {
     const response = decodeHistoryResponse(this.payloadOf(incoming));
-    const pending = this.pendingHistory.get(response.requestId);
-    if (!pending) {
+    if (!this.pendingHistory.has(response.requestId)) {
       // Unsolicited history is a way to push arbitrary content into a
-      // conversation. Only an answer to a question we asked is accepted.
+      // conversation. Only an answer to a question we asked is accepted, and
+      // only once - a request id is spent the moment it is answered.
       this.drop('unsolicited history response', response.requestId);
       return;
     }
-    if (pending.timer !== undefined) this.options.clock.clearTimeout(pending.timer);
+    const timer = this.pendingHistory.get(response.requestId);
+    if (timer !== undefined) this.options.clock.clearTimeout(timer);
     this.pendingHistory.delete(response.requestId);
 
     // Historical messages become valid reaction targets, but they are NOT
@@ -956,8 +963,11 @@ export class ChatProtocol {
     }
   }
 
+  /**
+   * Refuse one frame. Never throws, never changes any other state: the
+   * conversation must be exactly as it was a moment ago, minus one bad packet.
+   */
   private drop(reason: string, detail: string): void {
-    this.malformedDropped++;
     this.log.debug('dropped a chat frame', { reason, detail });
     this.events.emit('dropped', { reason, detail });
   }
@@ -977,9 +987,7 @@ export class ChatProtocol {
     this.peerTypingTimer = undefined;
     if (this.receiptTimer !== undefined) this.options.clock.clearTimeout(this.receiptTimer);
     this.receiptTimer = undefined;
-    for (const pending of this.pendingHistory.values()) {
-      if (pending.timer !== undefined) this.options.clock.clearTimeout(pending.timer);
-    }
+    for (const timer of this.pendingHistory.values()) this.options.clock.clearTimeout(timer);
     this.pendingHistory.clear();
     this.events.removeAllListeners();
   }

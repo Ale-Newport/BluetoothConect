@@ -83,6 +83,15 @@ const MAX_PROBE_DATAGRAMS = 16;
 /** Retransmits of the probe inside one probe timeout. The link has no reliability yet. */
 const PROBE_ATTEMPTS = 4;
 
+/**
+ * How many unproven links we will hold open at once while waiting for a probe.
+ *
+ * We cannot know which incoming link is the peer's until one of them answers
+ * correctly, so we listen on all of them - but only a few, or anyone able to
+ * open links could exhaust memory while we wait.
+ */
+const MAX_PROBE_LINKS = 4;
+
 interface ProbeDatagram {
   readonly kind: number;
   readonly upgradeId: Uint8Array;
@@ -210,16 +219,49 @@ export interface UpgradeTimings {
   qualitySampleIntervalMs: number;
 }
 
+/**
+ * How long the reliability layer will keep trying before it gives up on one
+ * message: the retransmit timeout doubles from `initialRetransmitMs` up to
+ * `maxRetransmitMs`, over `maxRetransmitAttempts` attempts. About 36 seconds
+ * with the shipping constants.
+ */
+function reliableRetryBudgetMs(): number {
+  let total = 0;
+  let rto = TIMING.initialRetransmitMs;
+  for (let i = 0; i < TIMING.maxRetransmitAttempts; i++) {
+    total += rto;
+    rto = Math.min(TIMING.maxRetransmitMs, rto * 2);
+  }
+  return total;
+}
+
+const RELIABLE_RETRY_BUDGET_MS = reliableRetryBudgetMs();
+
+/**
+ * Every step that waits for a message the peer must send over the OLD link is
+ * given MORE than the reliability layer's retry budget.
+ *
+ * This looks alarmingly long until you notice what is happening during it: the
+ * conversation is running normally the entire time, on the link it was already
+ * on. Timing out sooner would not help the user, it would just abandon upgrades
+ * that were seconds from completing - and on a BLE link with a wall in the way,
+ * a negotiation message really does sometimes take twenty seconds to land. The
+ * cases that genuinely deserve a fast failure - the peer's reliability layer
+ * giving up, the link dying, the peer refusing - all abort the attempt
+ * immediately by other means; these numbers are only the backstop for a peer
+ * that has gone silent without anything noticing.
+ */
 export const DEFAULT_UPGRADE_TIMINGS: UpgradeTimings = {
-  // Generous, because the negotiation itself runs over BLE, which is slow and
-  // may be retransmitting under it.
-  offerTimeoutMs: 12_000,
+  offerTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 4_000,
   connectTimeoutMs: 15_000,
+  // The probe runs on the NEW link, which is the fast one; it does not need the
+  // BLE budget, and a fast link that cannot answer in eight seconds is not one
+  // we want the conversation on.
   probeTimeoutMs: 8_000,
-  readyTimeoutMs: 12_000,
-  switchTimeoutMs: 12_000,
-  responderLinkTimeoutMs: 25_000,
-  responderSwitchTimeoutMs: 25_000,
+  readyTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 4_000,
+  switchTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 4_000,
+  responderLinkTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 20_000,
+  responderSwitchTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 20_000,
   failureCooldownMs: 60_000,
   minAttemptIntervalMs: 5_000,
   qualitySampleIntervalMs: 2_000,
@@ -398,6 +440,10 @@ export class TransportUpgradeController {
   /** A link opened for an upgrade and already proven, but not yet migrated to. */
   private provenLink: Link | null = null;
   private provenKind: TransportKind | null = null;
+  /** Incoming links on the offered transport that have yet to prove themselves. */
+  private probeCandidates: Link[] = [];
+  /** Sequence numbers of negotiation messages sent during the current attempt. */
+  private readonly attemptSeqs = new Set<number>();
 
   private started = false;
   private disposed = false;
@@ -431,6 +477,15 @@ export class TransportUpgradeController {
       this.session.events.on('message', (message) => this.handleSessionMessage(message)),
       this.session.events.on('stateChanged', ({ state }) => this.handleSessionState(state)),
       this.session.events.on('closed', () => this.dispose()),
+      // If the reliability layer gives up on one of OUR negotiation messages,
+      // the peer never saw it and no timeout is going to change that. Abandon
+      // the attempt now rather than waiting out the backstop.
+      this.session.events.on('deliveryFailed', ({ seq }) => {
+        if (!this.attemptSeqs.has(seq)) return;
+        this.abortAttempt(
+          new UpgradeAbort(UpgradeFailureReason.TIMEOUT, 'a negotiation message could not be delivered'),
+        );
+      }),
       this.capabilities.events.on('changed', () => {
         if (this.options.autoUpgrade === false) return;
         void this.considerUpgrade();
@@ -546,7 +601,15 @@ export class TransportUpgradeController {
 
     const waiter = this.linkWaiter;
     if (waiter && link.transport === waiter.kind) {
-      this.linkWaiter = null;
+      // Deliberately NOT first-come-first-served: the waiter is settled by the
+      // first link that answers the probe CORRECTLY, not by the first link that
+      // arrives. Otherwise anyone who can open a link on that radio could take
+      // the slot, stay silent, and starve the upgrade.
+      if (this.probeCandidates.length >= MAX_PROBE_LINKS) {
+        void link.close('too many unproven links').catch(() => undefined);
+        return true;
+      }
+      this.probeCandidates.push(link);
       this.armProbeResponder(link, waiter);
       return true;
     }
@@ -846,6 +909,7 @@ export class TransportUpgradeController {
       });
 
       link = await this.waitForProbedLink(upgradeId, kind, nonce, this.timings.responderLinkTimeoutMs, scope);
+      this.releaseProbeCandidates(link);
 
       // The link is proven. Hold it - and the old one - until told to switch.
       this.provenLink = link;
@@ -889,19 +953,18 @@ export class TransportUpgradeController {
     let offData: Unsubscribe = () => undefined;
     let offState: Unsubscribe = () => undefined;
 
-    const finish = (err: UpgradeAbort | null): void => {
-      if (settled) return;
+    const detach = (): void => {
       settled = true;
       offData();
       offState();
-      if (err) waiter.reject(err);
-      else waiter.resolve(link);
     };
 
     offData = link.events.on('data', ({ bytes }) => {
       if (settled) return;
       if (++seen > MAX_PROBE_DATAGRAMS) {
-        finish(new UpgradeAbort(UpgradeFailureReason.PROBE_FAILED, 'probe channel carried only noise'));
+        // This link is carrying something that is not our probe. Stop listening
+        // to it; the peer may still be on one of the others.
+        detach();
         return;
       }
       const probe = decodeProbeDatagram(bytes);
@@ -914,14 +977,26 @@ export class TransportUpgradeController {
         return;
       }
       void link.send(answer, 'reliable').catch(() => undefined);
-      finish(null);
+      detach();
+      waiter.resolve(link);
     });
 
     offState = link.events.on('state', ({ state }) => {
-      if (state === LinkState.CLOSED || state === LinkState.FAILED) {
-        finish(new UpgradeAbort(UpgradeFailureReason.LINK_LOST, 'the new link closed before the probe'));
-      }
+      // A candidate going away is not a failure of the upgrade: another
+      // candidate may still be the real peer. Only the overall timeout, which
+      // waitForProbedLink owns, ends the wait.
+      if (state === LinkState.CLOSED || state === LinkState.FAILED) detach();
     });
+  }
+
+  /** Close every unproven link except the one that answered the probe. */
+  private releaseProbeCandidates(keep: Link | null): void {
+    const candidates = this.probeCandidates;
+    this.probeCandidates = [];
+    for (const candidate of candidates) {
+      if (candidate === keep) continue;
+      void candidate.close('not the peer we were expecting').catch(() => undefined);
+    }
   }
 
   /** Migrate onto the link we have been holding, and drop the negotiation state. */
@@ -1242,6 +1317,8 @@ export class TransportUpgradeController {
     this.scope = null;
     this.messageWaiter = null;
     this.linkWaiter = null;
+    this.releaseProbeCandidates(null);
+    this.attemptSeqs.clear();
     this.setState(UpgradeState.IDLE);
   }
 
@@ -1252,6 +1329,8 @@ export class TransportUpgradeController {
     // Waiters unwind through the scope; anything left is stale bookkeeping.
     this.messageWaiter = null;
     this.linkWaiter = null;
+    this.releaseProbeCandidates(null);
+    this.attemptSeqs.clear();
     if (this.provenLink) {
       void this.provenLink.close('upgrade aborted').catch(() => undefined);
       this.provenLink = null;
@@ -1262,7 +1341,11 @@ export class TransportUpgradeController {
 
   private send(messageType: number, value: CborValue): number | null {
     try {
-      return this.session.sendReliable(messageType, value);
+      const seq = this.session.sendReliable(messageType, value);
+      // Only messages belonging to a live attempt are worth watching; a
+      // TRANSPORT_FAILED sent during cleanup has nothing left to abort.
+      if (this.scope !== null) this.attemptSeqs.add(seq);
+      return seq;
     } catch (err) {
       this.log.debug('could not send a transport message', { err: String(err) });
       return null;

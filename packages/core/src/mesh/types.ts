@@ -120,6 +120,8 @@ export const MeshDropReason = {
   ORIGIN_NOT_MEMBER: 'originNotMember',
   /** The packet is addressed to somebody who is not in the group. */
   DESTINATION_NOT_MEMBER: 'destinationNotMember',
+  /** The group already holds MESH_LIMITS.maxMembers people. */
+  GROUP_FULL: 'groupFull',
   /** Our own packet came back to us. */
   OWN_PACKET: 'ownPacket',
   /** Seen already - a second copy from a second path, or a loop closing. */

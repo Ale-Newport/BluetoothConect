@@ -353,11 +353,12 @@ export class GroupSession {
       throw new MeshError(`addMember: the group already has ${MESH_LIMITS.maxMembers} members`);
     }
     this.applyJoin(member);
+    const updated = this.state ?? state; // applyJoin has replaced this.state
     // Two different messages, because the two audiences need different things.
     // The new member has no group at all, so it needs the whole state -
     // GROUP_CREATE *is* the invitation. Everybody else has the group already
     // and needs one line of news.
-    this.sendCborTo(member.peerId, MessageType.GROUP_CREATE, encodeGroupSnapshot(this.state ?? state));
+    this.sendCborTo(member.peerId, MessageType.GROUP_CREATE, encodeGroupSnapshot(updated));
     this.sendToAll(
       MessageType.GROUP_MEMBER_JOIN,
       encodeMemberJoin({ groupId: state.groupId, member }),
@@ -614,7 +615,7 @@ export class GroupSession {
     }
     if (this.isMember(signal.member.peerId)) return; // already known: no change, no gossip
     if (state.members.length >= MESH_LIMITS.maxMembers) {
-      this.drop(MeshDropReason.DESTINATION_NOT_MEMBER, via, 'group is full');
+      this.drop(MeshDropReason.GROUP_FULL, via);
       return;
     }
 

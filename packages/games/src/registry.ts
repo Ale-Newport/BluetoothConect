@@ -18,6 +18,7 @@ import { pool } from './games/pool.js';
 import { reaction } from './games/reaction.js';
 import { ticTacToe } from './games/ticTacToe.js';
 import { trivia } from './games/trivia.js';
+import { wordDuel } from './games/wordDuel.js';
 
 type AnyGame = GameDefinition<never, never>;
 const anyGame = (definition: unknown): AnyGame => definition as AnyGame;
@@ -96,6 +97,12 @@ const ENTRIES: GameCatalogueEntry[] = [
     icon: '🎱',
     blurb: 'Solids, stripes, and the black.',
     typicalMinutes: 10,
+  },
+  {
+    definition: anyGame(wordDuel),
+    icon: '🔤',
+    blurb: 'Sixteen letters. Find what they missed.',
+    typicalMinutes: 5,
   },
   {
     definition: anyGame(chess),

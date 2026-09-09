@@ -280,6 +280,7 @@ export class WatchTogetherSession {
 
   /** Ask the peer whether it holds the same file. Returns the query id. */
   queryPeerContent(): string {
+    this.requireLiveSession();
     const local = this.requireContent();
     const queryId = this.newId();
     this.pendingQueryId = queryId;
@@ -294,6 +295,7 @@ export class WatchTogetherSession {
    */
   create(options: { startPositionMs?: number; rate?: number } = {}): string {
     if (this.isActive) throw new Error('WatchTogetherSession: a session is already running');
+    this.requireLiveSession();
     const local = this.requireContent();
     const rate = options.rate ?? 1;
     if (!isValidPlaybackRate(rate)) throw new Error('WatchTogetherSession: rate is out of range');
@@ -1110,6 +1112,17 @@ export class WatchTogetherSession {
     const local = this.localContent;
     if (!local) throw new Error('WatchTogetherSession: call setLocalContent() first');
     return local;
+  }
+
+  /**
+   * Starting a session before the handshake has finished would look like it
+   * worked - `send` swallows the failure so a timer can never throw - and then
+   * silently do nothing. A user-initiated action deserves a real error.
+   */
+  private requireLiveSession(): void {
+    if (!this.session.isSecure) {
+      throw new Error('WatchTogetherSession: the peer session is not authenticated yet');
+    }
   }
 
   private newId(): string {

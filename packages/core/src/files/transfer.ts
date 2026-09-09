@@ -175,6 +175,17 @@ export abstract class BaseTransfer {
     this.listener.onFailed(this, code, message);
   }
 
+  /**
+   * Deliberately a method rather than a comparison against `currentState`: the
+   * asynchronous paths below re-check the state after an `await`, and a direct
+   * comparison would be narrowed by the control-flow analysis to the value the
+   * state had before the await - which is precisely the value that may no
+   * longer hold.
+   */
+  protected isState(state: TransferState): boolean {
+    return this.currentState === state;
+  }
+
   protected setState(next: TransferState): void {
     if (this.currentState === next) return;
     this.currentState = next;
@@ -236,7 +247,7 @@ export class OutgoingTransfer extends BaseTransfer {
   }
 
   handleAccept(window: number): void {
-    if (this.currentState !== TransferState.OFFERED) return;
+    if (!this.isState(TransferState.OFFERED)) return;
     this.peerWindow = window;
     this.setState(TransferState.TRANSFERRING);
     this.throughput.reset(0, this.clock.now());
@@ -276,7 +287,7 @@ export class OutgoingTransfer extends BaseTransfer {
       }
     }
     this.sendCursor = 0;
-    if (this.currentState === TransferState.OFFERED) this.setState(TransferState.TRANSFERRING);
+    if (this.isState(TransferState.OFFERED)) this.setState(TransferState.TRANSFERRING);
     this.throughput.reset(this.transferredBytes, this.clock.now());
     this.recordProgress();
     void this.pump();
@@ -323,7 +334,7 @@ export class OutgoingTransfer extends BaseTransfer {
   }
 
   override onLinkChanged(): void {
-    if (this.currentState !== TransferState.TRANSFERRING) return;
+    if (!this.isState(TransferState.TRANSFERRING)) return;
     // Anything in flight when the link went away has to be assumed lost, and
     // the measured throughput of the OLD radio must not be used to estimate the
     // new one.
@@ -334,7 +345,7 @@ export class OutgoingTransfer extends BaseTransfer {
   }
 
   override tick(): void {
-    if (this.currentState !== TransferState.TRANSFERRING) return;
+    if (!this.isState(TransferState.TRANSFERRING)) return;
     const now = this.clock.now();
     let timedOut = false;
     for (const entry of [...this.inFlight.values()]) {
@@ -421,7 +432,7 @@ export class OutgoingTransfer extends BaseTransfer {
     this.pumping = true;
     try {
       for (;;) {
-        if (this.currentState !== TransferState.TRANSFERRING) return;
+        if (!this.isState(TransferState.TRANSFERRING)) return;
         if (this.inFlight.size >= this.window()) return;
 
         const index = this.nextSendable();
@@ -451,7 +462,7 @@ export class OutgoingTransfer extends BaseTransfer {
           return;
         }
         // The transfer may have been cancelled while the read was outstanding.
-        if (this.currentState !== TransferState.TRANSFERRING) return;
+        if (!this.isState(TransferState.TRANSFERRING)) return;
         if (data.length !== length) {
           this.fail(FileErrorCode.STORAGE_FAILURE, `short read at ${offset}`);
           return;
@@ -522,7 +533,7 @@ export class IncomingTransfer extends BaseTransfer {
    * that passes every per-chunk check and is still corrupt.
    */
   accept(store: FileStore, resume?: ResumeState): void {
-    if (this.currentState !== TransferState.OFFERED) return;
+    if (!this.isState(TransferState.OFFERED)) return;
     this.store = store;
     if (resume && this.resumeMatches(resume)) {
       try {
@@ -550,13 +561,13 @@ export class IncomingTransfer extends BaseTransfer {
 
   /** Ask the sender to continue from what we hold. Sent after a link change. */
   sendResume(): void {
-    if (this.currentState !== TransferState.TRANSFERRING) return;
+    if (!this.isState(TransferState.TRANSFERRING)) return;
     const { prefix, bytes } = this.received.encodeResume();
     this.wire.sendControl(MessageType.FILE_RESUME, encodeFileResume({ transferId: this.transferId, prefix, bitmap: bytes }));
   }
 
   handleChunk(msg: FileChunkMessage): void {
-    if (this.currentState !== TransferState.TRANSFERRING) return;
+    if (!this.isState(TransferState.TRANSFERRING)) return;
     const store = this.store;
     if (!store) return;
 
@@ -607,7 +618,7 @@ export class IncomingTransfer extends BaseTransfer {
       return;
     }
     this.writesInFlight--;
-    if (this.currentState !== TransferState.TRANSFERRING) return;
+    if (!this.isState(TransferState.TRANSFERRING)) return;
     // The bit is set only once the bytes are down, so a bitmap persisted at any
     // instant never claims more than the disk actually holds.
     for (let i = msg.index; i < msg.index + msg.run; i++) this.received.set(i);
@@ -618,13 +629,13 @@ export class IncomingTransfer extends BaseTransfer {
   }
 
   override onLinkChanged(): void {
-    if (this.currentState !== TransferState.TRANSFERRING) return;
+    if (!this.isState(TransferState.TRANSFERRING)) return;
     this.throughput.reset(this.transferredBytes, this.clock.now());
     this.sendResume();
   }
 
   override tick(): void {
-    if (this.currentState !== TransferState.TRANSFERRING) return;
+    if (!this.isState(TransferState.TRANSFERRING)) return;
     if (this.ackPending || this.nak.size > 0) this.sendAck();
     this.recordProgress();
     this.listener.onProgress(this);
@@ -679,7 +690,7 @@ export class IncomingTransfer extends BaseTransfer {
    */
   private async maybeFinish(): Promise<void> {
     if (this.verifying) return;
-    if (this.currentState !== TransferState.TRANSFERRING) return;
+    if (!this.isState(TransferState.TRANSFERRING)) return;
     if (!this.received.isComplete || this.writesInFlight > 0) return;
     const store = this.store;
     if (!store) return;
@@ -696,7 +707,7 @@ export class IncomingTransfer extends BaseTransfer {
       return;
     }
     this.verifying = false;
-    if (this.currentState !== TransferState.VERIFYING) return;
+    if (!this.isState(TransferState.VERIFYING)) return;
     if (!bytesEqual(actual, this.offer.fileHash)) {
       this.fail(FileErrorCode.HASH_MISMATCH, 'the assembled file does not match the offered hash');
       return;

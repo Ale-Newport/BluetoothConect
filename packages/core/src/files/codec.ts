@@ -136,6 +136,32 @@ export function decodeFileOffer(value: CborValue | null): FileOffer {
   };
 }
 
+/**
+ * Look at an offer we have already refused, purely so we can say why.
+ *
+ * `decodeFileOffer` throws on the first bad field, which leaves the caller with
+ * no transfer id to answer. This reads the two fields needed for a decline and
+ * returns null for anything it cannot trust - it is a courtesy, not a parser,
+ * and nothing it returns is ever used to create a transfer.
+ */
+export function peekOfferBasics(value: CborValue | null): { transferId: string | null; filename: string | null } {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    value instanceof Uint8Array
+  ) {
+    return { transferId: null, filename: null };
+  }
+  const m = value as Record<string, CborValue>;
+  const id = m.i;
+  const name = m.n;
+  return {
+    transferId: typeof id === 'string' && isValidTransferId(id) ? id : null,
+    filename: typeof name === 'string' && name.length <= FILE_LIMITS.maxFilenameChars ? name : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // FILE_ACCEPT / FILE_DECLINE
 // ---------------------------------------------------------------------------
