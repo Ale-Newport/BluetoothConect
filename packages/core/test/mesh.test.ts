@@ -1200,3 +1200,74 @@ describe('diagnostics', () => {
     expect(atC).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PROBES (temporary)
+// ---------------------------------------------------------------------------
+
+describe('PROBE', () => {
+  const withOutsider2 = {
+    names: ['A', 'B', 'C', 'D'] as const,
+    edges: [
+      ['A', 'B'],
+      ['B', 'C'],
+      ['B', 'D'],
+    ] as const,
+  };
+
+  it('PROBE roster leak to an attached non-member', async () => {
+    const ctx = await buildMesh(withOutsider2);
+    await formGroupAlongPath(ctx, ['A', 'B', 'C']);
+    ctx.group('B').attach(ctx.pid('D'), ctx.session('B', 'D'));
+
+    const seenAtD: number[] = [];
+    ctx.session('D', 'B').events.on('message', (m) => {
+      if (m.type >= 0x60 && m.type <= 0x66) seenAtD.push(m.type);
+    });
+
+    ctx.group('A').promoteHost(ctx.pid('B'));
+    await ctx.clock.advanceAsync(10_000);
+    console.log('PROBE leak types at D:', JSON.stringify(seenAtD));
+    expect(seenAtD).toEqual([]);
+  });
+
+  it('PROBE announceSelf can exceed maxMembers', async () => {
+    const clock = new VirtualClock();
+    const g = new GroupSession({
+      localPeerId: 'ZZZZ',
+      clock,
+      random: new SeededRandom(5),
+      localDisplayName: 'Z',
+    });
+    const full: GroupSnapshot = snapshot({
+      members: Array.from({ length: MESH_LIMITS.maxMembers }, (_, i) => ({
+        peerId: `P${i}`,
+        displayName: 'x',
+        joinedAt: 1,
+      })),
+    });
+    g.adopt(full);
+    g.announceSelf();
+    console.log('PROBE members after announceSelf:', g.members.length);
+    expect(g.members.length).toBeLessThanOrEqual(MESH_LIMITS.maxMembers);
+  });
+
+  it('PROBE adopt takes an unvalidated snapshot', async () => {
+    const clock = new VirtualClock();
+    const g = new GroupSession({ localPeerId: 'ZZZZ', clock, random: new SeededRandom(5) });
+    expect(() => g.adopt(snapshot({ groupId: 'has space' }))).toThrow(MeshError);
+  });
+
+  it('PROBE a member can pin the epoch at the ceiling', async () => {
+    const ctx = await buildMesh(LINE_ABC);
+    await formGroupAlongPath(ctx, ['A', 'B', 'C']);
+    const before = must(ctx.group('A').snapshot, 'A');
+    ctx.session('B', 'A').sendReliable(
+      MessageType.GROUP_UPDATE,
+      encodeGroupSnapshot({ ...before, epoch: 4_000_000_000 }),
+    );
+    await ctx.clock.advanceAsync(10_000);
+    console.log('PROBE A epoch:', ctx.group('A').snapshot?.epoch);
+    expect(ctx.group('A').snapshot?.epoch).toBeLessThan(1000);
+  });
+});

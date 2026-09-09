@@ -311,11 +311,19 @@ export class OutgoingTransfer extends BaseTransfer {
 
     // A chunk that failed its digest is not "lost" - it arrived and was
     // rejected - so it must be re-sent even though the reliability layer below
-    // considers it delivered.
+    // considers it delivered. The digest covers a whole run, so a NAK names the
+    // run's first index and invalidates every chunk in it: reopening only the
+    // named index would strand the rest as "sent but never acknowledged", with
+    // nothing left in flight to time them out.
     for (const index of msg.missing) {
       if (index >= total) continue;
-      this.acked.clear(index);
-      this.sent.clear(index);
+      const entry = this.inFlight.get(index);
+      this.inFlight.delete(index);
+      const run = entry ? entry.run : 1;
+      for (let i = index; i < index + run && i < total; i++) {
+        this.acked.clear(i);
+        this.sent.clear(i);
+      }
       if (index < this.sendCursor) this.sendCursor = index;
     }
 
@@ -363,9 +371,28 @@ export class OutgoingTransfer extends BaseTransfer {
       this.reopen(entry);
       timedOut = true;
     }
+    this.repairStrandedChunks();
     this.recordProgress();
     this.listener.onProgress(this);
     if (timedOut || this.inFlight.size < this.window()) void this.pump();
+  }
+
+  /**
+   * A chunk marked sent, never acknowledged, and with nothing in flight to time
+   * it out can never be resent: the transfer would sit at 98% forever. Every
+   * path that removes an in-flight entry reopens what it did not deliver, so
+   * this should find nothing - but a silent permanent stall is a bad enough
+   * failure that the O(n) sweep over an idle window is worth paying for.
+   */
+  private repairStrandedChunks(): void {
+    if (this.inFlight.size > 0) return;
+    if (this.acked.receivedCount === this.offer.totalChunks) return;
+    for (let i = 0; i < this.offer.totalChunks; i++) {
+      if (!this.acked.has(i) && this.sent.has(i)) {
+        this.sent.clear(i);
+        if (i < this.sendCursor) this.sendCursor = i;
+      }
+    }
   }
 
   /** Everything the app needs to resume this send later. */
@@ -393,18 +420,20 @@ export class OutgoingTransfer extends BaseTransfer {
   private retireInFlight(): void {
     for (const [key, entry] of [...this.inFlight]) {
       let complete = true;
+      let reopened = false;
       for (let i = entry.index; i < entry.index + entry.run; i++) {
-        if (!this.acked.has(i)) {
-          complete = false;
-          break;
-        }
+        if (this.acked.has(i)) continue;
+        complete = false;
+        if (!this.sent.has(i)) reopened = true;
       }
       if (complete) {
         this.inFlight.delete(key);
         this.attempts.delete(entry.index);
-      } else if (!this.sent.has(entry.index)) {
-        // The entry was reopened by a NAK: drop it so the pump can resend.
+      } else if (reopened) {
+        // Part of this entry has been reopened; reopen the rest of it too, so
+        // no chunk is left marked sent with nothing in flight to resend it.
         this.inFlight.delete(key);
+        this.reopen(entry);
       }
     }
   }

@@ -39,7 +39,46 @@ export const MESH_LIMITS = {
   seenCapacity: 512,
   /** How long an entry stays in the seen-set. Longer than any plausible flood. */
   seenTtlMs: 120_000,
+
+  /**
+   * Relay budget, per origin, over a sliding window.
+   *
+   * The seen-set stops a packet being carried TWICE; nothing else stops one
+   * member originating a million distinct packets. Each one we accept costs us
+   * up to `maxMembers - 1` outbound sends, and `ReliableChannel` queues what it
+   * cannot yet transmit - so on a BLE link that has slipped into a pocket the
+   * queue is the thing that grows until the OS kills the app.
+   *
+   * These numbers are per ORIGIN, so one greedy member cannot spend anybody
+   * else's share, and they are far above anything a human generates: 64 relayed
+   * packets or 256 KB a second is already an order of magnitude more than a BLE
+   * link can carry.
+   *
+   * This bounds AMPLIFICATION - the fan-out we perform on somebody else's
+   * behalf. It is not end-to-end back-pressure, which would need a queue-depth
+   * signal PeerSession does not expose on its send path today.
+   */
+  relayWindowMs: 1000,
+  relayPacketsPerWindow: 64,
+  relayBytesPerWindow: 256 * 1024,
 } as const;
+
+/**
+ * Largest epoch advance we will accept from a peer in a single state update.
+ *
+ * The epoch is peer-supplied and bounded above by MAX_GROUP_EPOCH, but "in
+ * range" is not the same as "believable". A member that hands us 0xffffffff
+ * pins the counter at its ceiling forever - `bumpEpoch` saturates there, so no
+ * later change can ever out-rank it and the group is frozen at whatever the
+ * remaining tie-breaks pick. Recovery is impossible without every device
+ * leaving and re-forming the group.
+ *
+ * An epoch is bumped once per membership or host change in a group of at most
+ * eight people, so a device that has been out of range for an entire flight is
+ * still only a handful behind. A thousand is generous by orders of magnitude
+ * and still refuses the jump that would freeze us.
+ */
+export const MAX_EPOCH_ADVANCE = 1024;
 
 /** Version byte of the GROUP_RELAY packet header. */
 export const RELAY_WIRE_VERSION = 1;

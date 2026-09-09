@@ -18,8 +18,8 @@
  *    a nonce that travelled inside the encrypted session, so only the real peer
  *    can answer it. Until that round trip completes, the old link is untouched
  *    and every message still flows over it.
- *  - Every step has a timeout. A peer that goes silent mid-negotiation costs us
- *    a few seconds and a log line, never a stuck session.
+ *  - Every step has a timeout. A peer that goes silent mid-negotiation costs a
+ *    log line and an upgrade nobody was waiting for, never a stuck session.
  *  - A failure at any point closes the new link and leaves the session exactly
  *    where it was. The failure is also reported to the peer, so it does not sit
  *    waiting for a timeout it could have skipped.
@@ -437,6 +437,8 @@ export class TransportUpgradeController {
   private probeCandidates: Link[] = [];
   /** The offer this side is currently working on as the responder. */
   private responderOfferId: Uint8Array | null = null;
+  /** Cuts the commit grace window short when the peer switches first. */
+  private commitGraceDone: (() => void) | null = null;
 
   private started = false;
   private disposed = false;
@@ -732,6 +734,12 @@ export class TransportUpgradeController {
       //    probe proves the pipe; READY proves the peer is committed to it.
       await this.waitForMessage(MessageType.TRANSPORT_READY, upgradeId, this.timings.readyTimeoutMs, scope);
 
+      // From here on the new link is one we are prepared to move to, which is
+      // what lets the session-state handler treat the old link dropping as the
+      // peer switching rather than as a failure.
+      this.provenLink = link;
+      this.provenKind = candidate.kind;
+
       // 5. Commit. TRANSPORT_SWITCH goes out several times across a short
       //    grace window and is then treated as delivered - deliberately, and
       //    not out of laziness. Waiting for an acknowledgement would only move
@@ -750,6 +758,8 @@ export class TransportUpgradeController {
       //    reliability layer exists for: anything sent into the gap is
       //    retransmitted, and nothing is lost.
       const from = this.session.currentLink?.transport ?? null;
+      this.provenLink = null;
+      this.provenKind = null;
       this.session.migrateToLink(link);
       this.onUpgradeSucceeded(from, candidate.kind, link);
       return { upgraded: true, kind: candidate.kind, reason: UpgradeFailureReason.UNKNOWN };
@@ -759,6 +769,10 @@ export class TransportUpgradeController {
 
       // The old link was never touched, so the session simply carries on. Close
       // the half-built new one and tell the peer to stop waiting.
+      if (this.provenLink === link) {
+        this.provenLink = null;
+        this.provenKind = null;
+      }
       if (link) void link.close('upgrade failed').catch(() => undefined);
       this.notifyPeerOfFailure(upgradeId, abort.reason, abort.message);
       this.finishAttempt();

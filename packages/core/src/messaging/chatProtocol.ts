@@ -627,7 +627,7 @@ export class ChatProtocol {
 
   private flushReceiptQueue(queue: BoundedIdQueue, type: number): void {
     const at = this.options.clock.wallNow();
-    let batchSize = CHAT_LIMITS.maxIdsPerBatch;
+    let batchSize: number = CHAT_LIMITS.maxIdsPerBatch;
     while (queue.size > 0) {
       const batch = queue.take(Math.min(batchSize, queue.size));
       if (this.trySendReliable(type, encodeReceipt({ ids: batch, at })) !== null) {
@@ -951,10 +951,21 @@ export class ChatProtocol {
 
   // -- session plumbing ------------------------------------------------------
 
+  /**
+   * A sequence number is only unique WITHIN a channel, and this session is
+   * shared: the file-transfer module's BULK channel numbers its chunks from 1
+   * exactly as the RELIABLE channel numbers our messages. The session's
+   * `delivered` event does not say which channel it came from, so seq 1 of a
+   * file chunk is indistinguishable here from seq 1 of a chat message.
+   *
+   * That makes this handler advisory only. It sets a flag and nothing else, and
+   * it deliberately KEEPS the sequence mapping: dropping it on a foreign ack
+   * would leave a genuine later failure of our own message unrecognised, and
+   * the message stuck in flight forever with no retry and no error.
+   */
   private handleTransportAck(seq: number): void {
     const id = this.seqToMessageId.get(String(seq));
     if (id === undefined) return;
-    this.seqToMessageId.delete(String(seq));
     const entry = this.outbox.get(id);
     // The bytes reached the peer's session. That is NOT delivery: the chat
     // protocol on the other side has not said it accepted them yet, and the
@@ -967,7 +978,13 @@ export class ChatProtocol {
     if (entry) this.outbox.set(id, { ...entry, transportAcked: true });
   }
 
-  private handleTransportFailure(seq: number): void {
+  private handleTransportFailure(seq: number, messageType: number): void {
+    // Unlike `delivered`, this event names the message type - which is the only
+    // way to tell our seq 3 from the file module's seq 3 on the BULK channel.
+    // Without the check, a failed file chunk would mark a perfectly healthy
+    // chat message as failed, light up an error in the UI, and put a duplicate
+    // of it back on the radio.
+    if (messageType !== MessageType.MESSAGE) return;
     const id = this.seqToMessageId.get(String(seq));
     if (id === undefined) return;
     this.seqToMessageId.delete(String(seq));
@@ -996,6 +1013,14 @@ export class ChatProtocol {
     // Entries go back to being eligible so a fresh session re-sends them.
     this.inFlight.clear();
     this.seqToMessageId.clear();
+    // Receipts are only meaningful inside a session. Holding them for one that
+    // has ended is memory kept for a packet that will never be sent.
+    this.pendingDelivery.clear();
+    this.pendingRead.clear();
+    if (this.receiptTimer !== undefined) {
+      this.options.clock.clearTimeout(this.receiptTimer);
+      this.receiptTimer = undefined;
+    }
   }
 
   // -- helpers ---------------------------------------------------------------
@@ -1079,6 +1104,8 @@ export class ChatProtocol {
     this.peerTypingTimer = undefined;
     if (this.receiptTimer !== undefined) this.options.clock.clearTimeout(this.receiptTimer);
     this.receiptTimer = undefined;
+    this.pendingDelivery.clear();
+    this.pendingRead.clear();
     for (const timer of this.pendingHistory.values()) this.options.clock.clearTimeout(timer);
     this.pendingHistory.clear();
     this.events.removeAllListeners();

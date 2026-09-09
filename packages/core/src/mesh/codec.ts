@@ -115,6 +115,57 @@ export function decodeGroupSnapshot(value: CborValue | null): GroupSnapshot {
   };
 }
 
+/**
+ * The same rules `decodeGroupSnapshot` enforces, applied to a snapshot that did
+ * NOT arrive through the decoder.
+ *
+ * A snapshot handed in out of band - scanned from a QR code across the aisle,
+ * restored from a file, typed by a caller - is exactly as untrusted as one off
+ * the wire, and it reaches us through `GroupSession.adopt`, which is a plain
+ * TypeScript call the type system cannot police. Without this check a group id
+ * outside the shared alphabet, a fractional epoch or a duplicated member id
+ * gets into local state, and the damage shows up much later and somewhere else:
+ * every snapshot we then gossip is rejected by every peer as malformed, so the
+ * device is silently and permanently unable to agree with the group.
+ *
+ * Returns a human-readable description of the FIRST problem, or null when the
+ * snapshot is well-formed. A string rather than a throw, so the caller decides
+ * which error type belongs to its own API.
+ */
+export function snapshotProblem(snapshot: GroupSnapshot): string | null {
+  if (!isMeshId(snapshot.groupId, MESH_LIMITS.maxGroupIdLength)) return 'groupId is not a valid identifier';
+  if (!isMeshId(snapshot.hostId, MESH_LIMITS.maxPeerIdLength)) return 'hostId is not a valid identifier';
+  if (typeof snapshot.name !== 'string' || snapshot.name.length > MESH_LIMITS.maxGroupNameLength) {
+    return `name must be a string of at most ${MESH_LIMITS.maxGroupNameLength} characters`;
+  }
+  if (!Number.isInteger(snapshot.epoch) || snapshot.epoch < 0 || snapshot.epoch > MAX_GROUP_EPOCH) {
+    return 'epoch must be an integer within the group epoch range';
+  }
+  if (!Number.isInteger(snapshot.updatedAt) || snapshot.updatedAt < 0 || snapshot.updatedAt > MAX_TIMESTAMP_MS) {
+    return 'updatedAt must be a plausible millisecond timestamp';
+  }
+  if (!Array.isArray(snapshot.members)) return 'members must be an array';
+  if (snapshot.members.length > MESH_LIMITS.maxMembers) {
+    return `members exceeds the limit of ${MESH_LIMITS.maxMembers}`;
+  }
+  const seen = new Set<string>();
+  for (const member of snapshot.members) {
+    if (member === null || typeof member !== 'object') return 'malformed member entry';
+    if (!isMeshId(member.peerId, MESH_LIMITS.maxPeerIdLength)) return 'member peerId is not a valid identifier';
+    if (typeof member.displayName !== 'string' || member.displayName.length > MESH_LIMITS.maxDisplayNameLength) {
+      return 'member displayName is not a bounded string';
+    }
+    if (!Number.isInteger(member.joinedAt) || member.joinedAt < 0 || member.joinedAt > MAX_TIMESTAMP_MS) {
+      return 'member joinedAt must be a plausible millisecond timestamp';
+    }
+    // A duplicated id makes "is this peer a member" ambiguous, and every relay
+    // decision downstream is built on that one question.
+    if (seen.has(member.peerId)) return `duplicate member ${member.peerId}`;
+    seen.add(member.peerId);
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Join / leave / state request
 // ---------------------------------------------------------------------------

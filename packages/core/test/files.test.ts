@@ -651,6 +651,33 @@ describe('file transfer end to end', () => {
     expect(sink.writes).toHaveLength(0);
   });
 
+  it('ignores the tail of a transfer that has already finished', async () => {
+    const { ctx, protoA, protoB } = await connectFilePair();
+    const contents = pattern(2048);
+    const sink = new MemoryFileStore(contents.length);
+    let id = '';
+    protoB.events.on('offer', ({ offer }) => {
+      id = offer.transferId;
+      protoB.accept(offer.transferId, sink);
+    });
+    const doneB = collectCompletions(protoB);
+    await protoA.offer({ filename: 'done.bin', fileBytes: contents.length, store: new MemoryFileStore(contents) });
+    expect(await runUntil(ctx.clock, () => doneB.length > 0, 20_000)).toBe(true);
+
+    // A chunk still in flight when the receiver declared the file complete is
+    // expected, not suspicious, and must not show up in the diagnostics.
+    expect(protoB.hasRecentlyFinished(id)).toBe(true);
+    const before = protoB.droppedPackets;
+    const data = pattern(256, 4);
+    ctx.sessionA.sendReliableRaw(
+      MessageType.FILE_CHUNK,
+      encodeFileChunk(id, 0, 1, chunkDigest(id, 0, 1, data), data),
+      { bulk: true },
+    );
+    await ctx.clock.advanceAsync(1000);
+    expect(protoB.droppedPackets).toBe(before);
+  });
+
   it('carries a declined offer back to the sender with a reason', async () => {
     const { ctx, protoA, protoB } = await connectFilePair();
     protoB.events.on('offer', ({ offer }) => protoB.decline(offer.transferId, 'not now'));

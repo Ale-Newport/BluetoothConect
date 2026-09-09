@@ -68,7 +68,7 @@ import { Logger, silentLogger } from '../util/logger.js';
 import { toHex } from '../util/bytes.js';
 import type { Clock } from '../util/time.js';
 import { DecodeError } from '../util/varint.js';
-import { MAX_GROUP_EPOCH, MESH_LIMITS, MeshError, isMeshId } from './constants.js';
+import { MAX_EPOCH_ADVANCE, MAX_GROUP_EPOCH, MESH_LIMITS, MeshError, isMeshId } from './constants.js';
 import {
   compareSnapshots,
   decodeGroupSnapshot,
@@ -81,6 +81,7 @@ import {
   encodeMemberLeave,
   encodeRelayPacket,
   encodeStateRequest,
+  snapshotProblem,
 } from './codec.js';
 import { SeenSet, seenKey } from './seenSet.js';
 import {
@@ -140,12 +141,24 @@ interface Neighbour {
   readonly off: Unsubscribe;
 }
 
+/** One origin's spend against the relay budget, for the window that is open. */
+interface RelayBudget {
+  windowStart: number;
+  packets: number;
+  bytes: number;
+}
+
 export class GroupSession {
   readonly events = new TypedEmitter<GroupEvents>();
 
   private state: GroupSnapshot | null = null;
   private readonly neighbours = new Map<string, Neighbour>();
   private readonly seen: SeenSet;
+  /**
+   * Relay spend per origin. Keyed by member id, so it can never hold more than
+   * a couple of group-fulls of entries, and stale windows are purged on insert.
+   */
+  private readonly relayBudget = new Map<string, RelayBudget>();
   private readonly log: Logger;
   private disposed = false;
 
@@ -155,6 +168,8 @@ export class GroupSession {
   packetsDropped = 0;
   malformedPackets = 0;
   sendFailures = 0;
+  /** Forwards refused because one origin had spent its share of the budget. */
+  packetsRateLimited = 0;
 
   constructor(private readonly options: GroupSessionOptions) {
     if (!isMeshId(options.localPeerId, MESH_LIMITS.maxPeerIdLength)) {

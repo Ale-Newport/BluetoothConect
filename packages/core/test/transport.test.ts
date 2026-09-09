@@ -689,7 +689,6 @@ describe('transport upgrade end to end', () => {
     await ctx.clock.advanceAsync(20_000);
 
     const outcome = await running;
-    console.log('MAIN', JSON.stringify(outcome));
     expect(outcome.upgraded).toBe(true);
     expect(outcome.kind).toBe(FAST);
 
@@ -756,14 +755,19 @@ describe('transport upgrade end to end', () => {
 
     ctx.initiator.session.sendReliable(MessageType.MESSAGE, { i: 0 });
     const running = ctx.initiator.controller.considerUpgrade();
-    await ctx.clock.advanceAsync(150_000, 10);
+    // Keep chatting straight through a negotiation that is being reordered,
+    // duplicated and dropped under itself.
+    ctx.initiator.session.sendReliable(MessageType.MESSAGE, { i: 1 });
+    await ctx.clock.advanceAsync(2_000);
+    ctx.initiator.session.sendReliable(MessageType.MESSAGE, { i: 2 });
+    await ctx.clock.advanceAsync(88_000, 10);
     const outcome = await running;
-    console.log('HOSTILE', JSON.stringify(outcome), 'responder saw types:', got.map((m) => m.typeName).join(','));
+
     expect(outcome).toMatchObject({ upgraded: true, kind: FAST });
     expect(ctx.initiator.session.currentLink?.transport).toBe(FAST);
-    ctx.initiator.session.sendReliable(MessageType.MESSAGE, { i: 1 });
-    await ctx.clock.advanceAsync(10_000);
-    expect(chatIndexes(got)).toEqual([0, 1]);
+    ctx.initiator.session.sendReliable(MessageType.MESSAGE, { i: 3 });
+    await ctx.clock.advanceAsync(20_000);
+    expect(chatIndexes(got)).toEqual([0, 1, 2, 3]);
   });
 
   it('completes over a BLE-like link', async () => {
@@ -967,6 +971,40 @@ describe('hostile transport negotiation traffic', () => {
     expect(ctx.initiator.controller.state).toBe(UpgradeState.IDLE);
     expect(ctx.initiator.session.currentLink?.transport).toBe(SLOW);
     expect(ctx.initiator.session.state).toBe(ConnectionState.CONNECTED);
+  });
+
+  it('answers a repeated offer again instead of declining itself as busy', async () => {
+    // The initiator repeats its offer until it hears back, so a repeat means
+    // our acceptance was what got lost. Treating it as "busy" would deadlock
+    // the negotiation on exactly the link that most needs the upgrade.
+    const ctx = await connectPair();
+    const accepts: IncomingMessage[] = [];
+    ctx.initiator.session.events.on('message', (m) => {
+      if (m.type === MessageType.TRANSPORT_ACCEPT) accepts.push(m);
+    });
+
+    const offer = { i: new Uint8Array(8).fill(5), k: FAST, n: new Uint8Array(32).fill(6) };
+    ctx.initiator.session.sendControl(MessageType.TRANSPORT_OFFER, offer as never);
+    await ctx.clock.advanceAsync(1000);
+    expect(ctx.responder.controller.state).toBe(UpgradeState.AWAITING_LINK);
+    expect(accepts).toHaveLength(1);
+
+    ctx.initiator.session.sendControl(MessageType.TRANSPORT_OFFER, offer as never);
+    await ctx.clock.advanceAsync(1000);
+    expect(accepts).toHaveLength(2);
+    expect(ctx.responder.controller.state).toBe(UpgradeState.AWAITING_LINK);
+  });
+
+  it('hands back a link it has no use for, rather than swallowing it', async () => {
+    const ctx = await connectPair();
+    const stranger = ctx.network.createTransport('stranger-ble');
+    const connecting = stranger.connect('b-ble');
+    await ctx.clock.advanceAsync(200);
+    const link = await connecting;
+    // No upgrade is armed and the session is healthy, so the controller wants
+    // nothing to do with it and says so.
+    expect(ctx.b.controller.handleIncomingLink(link)).toBe(false);
+    expect(ctx.b.session.state).toBe(ConnectionState.CONNECTED);
   });
 
   it('will not answer a probe from someone who does not hold the nonce', async () => {

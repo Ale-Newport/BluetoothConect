@@ -130,6 +130,21 @@ export const MeshDropReason = {
   HOP_LIMIT: 'hopLimit',
   /** No group has been created or joined on this device yet. */
   NO_GROUP: 'noGroup',
+  /**
+   * This origin has already spent its share of our relay budget for the moment.
+   * We still delivered anything addressed to us; we simply will not fan it out.
+   */
+  RATE_LIMITED: 'rateLimited',
+  /**
+   * A state update claiming an epoch so far ahead of ours that believing it
+   * would pin the counter at its ceiling and freeze the group permanently.
+   */
+  EPOCH_JUMP: 'epochJump',
+  /**
+   * The session that handed us this has since authenticated as somebody other
+   * than the peer it was attached as. Nothing it says can be attributed.
+   */
+  IDENTITY_MISMATCH: 'identityMismatch',
 } as const;
 export type MeshDropReason = (typeof MeshDropReason)[keyof typeof MeshDropReason];
 

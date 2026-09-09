@@ -140,6 +140,21 @@ const DEFAULT_RESEND_INTERVAL_MS = 700;
 const DEFAULT_MAX_RESENDS = 24;
 
 /**
+ * Smallest number of acknowledgements we will ever emit, whatever the retry
+ * settings. Comfortably more than a well-behaved peer needs.
+ */
+const MIN_ACK_BUDGET = 16;
+
+/**
+ * How many times a link change may top the retry budget back up.
+ *
+ * A migration is a local event - our transport manager decided to move - but it
+ * can be provoked by a peer who keeps offering upgrades, so the number of times
+ * it can buy fresh retransmissions is bounded rather than open ended.
+ */
+const MAX_RETRANSMISSION_RESUMES = 8;
+
+/**
  * One pairing ceremony. Create it when the handshake completes, dispose it when
  * the session goes away.
  */
@@ -157,6 +172,19 @@ export class SasPairing {
   private resendTimer: TimerHandle | undefined;
   private timeoutTimer: TimerHandle | undefined;
   private resendsLeft: number;
+  /**
+   * How many more acknowledgements this ceremony will emit.
+   *
+   * We answer every confirmation we receive, including repeats, because our
+   * previous answer may have been the packet that was lost. That reply is
+   * driven entirely by the peer, so without a ceiling an authenticated peer
+   * could make this phone transmit forever by looping one message - which on a
+   * radio is somebody else's battery. The budget is set from the retry limit,
+   * so it is always well above what a genuinely lossy peer needs.
+   */
+  private ackBudget: number;
+  private readonly initialAckBudget: number;
+  private resumesLeft = MAX_RETRANSMISSION_RESUMES;
 
   private readonly binding: Uint8Array;
 
@@ -164,13 +192,18 @@ export class SasPairing {
   foreignMessages = 0;
   /** Messages dropped because a field was missing, mistyped or out of range. */
   malformedMessages = 0;
+  /** Acknowledgements withheld because the peer had exhausted its budget. */
+  suppressedAcks = 0;
 
   constructor(private readonly options: SasPairingOptions) {
     if (options.localAdvertisementKey && options.localAdvertisementKey.length !== ADVERTISEMENT_KEY_LENGTH) {
       throw new Error('SasPairing: advertisement key must be 32 bytes');
     }
     this.binding = pairingBinding(options.sasCode, options.localIdentityKey, options.remoteIdentityKey);
-    this.resendsLeft = options.maxResends ?? DEFAULT_MAX_RESENDS;
+    const maxResends = options.maxResends ?? DEFAULT_MAX_RESENDS;
+    this.resendsLeft = maxResends;
+    this.initialAckBudget = Math.max(MIN_ACK_BUDGET, (Math.max(0, maxResends) + 1) * 2);
+    this.ackBudget = this.initialAckBudget;
     const timeoutMs = options.timeoutMs ?? TIMING.pairingTimeoutMs;
     this.timeoutTimer = options.clock.setTimeout(() => {
       this.timeoutTimer = undefined;
@@ -211,6 +244,11 @@ export class SasPairing {
   /** True once the peer has acknowledged our decision, so we can stop repeating it. */
   get isAcknowledged(): boolean {
     return this.localAcknowledged;
+  }
+
+  /** Acknowledgements this ceremony will still emit. Developer Mode. */
+  get acknowledgementsLeft(): number {
+    return this.ackBudget;
   }
 
   // -- user actions ----------------------------------------------------------
@@ -266,6 +304,16 @@ export class SasPairing {
     }
 
     if (messageType === PAIRING_CONFIRM_ACK) {
+      // An acknowledgement for a decision we have not made cannot be honest: the
+      // peer only ever sends one in reply to our confirmation. Honouring it
+      // anyway would silently disable the retransmission BEFORE it has sent
+      // anything, so the one confirmation we do send later would be the only
+      // one - and on a radio that loses a packet in seven, that is a pairing
+      // sheet that hangs until the timeout.
+      if (this.local === null) {
+        this.foreignMessages++;
+        return false;
+      }
       this.localAcknowledged = true;
       this.stopResending();
       this.maybeStopTimeout();
