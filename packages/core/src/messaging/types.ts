@@ -43,6 +43,17 @@ export const CHAT_LIMITS = {
   maxReactionBytes: 64,
   /** Ids per delivery/read receipt or per delete request. */
   maxIdsPerBatch: 64,
+  /**
+   * Receipts owed to the peer but not yet sendable, across both ladders.
+   *
+   * A receipt is only meaningful while a link exists, but messages keep
+   * arriving in states where nothing can be sent back - notably while the user
+   * is still comparing the six-digit pairing code. Without a ceiling, a peer
+   * that floods messages in that window grows this queue for as long as it
+   * cares to. Eight full batches is generous for a real conversation and a few
+   * kilobytes for a hostile one.
+   */
+  maxPendingReceipts: 512,
   /** Hard ceiling on a history page, whatever the peer asks for. */
   maxHistoryPageSize: 100,
   /**
@@ -287,5 +298,66 @@ export class BoundedMap<V> {
 
   clear(): void {
     this.entries.clear();
+  }
+}
+
+/**
+ * A de-duplicating FIFO of identifiers with a hard capacity.
+ *
+ * The queue of receipts we owe the peer is the one place in this module where
+ * a peer's send rate, rather than our own behaviour, decides how much is
+ * outstanding - so it is bounded like every other per-peer collection, and the
+ * membership test is a `Set` rather than a scan, or a peer could make each of
+ * its messages cost us a walk of everything queued before it.
+ *
+ * Overflow drops the OLDEST id. The consequence of dropping one is that the
+ * peer's message stays at SENT rather than climbing to DELIVERED, which is a
+ * far better failure than an unbounded array on a phone.
+ */
+export class BoundedIdQueue {
+  private order: string[] = [];
+  private readonly index = new Set<string>();
+
+  constructor(private readonly capacity: number) {
+    if (capacity < 1) throw new Error('BoundedIdQueue: capacity must be at least 1');
+  }
+
+  get size(): number {
+    return this.order.length;
+  }
+
+  has(id: string): boolean {
+    return this.index.has(id);
+  }
+
+  /** Append an id. Returns the id evicted to make room, if any. */
+  push(id: string): string | null {
+    if (this.index.has(id)) return null;
+    this.order.push(id);
+    this.index.add(id);
+    if (this.order.length <= this.capacity) return null;
+    const evicted = this.order.shift() as string;
+    this.index.delete(evicted);
+    return evicted;
+  }
+
+  /** Remove and return up to `count` ids from the front, in order. */
+  take(count: number): string[] {
+    const batch = this.order.splice(0, Math.max(0, count));
+    for (const id of batch) this.index.delete(id);
+    return batch;
+  }
+
+  /** Return a batch to the front, preserving order. Overflow is discarded. */
+  requeue(ids: readonly string[]): void {
+    const restored = [...ids.filter((id) => !this.index.has(id)), ...this.order];
+    this.order = restored.slice(Math.max(0, restored.length - this.capacity));
+    this.index.clear();
+    for (const id of this.order) this.index.add(id);
+  }
+
+  clear(): void {
+    this.order = [];
+    this.index.clear();
   }
 }

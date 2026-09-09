@@ -435,8 +435,8 @@ export class TransportUpgradeController {
   private provenKind: TransportKind | null = null;
   /** Incoming links on the offered transport that have yet to prove themselves. */
   private probeCandidates: Link[] = [];
-  /** Sequence numbers of negotiation messages sent during the current attempt. */
-  private readonly attemptSeqs = new Set<number>();
+  /** The offer this side is currently working on as the responder. */
+  private responderOfferId: Uint8Array | null = null;
 
   private started = false;
   private disposed = false;
@@ -470,15 +470,6 @@ export class TransportUpgradeController {
       this.session.events.on('message', (message) => this.handleSessionMessage(message)),
       this.session.events.on('stateChanged', ({ state }) => this.handleSessionState(state)),
       this.session.events.on('closed', () => this.dispose()),
-      // If the reliability layer gives up on one of OUR negotiation messages,
-      // the peer never saw it and no timeout is going to change that. Abandon
-      // the attempt now rather than waiting out the backstop.
-      this.session.events.on('deliveryFailed', ({ seq }) => {
-        if (!this.attemptSeqs.has(seq)) return;
-        this.abortAttempt(
-          new UpgradeAbort(UpgradeFailureReason.TIMEOUT, 'a negotiation message could not be delivered'),
-        );
-      }),
       this.capabilities.events.on('changed', () => {
         if (this.options.autoUpgrade === false) return;
         void this.considerUpgrade();
@@ -908,18 +899,12 @@ export class TransportUpgradeController {
 
     const scope = new AttemptScope();
     this.scope = scope;
+    this.responderOfferId = upgradeId;
     let link: Link | null = null;
 
     try {
       this.setState(UpgradeState.AWAITING_LINK);
-      // We answer with OUR endpoint handle on that radio, because only we know
-      // what we are advertising as.
-      const endpoint = this.localEndpoint(kind);
-      this.send(MessageType.TRANSPORT_ACCEPT, {
-        i: upgradeId,
-        k: kind,
-        ...(endpoint !== null ? { e: endpoint } : {}),
-      });
+      this.sendAccept(upgradeId, kind);
 
       link = await this.waitForProbedLink(upgradeId, kind, nonce, this.timings.responderLinkTimeoutMs, scope);
       this.releaseProbeCandidates(link);
@@ -928,14 +913,20 @@ export class TransportUpgradeController {
       this.provenLink = link;
       this.provenKind = kind;
       this.setState(UpgradeState.AWAITING_SWITCH);
-      this.send(MessageType.TRANSPORT_READY, { i: upgradeId });
 
-      await this.waitForMessage(
-        MessageType.TRANSPORT_SWITCH,
-        upgradeId,
-        this.timings.responderSwitchTimeoutMs,
-        scope,
-      );
+      // Nothing on the initiator's side can ask us to repeat this, so we repeat
+      // it ourselves until the switch arrives.
+      const stopReady = this.repeatSend(MessageType.TRANSPORT_READY, { i: upgradeId });
+      try {
+        await this.waitForMessage(
+          MessageType.TRANSPORT_SWITCH,
+          upgradeId,
+          this.timings.responderSwitchTimeoutMs,
+          scope,
+        );
+      } finally {
+        stopReady();
+      }
       this.completeResponderSwitch('peer switched transport');
     } catch (err) {
       const abort = err instanceof UpgradeAbort ? err : new UpgradeAbort(UpgradeFailureReason.UNKNOWN, String(err));
@@ -1101,10 +1092,19 @@ export class TransportUpgradeController {
 
     this.sampleQuality();
 
-    // The link carrying the session just died. If we are already holding a
-    // proven link, the peer has evidently gone ahead and switched: follow it
-    // rather than tearing anything down. This is what keeps the two sides from
-    // diverging when the final acknowledgement is the packet that gets lost.
+    // As the initiator, the old link going away in the middle of the commit is
+    // not a failure - it is the peer switching, which is exactly what we asked
+    // it to do. Stop waiting out the grace window and move.
+    if (this.upgradeState === UpgradeState.COMMITTING && this.provenLink?.state === LinkState.CONNECTED) {
+      this.log.debug('the peer moved first; ending the switch grace window early');
+      this.commitGraceDone?.();
+      return;
+    }
+
+    // As the responder, the same event means the peer has gone ahead without us
+    // seeing its switch. Follow it onto the link we have already proven. This is
+    // what keeps the two sides from diverging when the switch is the packet
+    // that gets lost - see the commit step.
     if (this.provenLink && this.provenLink.state === LinkState.CONNECTED) {
       this.completeResponderSwitch('old link lost while holding a proven link');
       return;
@@ -1255,43 +1255,6 @@ export class TransportUpgradeController {
     });
   }
 
-  /**
-   * Wait for the reliability layer to confirm the peer received `seq`. This is
-   * the only end-to-end proof available that the peer knows we are switching.
-   */
-  private waitForDelivery(seq: number, timeoutMs: number, scope: AttemptScope): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      if (scope.error) {
-        reject(scope.error);
-        return;
-      }
-      let settled = false;
-      const offs: Unsubscribe[] = [];
-      const timer = this.clock.setTimeout(() => {
-        finish(new UpgradeAbort(UpgradeFailureReason.TIMEOUT, 'the switch was never acknowledged'));
-      }, timeoutMs);
-
-      const finish = (err: UpgradeAbort | null): void => {
-        if (settled) return;
-        settled = true;
-        this.clock.clearTimeout(timer);
-        for (const off of offs) off();
-        if (err) reject(err);
-        else resolve();
-      };
-
-      offs.push(
-        this.session.events.on('delivered', (event) => {
-          if (event.seq === seq) finish(null);
-        }),
-        this.session.events.on('deliveryFailed', (event) => {
-          if (event.seq === seq) finish(new UpgradeAbort(UpgradeFailureReason.TIMEOUT, 'the switch could not be delivered'));
-        }),
-        scope.onAbort((err) => finish(err)),
-      );
-    });
-  }
-
   private withTimeout<T>(
     promise: Promise<T>,
     timeoutMs: number,
@@ -1331,7 +1294,7 @@ export class TransportUpgradeController {
     this.messageWaiter = null;
     this.linkWaiter = null;
     this.releaseProbeCandidates(null);
-    this.attemptSeqs.clear();
+    this.responderOfferId = null;
     this.setState(UpgradeState.IDLE);
   }
 
@@ -1343,7 +1306,7 @@ export class TransportUpgradeController {
     this.messageWaiter = null;
     this.linkWaiter = null;
     this.releaseProbeCandidates(null);
-    this.attemptSeqs.clear();
+    this.responderOfferId = null;
     if (this.provenLink) {
       void this.provenLink.close('upgrade aborted').catch(() => undefined);
       this.provenLink = null;
@@ -1352,17 +1315,66 @@ export class TransportUpgradeController {
     this.setState(UpgradeState.IDLE);
   }
 
-  private send(messageType: number, value: CborValue): number | null {
+  /**
+   * One negotiation datagram. Never throws: a session that cannot send is a
+   * reason to let the step time out, not to take the caller down with it.
+   */
+  private send(messageType: number, value: CborValue): void {
     try {
-      const seq = this.session.sendReliable(messageType, value);
-      // Only messages belonging to a live attempt are worth watching; a
-      // TRANSPORT_FAILED sent during cleanup has nothing left to abort.
-      if (this.scope !== null) this.attemptSeqs.add(seq);
-      return seq;
+      this.session.sendControl(messageType, value);
     } catch (err) {
       this.log.debug('could not send a transport message', { err: String(err) });
-      return null;
     }
+  }
+
+  /**
+   * Send now, and keep sending until the returned function is called. This is
+   * the retransmission strategy for the CONTROL channel: each of these messages
+   * is a request whose reply cancels the repeat, so a lost one costs one extra
+   * round of a 60-byte datagram.
+   */
+  private repeatSend(messageType: number, value: CborValue): Unsubscribe {
+    this.send(messageType, value);
+    const timer = this.clock.setInterval(() => this.send(messageType, value), this.timings.retryIntervalMs);
+    return () => this.clock.clearInterval(timer);
+  }
+
+  private sendAccept(upgradeId: Uint8Array, kind: TransportKind): void {
+    // We answer with OUR endpoint handle on that radio, because only we know
+    // what we are advertising as.
+    const endpoint = this.localEndpoint(kind);
+    this.send(MessageType.TRANSPORT_ACCEPT, {
+      i: upgradeId,
+      k: kind,
+      ...(endpoint !== null ? { e: endpoint } : {}),
+    });
+  }
+
+  /**
+   * Repeat TRANSPORT_SWITCH across a short grace window, then return. See the
+   * comment at the commit step for why this does not wait for an acknowledgement.
+   */
+  private announceSwitch(upgradeId: Uint8Array, scope: AttemptScope): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const stop = this.repeatSend(MessageType.TRANSPORT_SWITCH, { i: upgradeId });
+      let settled = false;
+      let offAbort: Unsubscribe = () => undefined;
+      const finish = (err: UpgradeAbort | null): void => {
+        if (settled) return;
+        settled = true;
+        stop();
+        offAbort();
+        this.commitGraceDone = null;
+        this.clock.clearTimeout(timer);
+        if (err) reject(err);
+        else resolve();
+      };
+      const timer = this.clock.setTimeout(() => finish(null), this.timings.switchGraceMs);
+      // The old link dropping is the peer telling us it has switched; there is
+      // then nothing left to wait for.
+      this.commitGraceDone = () => finish(null);
+      offAbort = scope.onAbort((err) => finish(err));
+    });
   }
 
   private notifyPeerOfFailure(upgradeId: Uint8Array, reason: UpgradeFailureReason, detail: string): void {

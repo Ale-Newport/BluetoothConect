@@ -54,6 +54,7 @@ import {
 } from './codec.js';
 import {
   advanceDeliveryStatus,
+  BoundedIdQueue,
   BoundedMap,
   CHAT_LIMITS,
   DeliveryStatus,
@@ -150,6 +151,12 @@ export interface ChatStats {
   readonly danglingReferences: number;
   readonly historyServed: number;
   readonly historyThrottled: number;
+  /** Receipts owed to the peer that no link has been able to carry yet. */
+  readonly pendingReceipts: number;
+  /** Receipts discarded because the peer outran every link we had. */
+  readonly receiptsDropped: number;
+  /** Messages the peer's declared payload budget can never carry. */
+  readonly undeliverable: number;
 }
 
 const DEFAULTS = {
@@ -188,7 +195,13 @@ export class ChatProtocol {
   /** Ids we have already sent a read receipt for; stops a chatty UI spamming the radio. */
   private readonly readSent = new BoundedMap<true>(CHAT_LIMITS.recentIdMemory);
 
-  private readonly pendingDeliveryIds: string[] = [];
+  /**
+   * Receipts we owe the peer. Bounded, because the peer - not this device -
+   * decides how fast messages arrive, and there are states (a link that has
+   * just died, a pairing code still on screen) where none of them can be sent.
+   */
+  private readonly pendingDelivery = new BoundedIdQueue(CHAT_LIMITS.maxPendingReceipts);
+  private readonly pendingRead = new BoundedIdQueue(CHAT_LIMITS.maxPendingReceipts);
   private receiptTimer: TimerHandle | undefined;
 
   /** Request id -> its deadline timer. Only ids in here accept a response. */
@@ -214,6 +227,8 @@ export class ChatProtocol {
   private danglingReferences = 0;
   private historyServed = 0;
   private historyThrottled = 0;
+  private receiptsDropped = 0;
+  private undeliverable = 0;
 
   constructor(
     private readonly session: PeerSession,
@@ -225,7 +240,7 @@ export class ChatProtocol {
     this.unsubscribers.push(
       session.events.on('message', (m) => this.handleIncoming(m)),
       session.events.on('delivered', ({ seq }) => this.handleTransportAck(seq)),
-      session.events.on('deliveryFailed', ({ seq }) => this.handleTransportFailure(seq)),
+      session.events.on('deliveryFailed', ({ seq, messageType }) => this.handleTransportFailure(seq, messageType)),
       session.events.on('stateChanged', ({ state }) => this.handleStateChange(state)),
       session.events.on('closed', () => this.handleSessionClosed()),
     );
@@ -250,6 +265,9 @@ export class ChatProtocol {
       danglingReferences: this.danglingReferences,
       historyServed: this.historyServed,
       historyThrottled: this.historyThrottled,
+      pendingReceipts: this.pendingDelivery.size + this.pendingRead.size,
+      receiptsDropped: this.receiptsDropped,
+      undeliverable: this.undeliverable,
     };
   }
 
@@ -269,13 +287,23 @@ export class ChatProtocol {
    * Entries are re-sent as soon as the session is usable: nothing is in flight
    * in a process that has only just started, whatever the stored status said.
    * Corrupt entries are skipped rather than thrown on - a damaged row in the
-   * app's database must not stop the other messages from going out.
+   * app's database must not stop the other messages from going out, and a
+   * store that has somehow grown past the queue's capacity is truncated to it
+   * rather than being allowed in through the back door.
    */
   restoreOutbox(entries: readonly OutboxEntry[]): void {
     this.outbox.clear();
     this.inFlight.clear();
+    const capacity = this.options.maxOutboxEntries ?? CHAT_LIMITS.maxOutboxEntries;
     const ordered = [...entries].sort((a, b) => a.sequence - b.sequence);
     for (const entry of ordered) {
+      if (this.outbox.size >= capacity) {
+        this.log.warn('outbox capacity reached while restoring; the rest of the store was skipped', {
+          restored: this.outbox.size,
+          offered: ordered.length,
+        });
+        break;
+      }
       if (!Number.isInteger(entry.sequence) || entry.sequence < 0) continue;
       if (!isDeliveryStatus(entry.status)) continue;
       try {
@@ -353,18 +381,26 @@ export class ChatProtocol {
    * Returns how many were handed over.
    */
   flush(): number {
-    this.flushDeliveryReceipts();
+    this.flushReceipts();
     if (!this.canSendMessages()) return 0;
     let handed = 0;
     for (const entry of this.outbox.values()) {
       if (this.inFlight.has(entry.message.id)) continue;
       if (entry.status >= DeliveryStatus.DELIVERED) continue;
       if (entry.attempts >= (this.options.maxSendAttempts ?? CHAT_LIMITS.maxSendAttempts)) continue;
-      // Stop at the first refusal. Skipping ahead would put a later message on
+      const outcome = this.transmit(entry);
+      if (outcome === 'sent') {
+        handed++;
+        continue;
+      }
+      // "Not now" stops the walk: skipping ahead would put a later message on
       // the wire before an earlier one, and ordering is the one thing a chat
       // may never get wrong.
-      if (!this.transmit(entry)) break;
-      handed++;
+      if (outcome === 'later') break;
+      // "Never" must NOT stop it. A message this peer's declared payload budget
+      // cannot carry would otherwise wedge the head of the queue forever and
+      // take every message composed after it down with it - the whole
+      // conversation stuck at PENDING because of one long paragraph.
     }
     return handed;
   }
@@ -382,7 +418,14 @@ export class ChatProtocol {
     return this.inFlight.has(messageId);
   }
 
-  private transmit(entry: OutboxEntry): boolean {
+  /**
+   * One attempt at one entry.
+   *
+   *  'sent'  - handed to the reliability layer
+   *  'later' - the link cannot take it right now; try again on reconnect
+   *  'never' - this message can never go to this peer; the queue must step over it
+   */
+  private transmit(entry: OutboxEntry): 'sent' | 'later' | 'never' {
     let payload: CborValue;
     try {
       payload = encodeChatMessage(entry.message);
@@ -391,11 +434,13 @@ export class ChatProtocol {
       // never be sent, so it must not block the queue behind it.
       this.log.error('dropping an unencodable outbox entry', { id: entry.message.id, err: String(err) });
       this.outbox.delete(entry.message.id);
+      this.inFlight.delete(entry.message.id);
+      this.undeliverable++;
       this.events.emit('sendFailed', { messageId: entry.message.id, attempts: entry.attempts });
-      return true;
+      return 'never';
     }
     const seq = this.trySendReliable(MessageType.MESSAGE, payload);
-    if (seq === null) return false;
+    if (seq === null) return this.classifyRefusal(entry, payload);
 
     this.inFlight.add(entry.message.id);
     this.seqToMessageId.set(String(seq), entry.message.id);
@@ -407,7 +452,38 @@ export class ChatProtocol {
     });
     this.messagesSent++;
     this.advanceStatus(entry.message.id, DeliveryStatus.SENT);
-    return true;
+    return 'sent';
+  }
+
+  /**
+   * Work out whether a refusal was "not now" or "not ever".
+   *
+   * A peer may declare a payload budget as small as 256 bytes, and every link
+   * it is reached over is bound by it - so a message larger than that budget is
+   * refused now and will be refused after every reconnect. Treating that as a
+   * temporary failure is what turns one long paragraph into a conversation
+   * that never sends anything again.
+   */
+  private classifyRefusal(entry: OutboxEntry, payload: CborValue): 'later' | 'never' {
+    if (!this.canSendMessages()) return 'later';
+    let size: number;
+    try {
+      size = encodeCbor(payload).length;
+    } catch {
+      return 'later';
+    }
+    if (size <= this.session.maxPayloadBytes) return 'later';
+    this.undeliverable++;
+    this.log.warn('a queued message exceeds the payload budget this peer declared', {
+      id: entry.message.id,
+      size,
+      limit: this.session.maxPayloadBytes,
+    });
+    // It stays in the outbox, flagged, so the app can show it and offer to
+    // shorten or resend it - but it no longer holds up anything behind it.
+    this.outbox.set(entry.message.id, { ...entry, failed: true, attempts: entry.attempts + 1 });
+    if (!entry.failed) this.events.emit('sendFailed', { messageId: entry.message.id, attempts: entry.attempts });
+    return 'never';
   }
 
   // -- typing ----------------------------------------------------------------
@@ -503,53 +579,69 @@ export class ChatProtocol {
    */
   markRead(ids: readonly string[]): void {
     if (this.disposed) return;
-    const fresh: string[] = [];
     for (const id of ids) {
-      if (this.readSent.has(id)) continue;
+      if (this.readSent.has(id) || this.pendingRead.has(id)) continue;
       try {
         assertValidId(id, 'read receipt id');
       } catch {
         continue;
       }
-      this.readSent.set(id, true);
-      fresh.push(id);
+      // Queued, not sent. Recording an id as acknowledged before the bytes have
+      // been accepted anywhere would lose the receipt for good: the peer's
+      // message would sit at DELIVERED forever, and no amount of scrolling
+      // would ever produce another chance to say otherwise.
+      this.pendingRead.push(id);
     }
-    for (let i = 0; i < fresh.length; i += CHAT_LIMITS.maxIdsPerBatch) {
-      const batch = fresh.slice(i, i + CHAT_LIMITS.maxIdsPerBatch);
-      this.trySendReliable(MessageType.READ_RECEIPT, encodeReceipt({ ids: batch, at: this.options.clock.wallNow() }));
-    }
+    this.flushReceipts();
   }
 
   private queueDeliveryReceipt(id: string): void {
-    if (this.pendingDeliveryIds.includes(id)) return;
-    this.pendingDeliveryIds.push(id);
+    const evicted = this.pendingDelivery.push(id);
+    if (evicted !== null) {
+      this.receiptsDropped++;
+      this.log.debug('dropped the oldest unsent delivery receipt', { evicted });
+    }
     // A full batch goes immediately; anything else waits, because one receipt
     // per message would double the packet count of a busy conversation.
-    if (this.pendingDeliveryIds.length >= CHAT_LIMITS.maxIdsPerBatch) {
-      this.flushDeliveryReceipts();
+    if (this.pendingDelivery.size >= CHAT_LIMITS.maxIdsPerBatch) {
+      this.flushReceipts();
       return;
     }
     if (this.receiptTimer !== undefined) return;
     this.receiptTimer = this.options.clock.setTimeout(() => {
       this.receiptTimer = undefined;
-      this.flushDeliveryReceipts();
+      this.flushReceipts();
     }, this.options.receiptBatchMs ?? DEFAULTS.receiptBatchMs);
   }
 
-  private flushDeliveryReceipts(): void {
-    if (this.pendingDeliveryIds.length === 0 || !this.canSignal()) return;
+  private flushReceipts(): void {
+    if (!this.canSignal()) return;
+    if (this.pendingDelivery.size === 0 && this.pendingRead.size === 0) return;
     if (this.receiptTimer !== undefined) {
       this.options.clock.clearTimeout(this.receiptTimer);
       this.receiptTimer = undefined;
     }
+    this.flushReceiptQueue(this.pendingDelivery, MessageType.DELIVERY_RECEIPT);
+    this.flushReceiptQueue(this.pendingRead, MessageType.READ_RECEIPT);
+  }
+
+  private flushReceiptQueue(queue: BoundedIdQueue, type: number): void {
     const at = this.options.clock.wallNow();
-    while (this.pendingDeliveryIds.length > 0) {
-      const batch = this.pendingDeliveryIds.splice(0, CHAT_LIMITS.maxIdsPerBatch);
-      if (this.trySendReliable(MessageType.DELIVERY_RECEIPT, encodeReceipt({ ids: batch, at })) === null) {
-        // Put them back at the front, in order, and try again on reconnect.
-        this.pendingDeliveryIds.unshift(...batch);
-        return;
+    let batchSize = CHAT_LIMITS.maxIdsPerBatch;
+    while (queue.size > 0) {
+      const batch = queue.take(Math.min(batchSize, queue.size));
+      if (this.trySendReliable(type, encodeReceipt({ ids: batch, at })) !== null) {
+        if (type === MessageType.READ_RECEIPT) for (const id of batch) this.readSent.set(id, true);
+        continue;
       }
+      // Refused. Put the batch back at the front, in order. A peer that
+      // declared a small payload budget cannot take sixty-four ids at once, so
+      // halve and try again rather than deciding the link is dead: a receipt
+      // ladder that can never send a full batch would otherwise never send
+      // anything at all.
+      queue.requeue(batch);
+      if (batch.length <= 1) return;
+      batchSize = Math.floor(batch.length / 2);
     }
   }
 

@@ -689,6 +689,7 @@ describe('transport upgrade end to end', () => {
     await ctx.clock.advanceAsync(20_000);
 
     const outcome = await running;
+    console.log('MAIN', JSON.stringify(outcome));
     expect(outcome.upgraded).toBe(true);
     expect(outcome.kind).toBe(FAST);
 
@@ -892,7 +893,7 @@ describe('hostile transport negotiation traffic', () => {
   const goodId = new Uint8Array(8).fill(3);
   const goodNonce = new Uint8Array(32).fill(4);
 
-  async function inject(payloads: { type: number; value: Record<string, unknown> }[]) {
+  async function inject(payloads: { type: number; value: unknown }[]) {
     const ctx = await connectPair();
     const got = collect(ctx.initiator.session);
     for (const { type, value } of payloads) {

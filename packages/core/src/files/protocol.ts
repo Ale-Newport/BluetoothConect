@@ -144,6 +144,7 @@ export class FileTransferProtocol {
   droppedPackets = 0;
   malformedPackets = 0;
   sendFailures = 0;
+  rejectedChunks = 0;
 
   constructor(
     private readonly session: TransferSession,
@@ -186,6 +187,11 @@ export class FileTransferProtocol {
       get payloadBudget(): number {
         return session_.maxPayloadBytes;
       },
+      get datagramBytes(): number {
+        // 180 is the conservative BLE default the session itself assumes while
+        // no link is attached.
+        return session_.currentLink?.maxDatagramSize ?? 180;
+      },
     };
 
     this.listener = {
@@ -209,6 +215,12 @@ export class FileTransferProtocol {
       onCancelled: (t, reason, byPeer) => {
         this.retire(t);
         this.events.emit('cancelled', { transferId: t.transferId, direction: t.direction, reason, byPeer });
+      },
+      onChunkRejected: (t, index, reason) => {
+        // Cumulative, and kept after the transfer retires: a rising count is the
+        // first sign of a corrupting link or a peer with a bug.
+        this.rejectedChunks++;
+        this.log.debug('refused a chunk', { transferId: t.transferId, index, reason });
       },
       onDeclined: (t, code, reason) => {
         this.retire(t);
@@ -324,7 +336,7 @@ export class FileTransferProtocol {
       droppedPackets: this.droppedPackets,
       malformedPackets: this.malformedPackets,
       sendFailures: this.sendFailures,
-      rejectedChunks: [...this.incoming.values()].reduce((n, t) => n + t.rejectedChunks, 0),
+      rejectedChunks: this.rejectedChunks,
       payloadBudget: this.session.maxPayloadBytes,
     };
   }
@@ -366,7 +378,7 @@ export class FileTransferProtocol {
           // error per chunk would turn one confused peer into a packet storm on
           // a link that carries 40 KB a second.
           if (!transfer) {
-            this.droppedPackets++;
+            this.noteUnknownTransfer(msg.transferId);
             return;
           }
           transfer.handleChunk(msg);
@@ -391,7 +403,7 @@ export class FileTransferProtocol {
           const msg = decodeFileCancel(message.value);
           const transfer = this.outgoing.get(msg.transferId) ?? this.incoming.get(msg.transferId);
           if (!transfer) {
-            this.droppedPackets++;
+            this.noteUnknownTransfer(msg.transferId);
             return;
           }
           transfer.cancelledByPeer(msg.reason);
@@ -401,7 +413,7 @@ export class FileTransferProtocol {
           const msg = decodeFileError(message.value);
           const transfer = this.outgoing.get(msg.transferId) ?? this.incoming.get(msg.transferId);
           if (!transfer) {
-            this.droppedPackets++;
+            this.noteUnknownTransfer(msg.transferId);
             return;
           }
           transfer.failedByPeer(
@@ -427,8 +439,19 @@ export class FileTransferProtocol {
 
   private outgoingFor(transferId: string): OutgoingTransfer | undefined {
     const transfer = this.outgoing.get(transferId);
-    if (!transfer) this.droppedPackets++;
+    if (!transfer) this.noteUnknownTransfer(transferId);
     return transfer;
+  }
+
+  /**
+   * A packet naming a transfer we no longer have is only interesting when we
+   * have never had it. The last chunks of a finished transfer are routinely
+   * still in flight when the receiver sends FILE_COMPLETE, and counting those
+   * as dropped would make the diagnostic useless for spotting a real problem.
+   */
+  private noteUnknownTransfer(transferId: string): void {
+    if (this.finished.includes(transferId)) return;
+    this.droppedPackets++;
   }
 
   private handleOffer(value: CborValue | null): void {

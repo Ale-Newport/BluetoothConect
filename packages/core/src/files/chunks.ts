@@ -88,10 +88,26 @@ export function chooseChunkSize(input: ChunkSizingInput): number {
  * How many adjacent grid chunks to put in one message on the link as it is
  * right now. Recomputed per message, which is what makes a mid-flight transport
  * upgrade free.
+ *
+ * The rule is: one chunk message, one datagram. The session below will happily
+ * fragment a 16 KB message across ninety-five Bluetooth datagrams, but those
+ * ninety-five ride or die together - one lost fragment and the whole 16 KB is
+ * sent again. Keeping a message inside a datagram is what makes the protocol
+ * usable on a bad link, and it costs a fast link nothing, because a fast link's
+ * datagrams are large.
  */
-export function chooseRunLength(chunkSize: number, payloadBudget: number, transferIdLength: number): number {
-  const usable = payloadBudget - chunkHeaderBytes(transferIdLength);
-  if (usable < chunkSize) return 1; // one chunk may exceed the budget; fragmentation covers it
+export function chooseRunLength(
+  chunkSize: number,
+  payloadBudget: number,
+  datagramBytes: number,
+  transferIdLength: number,
+): number {
+  const header = chunkHeaderBytes(transferIdLength);
+  const perDatagram = datagramBytes - DATAGRAM_FRAMING_OVERHEAD - header;
+  const usable = Math.min(payloadBudget - header, perDatagram);
+  // A single grid chunk that does not fit is still sent: the grid was chosen on
+  // a different link, and fragmentation is the lesser evil against stalling.
+  if (usable < chunkSize) return 1;
   return clamp(Math.floor(usable / chunkSize), 1, FILE_LIMITS.maxRunChunks);
 }
 

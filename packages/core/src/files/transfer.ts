@@ -57,6 +57,8 @@ export interface TransferWire {
   sendChunk(payload: Uint8Array): boolean;
   /** Application payload budget on the link as it is right now. */
   readonly payloadBudget: number;
+  /** Largest single datagram the live link carries, before framing. */
+  readonly datagramBytes: number;
 }
 
 export interface TransferListener {
@@ -66,6 +68,8 @@ export interface TransferListener {
   onFailed(transfer: BaseTransfer, code: FileErrorCode, message: string): void;
   onCancelled(transfer: BaseTransfer, reason: string, byPeer: boolean): void;
   onDeclined(transfer: BaseTransfer, code: number, reason: string): void;
+  /** A chunk arrived and was refused. Counted for Developer Mode. */
+  onChunkRejected(transfer: BaseTransfer, index: number, reason: string): void;
 }
 
 export interface TransferTuning {
@@ -440,7 +444,12 @@ export class OutgoingTransfer extends BaseTransfer {
 
         // Recomputed per message: this is the whole of the mid-flight adaptation
         // to a faster (or slower) link.
-        const maxRun = chooseRunLength(this.offer.chunkSize, this.wire.payloadBudget, this.transferId.length);
+        const maxRun = chooseRunLength(
+          this.offer.chunkSize,
+          this.wire.payloadBudget,
+          this.wire.datagramBytes,
+          this.transferId.length,
+        );
         let run = 0;
         while (
           run < maxRun &&
@@ -575,18 +584,18 @@ export class IncomingTransfer extends BaseTransfer {
     // message's own claims: a peer that says "run of 64" for a file with three
     // chunks left must be dropped, not believed.
     if (msg.index + msg.run > this.offer.totalChunks) {
-      this.rejectedChunks++;
+      this.reject(msg.index, 'index or run is outside the file');
       return;
     }
     const expected = runByteLength(this.offer.fileBytes, this.offer.chunkSize, msg.index, msg.run);
     if (expected === 0 || msg.data.length !== expected) {
-      this.rejectedChunks++;
+      this.reject(msg.index, 'payload length does not match the run');
       return;
     }
     if (!bytesEqual(chunkDigest(this.transferId, msg.index, msg.run, msg.data), msg.digest)) {
       // Corruption, or a bug on one of the two sides. Re-request rather than
       // accept: a chunk that fails its digest is never written to disk.
-      this.rejectedChunks++;
+      this.reject(msg.index, 'digest mismatch');
       if (this.nak.size < FILE_LIMITS.maxNakEntries) this.nak.add(msg.index);
       this.ackPending = true;
       return;
@@ -650,6 +659,11 @@ export class IncomingTransfer extends BaseTransfer {
       fileHash: this.offer.fileHash,
       bitmap: this.received.toBytes(),
     };
+  }
+
+  private reject(index: number, reason: string): void {
+    this.rejectedChunks++;
+    this.listener.onChunkRejected(this, index, reason);
   }
 
   private resumeMatches(resume: ResumeState): boolean {

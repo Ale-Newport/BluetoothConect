@@ -45,7 +45,6 @@ import {
 } from '../src/files/progress.js';
 import { MemoryFileStore } from '../src/files/memoryStore.js';
 import { FileTransferProtocol } from '../src/files/protocol.js';
-import type { IncomingTransfer, OutgoingTransfer } from '../src/files/transfer.js';
 import {
   FILE_LIMITS,
   FileErrorCode,
@@ -164,20 +163,21 @@ interface FilePair {
 }
 
 async function connectFilePair(
-  options: Parameters<typeof connectPair>[0] = {},
+  options: (Parameters<typeof connectPair>[0] & { idSeed?: number }) = {},
   protocolOptions: { maxFileBytes?: number; maxConcurrentIncoming?: number } = {},
 ): Promise<FilePair> {
   const ctx = await connectPair({ preTrusted: true, ...options });
+  const idSeed = options.idSeed ?? 7;
   // PeerSession is passed straight in: the fact that this compiles is the proof
   // that `TransferSession` really is a slice of the real thing.
   const protoA = new FileTransferProtocol(ctx.sessionA, {
     clock: ctx.clock,
-    random: new SeededRandom(7),
+    random: new SeededRandom(idSeed),
     ...protocolOptions,
   });
   const protoB = new FileTransferProtocol(ctx.sessionB, {
     clock: ctx.clock,
-    random: new SeededRandom(8),
+    random: new SeededRandom(idSeed + 1),
     ...protocolOptions,
   });
   return { ctx, protoA, protoB };
@@ -346,10 +346,14 @@ describe('chunk sizing', () => {
 
   it('coalesces adjacent chunks when the link gets faster, without changing the grid', () => {
     const grid = 256;
-    // On Bluetooth one chunk fills the datagram budget.
-    expect(chooseRunLength(grid, 180 - 72 - chunkHeaderBytes(13), 13)).toBe(1);
-    // On Wi-Fi the same grid ships 64 chunks - 16 KB - in one message.
-    expect(chooseRunLength(grid, 65536, 13)).toBe(FILE_LIMITS.maxRunChunks);
+    // On Bluetooth one chunk fills the datagram, so a message carries one.
+    expect(chooseRunLength(grid, 65536, 180, 13)).toBe(1);
+    // On Wi-Fi the same grid ships dozens of chunks in one datagram-sized message.
+    const wifi = chooseRunLength(grid, 65536, 16 * 1024, 13);
+    expect(wifi).toBeGreaterThan(32);
+    expect(wifi * grid + chunkHeaderBytes(13)).toBeLessThanOrEqual(16 * 1024 - 72);
+    // A message never grows past the payload budget either.
+    expect(chooseRunLength(grid, 1024, 64 * 1024, 13)).toBe(3);
   });
 
   it('computes run byte lengths that stop at the end of the file', () => {
@@ -606,7 +610,7 @@ describe('file transfer end to end', () => {
     expect(offered?.totalChunks).toBe(2000);
     expect(doneB[0]?.transferId).toBe(id);
     expect(bytesEqual(sink.bytes, contents)).toBe(true);
-    expect(protoB.diagnostics().rejectedChunks).toBe(0);
+    expect(protoB.rejectedChunks).toBe(0);
     // Both sides are back to idle, with no timers left running.
     expect(protoA.activeTransfers).toHaveLength(0);
     expect(protoB.activeTransfers).toHaveLength(0);
@@ -796,7 +800,7 @@ describe('file transfer end to end', () => {
     first.protoB.dispose();
 
     // --- second attempt: brand new sessions, brand new transfer id -----------
-    const second = await connectFilePair({ conditions: BLE_LIKE_CONDITIONS });
+    const second = await connectFilePair({ conditions: BLE_LIKE_CONDITIONS, idSeed: 900 });
     const writesBefore = sink.writes.length;
     second.protoB.events.on('offer', ({ offer }) => {
       expect(offer.transferId).not.toBe(firstId);
@@ -877,7 +881,7 @@ describe('a hostile peer', () => {
   });
 
   it('cannot write outside the file with an out-of-range chunk index', async () => {
-    const { ctx, protoA, protoB } = await connectFilePair();
+    const { ctx, protoA, protoB } = await connectFilePair({ conditions: BLE_LIKE_CONDITIONS });
     const contents = pattern(4096);
     const sink = new MemoryFileStore(contents.length);
     let offer: FileOffer | undefined;
@@ -911,7 +915,7 @@ describe('a hostile peer', () => {
     );
     await ctx.clock.advanceAsync(2000);
 
-    expect((protoB.diagnostics().rejectedChunks as number) >= 4).toBe(true);
+    expect(protoB.rejectedChunks).toBeGreaterThanOrEqual(4);
     // The real transfer is unharmed and still finishes with the right bytes.
     expect(await runUntil(ctx.clock, () => doneB.length > 0, 30_000)).toBe(true);
     expect(bytesEqual(sink.bytes, contents)).toBe(true);
@@ -933,6 +937,7 @@ describe('a hostile peer', () => {
 
     expect(protoB.droppedPackets).toBeGreaterThanOrEqual(before + 5);
     expect(protoB.activeTransfers).toHaveLength(0);
+    expect(protoB.hasRecentlyFinished('GHOST00')).toBe(false);
     // Still healthy.
     const sink = new MemoryFileStore(2048);
     protoB.events.on('offer', ({ offer }) => protoB.accept(offer.transferId, sink));
@@ -945,29 +950,28 @@ describe('a hostile peer', () => {
     const { ctx, protoA, protoB } = await connectFilePair({ conditions: BLE_LIKE_CONDITIONS });
     const contents = pattern(32 * 1024, 11);
     const sink = new MemoryFileStore(contents.length);
-    let offer: FileOffer | undefined;
-    protoB.events.on('offer', (e) => {
-      offer = e.offer;
-      protoB.accept(e.offer.transferId, sink);
+    let corruptedIndex = -1;
+    // Injected from inside the accept, so it is certain to land while the
+    // transfer is still running.
+    protoB.events.on('offer', ({ offer }) => {
+      protoB.accept(offer.transferId, sink);
+      corruptedIndex = offer.totalChunks - 1;
+      const length = runByteLength(offer.fileBytes, offer.chunkSize, corruptedIndex, 1);
+      // A chunk of exactly the right shape whose bytes do not match its digest.
+      const corrupted = pattern(length, 200);
+      const wrongDigest = chunkDigest(offer.transferId, corruptedIndex, 1, pattern(length, 201));
+      ctx.sessionA.sendReliableRaw(
+        MessageType.FILE_CHUNK,
+        encodeFileChunk(offer.transferId, corruptedIndex, 1, wrongDigest, corrupted),
+        { bulk: true },
+      );
     });
     const doneB = collectCompletions(protoB);
     await protoA.offer({ filename: 'photo.raw', fileBytes: contents.length, store: new MemoryFileStore(contents) });
-    await runUntil(ctx.clock, () => offer !== undefined, 5000);
-    const live = offer as FileOffer;
-
-    // A chunk of exactly the right shape whose bytes do not match its digest.
-    const lastIndex = live.totalChunks - 1;
-    const length = runByteLength(live.fileBytes, live.chunkSize, lastIndex, 1);
-    const corrupted = pattern(length, 200);
-    const wrongDigest = chunkDigest(live.transferId, lastIndex, 1, pattern(length, 201));
-    ctx.sessionA.sendReliableRaw(
-      MessageType.FILE_CHUNK,
-      encodeFileChunk(live.transferId, lastIndex, 1, wrongDigest, corrupted),
-      { bulk: true },
-    );
 
     expect(await runUntil(ctx.clock, () => doneB.length > 0, 120_000)).toBe(true);
-    expect(protoB.diagnostics().rejectedChunks as number).toBeGreaterThanOrEqual(1);
+    expect(corruptedIndex).toBeGreaterThan(0);
+    expect(protoB.rejectedChunks).toBeGreaterThanOrEqual(1);
     // The corrupted bytes were never written, and the file verifies.
     expect(bytesEqual(sink.bytes, contents)).toBe(true);
   }, 120_000);
@@ -1003,7 +1007,10 @@ describe('a hostile peer', () => {
   });
 
   it('bounds the number of concurrent incoming transfers', async () => {
-    const { ctx, protoA, protoB } = await connectFilePair({}, { maxConcurrentIncoming: 1 });
+    const { ctx, protoA, protoB } = await connectFilePair(
+      { conditions: BLE_LIKE_CONDITIONS },
+      { maxConcurrentIncoming: 1 },
+    );
     const offers: FileOffer[] = [];
     const declined: { code: number }[] = [];
     protoA.events.on('declined', (e) => declined.push(e));
@@ -1012,9 +1019,9 @@ describe('a hostile peer', () => {
       protoB.accept(offer.transferId, new MemoryFileStore(offer.fileBytes));
     });
 
-    await protoA.offer({ filename: 'one.bin', fileBytes: 40_000, store: new MemoryFileStore(pattern(40_000)) });
+    await protoA.offer({ filename: 'one.bin', fileBytes: 200_000, store: new MemoryFileStore(pattern(200_000)) });
     await ctx.clock.advanceAsync(200);
-    await protoA.offer({ filename: 'two.bin', fileBytes: 40_000, store: new MemoryFileStore(pattern(40_000, 2)) });
+    await protoA.offer({ filename: 'two.bin', fileBytes: 200_000, store: new MemoryFileStore(pattern(200_000, 2)) });
     await runUntil(ctx.clock, () => declined.length > 0, 20_000);
 
     expect(offers).toHaveLength(1);
@@ -1073,24 +1080,3 @@ describe('a hostile peer', () => {
   }, 60_000);
 });
 
-describe('DEBUG', () => {
-  it('trace', async () => {
-    const { ctx, protoA, protoB } = await connectFilePair({ conditions: BLE_LIKE_CONDITIONS });
-    const contents = pattern(64 * 1024);
-    const sink = new MemoryFileStore(contents.length);
-    protoB.events.on('offer', ({ offer }) => { console.log('offer', offer.transferId, offer.chunkSize, offer.totalChunks); protoB.accept(offer.transferId, sink); });
-    protoA.events.on('failed', (e) => console.log('A failed', e));
-    protoB.events.on('failed', (e) => console.log('B failed', e));
-    protoA.events.on('completed', (e) => console.log('A completed', e.transferId));
-    protoB.events.on('completed', (e) => console.log('B completed', e.transferId));
-    protoA.events.on('stateChanged', (e) => console.log('A state', e.progress.state, e.progress.transferredBytes));
-    protoB.events.on('stateChanged', (e) => console.log('B state', e.progress.state, e.progress.transferredBytes));
-    const id = await protoA.offer({ filename: 'clip.mp4', fileBytes: contents.length, store: new MemoryFileStore(contents) });
-    for (let i = 0; i < 40; i++) {
-      await ctx.clock.advanceAsync(250, 5);
-      const tA = protoA.activeTransfers[0] as OutgoingTransfer | undefined;
-      const tB = protoB.activeTransfers[0] as IncomingTransfer | undefined;
-      console.log(i, 'now', ctx.clock.now(), 'ackedA', tA?.ackedChunks, 'inflightA', tA?.inFlightMessages, 'recvB', tB?.receivedChunks, 'writes', sink.writes.length, 'sessA', JSON.stringify({q: (ctx.sessionA.diagnostics() as any).bulkInFlight, s: (ctx.sessionA.diagnostics() as any).packetsSent}), 'sessB', (ctx.sessionB.diagnostics() as any).packetsReceived);
-    }
-  }, 60_000);
-});
