@@ -112,6 +112,9 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
 
     private var channel: WifiP2pManager.Channel? = null
     private var receiver: BroadcastReceiver? = null
+
+    /** Read by the accept and dial threads, written only on `control`. */
+    @Volatile
     private var started = false
     private var discovering = false
 
@@ -541,10 +544,13 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                 .enablePersistentMode(false)
                 .build()
         }
+        // groupOwnerIntent is deliberately left at the constructor's default:
+        // GROUP_OWNER_INTENT_AUTO only exists from API 29, so naming it here -
+        // on the branch that exists for API 26 to 28 - would be a NoSuchFieldError
+        // on exactly the devices this branch is for.
         return WifiP2pConfig().apply {
             this.deviceAddress = deviceAddress
             wps = WpsInfo().apply { setup = WpsInfo.PBC }
-            groupOwnerIntent = WifiP2pConfig.GROUP_OWNER_INTENT_AUTO
         }
     }
 

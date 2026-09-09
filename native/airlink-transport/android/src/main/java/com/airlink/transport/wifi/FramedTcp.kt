@@ -144,8 +144,10 @@ internal object FramedTcp {
             if (remainingMs <= 0L) throw last ?: IOException("connect timed out")
             val budget = remainingMs / (addresses.size - index).coerceAtLeast(1)
             // Never hand connect() a zero timeout - Socket treats 0 as "block
-            // forever", which is the one thing this method must not do.
-            val slice = budget.coerceIn(250L, remainingMs).toInt()
+            // forever", which is the one thing this method must not do. The
+            // floor can overshoot the remaining budget by a quarter of a second
+            // on the last address, which is the cheaper of the two mistakes.
+            val slice = maxOf(250L, minOf(budget, remainingMs)).toInt()
 
             val socket = Socket()
             try {
@@ -285,6 +287,11 @@ internal class FramedTcpLink(
         queuedBytes.addAndGet(payload.size.toLong())
         queuedCount.incrementAndGet()
         queue.put(Outbound(FramedTcp.frame(payload), payload.size, completion))
+        // A close that landed between the check above and this put would already
+        // have drained the queue, leaving this datagram queued against a dead
+        // writer with a completion nobody ever calls - and a promise in
+        // JavaScript that never settles. Draining again closes that window.
+        if (closed.get()) drainQueue(IOException("link $linkId is closed"))
     }
 
     /** Idempotent. Always eventually produces exactly one `onClosed`. */
@@ -330,7 +337,7 @@ internal class FramedTcpLink(
                     logger("error", "callback threw: ${t.javaClass.simpleName}")
                 }
             }
-        } catch (t: Throwable) {
+        } catch (_: Throwable) {
             logger("warn", "callback dropped, transport is shutting down")
         }
     }
@@ -352,10 +359,15 @@ internal class FramedTcpLink(
     private fun drainQueue(cause: IOException) {
         while (true) {
             val item = queue.poll() ?: break
-            val completion = item.completion ?: continue
+            if (item.frame == null) {
+                // The writer's stop signal. It is not ours to consume - putting
+                // it back is what lets the writer thread actually exit.
+                queue.put(item)
+                break
+            }
             queuedBytes.addAndGet(-item.payloadLength.toLong())
             queuedCount.decrementAndGet()
-            post { completion(Result.failure(cause)) }
+            item.completion?.let { done -> post { done(Result.failure(cause)) } }
         }
     }
 
@@ -390,7 +402,7 @@ internal class FramedTcpLink(
             // Includes the SocketException raised by our own close().
             if (closed.get()) return
             finish("read failed: ${e.javaClass.simpleName}", failed = true)
-        } catch (e: OutOfMemoryError) {
+        } catch (_: OutOfMemoryError) {
             finish("out of memory reading a datagram", failed = true)
         } catch (t: Throwable) {
             finish("reader failed: ${t.javaClass.simpleName}", failed = true)

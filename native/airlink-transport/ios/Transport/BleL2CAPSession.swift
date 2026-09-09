@@ -275,7 +275,10 @@ final class BleL2CAPSession: NSObject, StreamDelegate {
  * would put 64 KiB memcpys in front of the UI, so it lost. One thread serves
  * every channel because channels are few and each one is idle most of the time.
  */
-final class BleStreamRunLoop: NSObject {
+/// `@unchecked Sendable` because the compiler cannot see the one invariant that
+/// makes it true: `loop` is written once on the worker thread and published
+/// through the semaphore before `init` returns, and nothing writes it again.
+final class BleStreamRunLoop: NSObject, @unchecked Sendable {
     static let shared = BleStreamRunLoop()
 
     /// Written once on the worker thread and published through `ready` before

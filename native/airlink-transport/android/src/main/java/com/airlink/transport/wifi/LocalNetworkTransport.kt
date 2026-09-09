@@ -133,6 +133,9 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
     private var configuration: TransportConfiguration? = null
+
+    /** Read by the accept and dial threads, written only on `control`. */
+    @Volatile
     private var started = false
 
     private var server: FramedTcpServer? = null
@@ -167,6 +170,9 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     private var resolveGeneration = 0L
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /** Read by the dial thread when binding a socket; written only on `control`. */
+    @Volatile
     private var localNetwork: Network? = null
 
     private val linkCounter = AtomicLong(0)
@@ -603,8 +609,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         }
 
         try {
-            @Suppress("DEPRECATION")
-            manager.resolveService(next, listener)
+            legacyResolve(manager, next, listener)
         } catch (e: RuntimeException) {
             log("warn", "resolve rejected: ${e.javaClass.simpleName}")
             finishResolve(generation)
@@ -624,6 +629,21 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             RESOLVE_TIMEOUT_MS,
             TimeUnit.MILLISECONDS,
         )
+    }
+
+    /**
+     * resolveService is deprecated from API 34 in favour of
+     * registerServiceInfoCallback, which is what we use there. Below 34 it is
+     * the only thing that exists, so the suppression is confined to this one
+     * call rather than spread across the discovery path.
+     */
+    @Suppress("DEPRECATION")
+    private fun legacyResolve(
+        manager: NsdManager,
+        serviceInfo: NsdServiceInfo,
+        listener: NsdManager.ResolveListener,
+    ) {
+        manager.resolveService(serviceInfo, listener)
     }
 
     /** Must run on the control thread. Ignores stale completions. */
@@ -658,20 +678,23 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         if (Build.VERSION.SDK_INT >= 34) {
             val all = try {
                 serviceInfo.hostAddresses
-            } catch (e: RuntimeException) {
+            } catch (_: RuntimeException) {
                 emptyList<InetAddress>()
             }
             if (all.isNotEmpty()) return all.toList()
         }
         // getHost() is deprecated from API 34 and gives one address only, which
         // is why it is the fallback rather than the default.
-        @Suppress("DEPRECATION")
-        val single = try {
-            serviceInfo.host
-        } catch (e: RuntimeException) {
-            null
-        }
+        val single = legacyHost(serviceInfo)
         return if (single == null) emptyList() else listOf(single)
+    }
+
+    /** getHost() is deprecated from API 34; isolated here so the suppression is too. */
+    @Suppress("DEPRECATION")
+    private fun legacyHost(serviceInfo: NsdServiceInfo): InetAddress? = try {
+        serviceInfo.host
+    } catch (_: RuntimeException) {
+        null
     }
 
     private fun endpointOf(endpoint: ResolvedEndpoint) = DiscoveredEndpoint(
@@ -704,44 +727,54 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             val budget = timeoutMs.coerceIn(1_000, 60_000)
             // The dial blocks, so it cannot run on the control thread - that
             // thread has to stay free to service NSD callbacks and closes.
-            Thread({
-                val socket = try {
-                    FramedTcp.dial(endpoint.addresses, endpoint.port, budget) { candidate ->
-                        bindToLocalNetwork(candidate)
-                    }
-                } catch (e: IOException) {
-                    control.execute {
-                        completion(
-                            Result.failure(
-                                if (e is java.net.SocketTimeoutException) {
-                                    AirLinkError.Timeout("connecting to $endpointId")
-                                } else {
-                                    AirLinkError.Failed("could not reach $endpointId: ${e.javaClass.simpleName}")
-                                },
-                            ),
-                        )
-                    }
-                    return@Thread
-                } catch (t: Throwable) {
-                    control.execute {
-                        completion(Result.failure(AirLinkError.Failed("connect failed: ${t.javaClass.simpleName}")))
-                    }
-                    return@Thread
-                }
+            Thread({ dial(endpointId, endpoint, budget, completion) }, "airlink-dial")
+                .apply { isDaemon = true }
+                .start()
+        }
+    }
 
-                control.execute {
-                    if (!started) {
-                        try {
-                            socket.close()
-                        } catch (_: IOException) {
-                        }
-                        completion(Result.failure(AirLinkError.NotStarted))
-                        return@execute
-                    }
-                    val linkId = adopt(socket, endpointId, incoming = false)
-                    completion(Result.success(linkId))
+    /** Runs on a throwaway dial thread. Every exit path settles the promise. */
+    private fun dial(
+        endpointId: String,
+        endpoint: ResolvedEndpoint,
+        budget: Int,
+        completion: (Result<String>) -> Unit,
+    ) {
+        val socket = try {
+            FramedTcp.dial(endpoint.addresses, endpoint.port, budget) { candidate ->
+                bindToLocalNetwork(candidate)
+            }
+        } catch (e: IOException) {
+            control.execute {
+                completion(
+                    Result.failure(
+                        if (e is java.net.SocketTimeoutException) {
+                            AirLinkError.Timeout("connecting to $endpointId")
+                        } else {
+                            AirLinkError.Failed("could not reach $endpointId: ${e.javaClass.simpleName}")
+                        },
+                    ),
+                )
+            }
+            return
+        } catch (t: Throwable) {
+            control.execute {
+                completion(Result.failure(AirLinkError.Failed("connect failed: ${t.javaClass.simpleName}")))
+            }
+            return
+        }
+
+        control.execute {
+            if (!started) {
+                try {
+                    socket.close()
+                } catch (_: IOException) {
                 }
-            }, "airlink-dial").apply { isDaemon = true }.start()
+                completion(Result.failure(AirLinkError.NotStarted))
+                return@execute
+            }
+            val linkId = adopt(socket, endpointId, incoming = false)
+            completion(Result.success(linkId))
         }
     }
 
@@ -754,7 +787,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         val network = localNetwork ?: return
         try {
             network.bindSocket(socket)
-        } catch (e: IOException) {
+        } catch (_: IOException) {
             // Best effort. The default route usually works; this only helps the
             // awkward multi-network case.
             log("debug", "could not bind socket to the local network")

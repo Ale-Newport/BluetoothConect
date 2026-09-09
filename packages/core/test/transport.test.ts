@@ -37,6 +37,7 @@ import {
   TransportUpgradeController,
   UpgradeFailureReason,
   UpgradeState,
+  type UpgradeTimings,
   bestCommonTransport,
   classifyConnectionQuality,
   connectionQualityFromLink,
@@ -106,6 +107,12 @@ class LabelledTransport implements Transport {
   readonly events = new TypedEmitter<TransportEvents>();
   /** Set to make connect() fail the way a radio that refuses to open does. */
   failConnect = false;
+  /**
+   * Override the handle this radio reports for itself. A native bridge can
+   * return anything at all here, and whatever it returns is what we advertise
+   * to the peer in TRANSPORT_ACCEPT.
+   */
+  endpointIdOverride: string | null = null;
   private available = true;
 
   constructor(
@@ -123,7 +130,17 @@ class LabelledTransport implements Transport {
   }
 
   get endpointId(): string {
+    return this.endpointIdOverride ?? this.inner.endpointId;
+  }
+
+  /** The real endpoint, whatever the bridge happens to be claiming. */
+  get trueEndpointId(): string {
     return this.inner.endpointId;
+  }
+
+  /** Live links held by the underlying radio. Non-zero after a leak. */
+  get linkCount(): number {
+    return this.inner.linkCount;
   }
 
   async availability(): Promise<TransportAvailability> {
@@ -218,7 +235,14 @@ interface Side {
  * over the slow one - which is exactly the state a real iPhone/Android pair is
  * in a second after they meet.
  */
-async function connectPair(options: { autoUpgrade?: boolean; fastAvailable?: boolean } = {}) {
+async function connectPair(
+  options: {
+    autoUpgrade?: boolean;
+    fastAvailable?: boolean;
+    timings?: Partial<UpgradeTimings>;
+    maxDowngradeAttempts?: number;
+  } = {},
+) {
   const clock = new VirtualClock();
   const network = new MockNetwork(clock, 0xa11);
 
@@ -265,6 +289,10 @@ async function connectPair(options: { autoUpgrade?: boolean; fastAvailable?: boo
       localPeerId: device.identity.peerId,
       resolveEndpoint: (kind) => (kind === SLOW ? `${peerPrefix}-ble` : kind === FAST ? `${peerPrefix}-wifi` : null),
       autoUpgrade: options.autoUpgrade ?? false,
+      ...(options.timings ? { timings: options.timings } : {}),
+      ...(options.maxDowngradeAttempts !== undefined
+        ? { maxDowngradeAttempts: options.maxDowngradeAttempts }
+        : {}),
     });
 
     const side: Side = { name, device, session, slow, fast, manager, controller, routeIncoming: true };
@@ -303,6 +331,7 @@ async function connectPair(options: { autoUpgrade?: boolean; fastAvailable?: boo
   return {
     clock,
     network,
+    inner,
     a,
     b,
     initiator,
@@ -1013,9 +1042,13 @@ describe('hostile transport negotiation traffic', () => {
 
     // The moment the responder starts waiting for the peer's link, a third
     // device opens one of its own and floods it with plausible-looking probes.
+    // Derived, not hard-coded: which device ends up as the responder depends on
+    // a peer-id comparison, and a wrong guess here would quietly aim the attack
+    // at the other phone and make the test prove nothing.
+    const target = ctx.responder.fast.trueEndpointId;
     ctx.responder.controller.events.on('stateChanged', ({ state }) => {
       if (state !== UpgradeState.AWAITING_LINK) return;
-      void stranger.connect('b-wifi').then(async (link) => {
+      void stranger.connect(target).then(async (link) => {
         for (let i = 0; i < 3; i++) {
           const forged = encodeProbeDatagram(0x01, new Uint8Array(8).fill(0xaa), new Uint8Array(32).fill(0xbb));
           await link.send(forged, 'reliable').catch(() => undefined);

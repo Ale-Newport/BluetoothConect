@@ -94,17 +94,25 @@ class ForegroundSessionService : Service() {
     }
 
     override fun onDestroy() {
-        stopSession()
+        // Take the notification down with us. Leaving it up would tell the user
+        // a connection is alive when the service holding it is gone.
+        leaveForeground()
         super.onDestroy()
     }
 
     private fun stopSession() {
+        leaveForeground()
+        stopSelf()
+    }
+
+    private fun leaveForeground() {
         try {
+            // The boolean overload is deprecated from API 33; the flag form has
+            // been available since API 24 and is the only one used here.
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (t: Throwable) {
             Log.w(TAG, "stopForeground failed", t)
         }
-        stopSelf()
     }
 
     private fun createChannel() {

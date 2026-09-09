@@ -15,6 +15,10 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.provider.Settings
 import android.util.Log
+import com.airlink.transport.ble.BleTransport
+import com.airlink.transport.wifi.LocalNetworkTransport
+import com.airlink.transport.wifi.WifiAwareTransport
+import com.airlink.transport.wifi.WifiDirectTransport
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -24,10 +28,6 @@ import com.facebook.react.bridge.WritableMap
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.modules.core.PermissionAwareActivity
 import com.facebook.react.modules.core.PermissionListener
-import com.airlink.transport.ble.BleTransport
-import com.airlink.transport.wifi.LocalNetworkTransport
-import com.airlink.transport.wifi.WifiAwareTransport
-import com.airlink.transport.wifi.WifiDirectTransport
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -630,7 +630,7 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                 }
                 handler.postDelayed(watchdog, budget + CONNECT_WATCHDOG_GRACE_MS)
 
-                target.connect(endpointId, budget) { result ->
+                target.connect(endpointId, budget.toInt()) { result ->
                     handler.post {
                         handler.removeCallbacks(watchdog)
                         result.fold(
@@ -1096,6 +1096,15 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                     "the session service could not start; this connection will not survive backgrounding",
                 )
             }
+            // From API 33 the service still runs without POST_NOTIFICATIONS, but
+            // its notification is hidden - so the user sees no explanation for
+            // the battery use. Worth saying out loud in Developer Mode rather
+            // than forcing an unrelated prompt on someone who only wanted
+            // Bluetooth.
+            val notifications = Permissions.notificationPermission()
+            if (notifications != null && !Permissions.isGranted(appContext, notifications)) {
+                log("info", "module", "notifications are not permitted; the session notification will be hidden")
+            }
         } else {
             ForegroundSessionService.stop(appContext)
         }
@@ -1143,7 +1152,11 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
     private fun hasLocalNetworkPath(): Boolean = try {
         val manager = appContext.getSystemService(ConnectivityManager::class.java)
         val network = manager?.activeNetwork
-        val capabilities = network?.let { manager.getNetworkCapabilities(it) }
+        val capabilities = if (manager != null && network != null) {
+            manager.getNetworkCapabilities(network)
+        } else {
+            null
+        }
         capabilities != null && (
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                 capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)

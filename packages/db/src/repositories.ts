@@ -44,6 +44,11 @@ export interface Peer {
   trustState: TrustState;
   verifiedVia: VerifiedVia | null;
   verifiedAt: number | null;
+  /** Their advertisement secret, so we can recognise their rotating token. */
+  advertisementKey: Uint8Array | null;
+  /** Our advertisement secret for this friendship specifically. */
+  selfAdvertisementKey: Uint8Array | null;
+  pairedAt: number | null;
 }
 
 export interface Conversation {
@@ -261,7 +266,22 @@ export class PeerRepository {
       trustState: str(row.trust_state) as TrustState,
       verifiedVia: strOrNull(row.verified_via) as VerifiedVia | null,
       verifiedAt: numOrNull(row.verified_at),
+      advertisementKey: blobOrNull(row.advertisement_key),
+      selfAdvertisementKey: blobOrNull(row.self_advertisement_key),
+      pairedAt: numOrNull(row.paired_at),
     };
+  }
+
+  /** Store the advertisement secrets exchanged during pairing. */
+  setAdvertisementKeys(
+    peerId: string,
+    theirs: Uint8Array | null,
+    ours: Uint8Array | null,
+    pairedAt: number,
+  ): void {
+    this.db
+      .prepare('UPDATE peers SET advertisement_key = ?, self_advertisement_key = ?, paired_at = ? WHERE peer_id = ?')
+      .run(theirs, ours, pairedAt, peerId);
   }
 
   get(peerId: string): Peer | null {

@@ -291,6 +291,27 @@ CREATE TABLE event_log (
 CREATE INDEX idx_event_log_at ON event_log(at DESC);
 `,
   },
+  {
+    version: 2,
+    name: 'advertisement keys for offline friend recognition',
+    up: `
+-- The two secrets behind a friend's rotating BLE advertisement token.
+--
+-- advertisement_key   theirs: lets us recognise them in a broadcast before we
+--                     connect, which is what makes "Maria - Trusted friend"
+--                     appear the moment she walks into range.
+-- self_advertisement_key  ours, PER FRIENDSHIP rather than per device: if every
+--                     friend saw the same token from us, two of them could
+--                     compare notes and prove they had seen the same phone.
+--
+-- Both are exchanged inside the encrypted session during pairing, so a record
+-- created from a scanned QR code has neither until the two devices have
+-- actually met.
+ALTER TABLE peers ADD COLUMN advertisement_key BLOB;
+ALTER TABLE peers ADD COLUMN self_advertisement_key BLOB;
+ALTER TABLE peers ADD COLUMN paired_at INTEGER;
+`,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
