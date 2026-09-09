@@ -131,8 +131,18 @@ export function runConformance<TState, TAction extends GameAction>(
       break;
     }
 
-    // -- 2: purity. Snapshot before, compare after.
-    const before = stableHash(definition.encodeState(mover.currentState));
+    // -- 2: PURITY. Hold on to the state object the reducer is about to be
+    // given, hash it, apply the action, then re-encode that SAME object. If the
+    // reducer mutated anything reachable from it - a nested array written
+    // through after a shallow copy is the usual culprit - the hash moves.
+    //
+    // Structural sharing is fine and expected: an untouched sub-object may be
+    // reused by reference. What must never happen is a WRITE through it, because
+    // the two devices replay actions at different moments and a mutated history
+    // desynchronises them in a way that is almost impossible to debug in the
+    // field.
+    const stateBefore = mover.currentState;
+    const hashBefore = stableHash(definition.encodeState(stateBefore));
 
     const outcome = mover.submitLocal(proposal.type, proposal.payload);
     if (!outcome.accepted) {
@@ -141,8 +151,11 @@ export function runConformance<TState, TAction extends GameAction>(
     }
     actionLog.push(outcome.applied.action);
 
-    // The state object the game returned must be new; the old one untouched.
-    void before;
+    const hashAfter = stableHash(definition.encodeState(stateBefore));
+    if (hashAfter !== hashBefore) {
+      fail('purity', `applyAction mutated the state it was given (ply ${plies + 1}, action "${proposal.type}")`);
+      break;
+    }
 
     // -- 8: replay the same action on the other session.
     const other = player === (setup.players[0] as PlayerId) ? b : a;
@@ -162,8 +175,14 @@ export function runConformance<TState, TAction extends GameAction>(
 
     if (definition.mode === GameMode.REALTIME) {
       const step = 1000 / (definition.tickRate ?? 60);
+      const tickStateBefore = a.currentState;
+      const tickHashBefore = stableHash(definition.encodeState(tickStateBefore));
       a.tick(step);
       b.tick(step);
+      if (stableHash(definition.encodeState(tickStateBefore)) !== tickHashBefore) {
+        fail('purity', `tick() mutated the state it was given (ply ${plies + 1})`);
+        break;
+      }
       if (stableHash(definition.encodeState(a.currentState)) !== stableHash(definition.encodeState(b.currentState))) {
         fail('determinism', `tick() diverged after ${plies + 1} plies`);
         break;

@@ -1,0 +1,28 @@
+{
+  "name": "@airlink/native-transport",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native radio adapters for AirLink: BLE, local network, peer-to-peer Wi-Fi, Wi-Fi Direct and hotspot handoff.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "files": ["src", "ios", "android", "airlink-transport.podspec"],
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "peerDependencies": { "react": "*", "react-native": "*" },
+  "devDependencies": { "typescript": "^5.9.2" },
+  "codegenConfig": {
+    "name": "AirLinkTransportSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": { "javaPackageName": "com.airlink.transport" },
+    "ios": {
+      "modules": {
+        "NativeAirLinkTransport": {
+          "className": "RCTNativeAirLinkTransport",
+          "unstableRequiresMainQueueSetup": false,
+          "conformsToProtocols": []
+        }
+      },
+      "components": {}
+    }
+  }
+}

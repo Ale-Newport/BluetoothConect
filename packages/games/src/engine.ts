@@ -23,6 +23,9 @@
  */
 import type { CborValue } from '@airlink/core';
 
+// Re-exported so a game file needs only one import to write its codecs.
+export type { CborValue };
+
 export type PlayerId = string;
 
 export const GameMode = {

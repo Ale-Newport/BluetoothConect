@@ -140,6 +140,9 @@ function sectorIndex(x: number, y: number): number {
  */
 export function scoreDart(x: number, y: number): DartHit {
   const r2 = x * x + y * y; // exact: x and y are integers within +/-240
+  // Belt and braces: validateAction never lets a non-finite coordinate through,
+  // but a scoring function must not be able to invent a sector out of NaN.
+  if (!Number.isFinite(r2)) return { points: 0, ring: DartRing.MISS, sector: 0 };
   if (r2 <= R2_INNER_BULL) return { points: 50, ring: DartRing.INNER_BULL, sector: 25 };
   if (r2 <= R2_OUTER_BULL) return { points: 25, ring: DartRing.OUTER_BULL, sector: 25 };
   if (r2 > R2_DOUBLE_OUTER) return { points: 0, ring: DartRing.MISS, sector: 0 };
@@ -151,13 +154,6 @@ export function scoreDart(x: number, y: number): DartHit {
   }
   return { points: sector, ring: DartRing.SINGLE, sector };
 }
-
-/** Radius a player aims at for each numbered ring, in board units. */
-const AIM_RADIUS: Record<number, number> = {
-  [DartRing.SINGLE]: 134, // the outer single band, 107..162
-  [DartRing.DOUBLE]: 166, // the double band, 162..170
-  [DartRing.TREBLE]: 103, // the treble band, 99..107
-};
 
 /**
  * The centre of a scoring bed, for a UI's aiming assist or a bot.
@@ -174,7 +170,9 @@ export function aimPoint(sector: number, ring: DartRing): { x: number; y: number
   // The far corner of the legal target square: nothing within it can score.
   if (ring === DartRing.MISS) return { x: BOARD_RADIUS, y: BOARD_RADIUS };
 
-  const radius = AIM_RADIUS[ring] ?? AIM_RADIUS[DartRing.SINGLE] ?? 134;
+  // The middle of each band: 162..170 for a double, 99..107 for a treble, and
+  // the wide outer single, 107..162, for everything else.
+  const radius = ring === DartRing.DOUBLE ? 166 : ring === DartRing.TREBLE ? 103 : 134;
   const index = SECTOR_ORDER.indexOf(sector);
   const degrees = index < 0 ? 90 : 90 - 18 * index;
   const radians = (degrees * Math.PI) / 180;
@@ -190,9 +188,17 @@ export const DARTS_PER_TURN = 3;
 const MIN_START_SCORE = 2;
 const MAX_START_SCORE = 1001;
 
-/** Scatter half-width at accuracy 0 and at accuracy 1, in board units. */
+/**
+ * Scatter half-width at accuracy 0 and at accuracy 1, in board units.
+ *
+ * MIN_SPREAD is deliberately 2: a dart can then land at most 2 units off in each
+ * axis, so at accuracy 1 the radial error is at most 2*sqrt(2) plus the half-unit
+ * rounding in `aimPoint` - comfortably inside the 4-unit half-width of the double
+ * and treble bands. Perfect timing therefore always hits the bed you aimed at,
+ * which is both a satisfying rule and an exactly testable one.
+ */
 const MAX_SPREAD = 60;
-const MIN_SPREAD = 3;
+const MIN_SPREAD = 2;
 
 /**
  * A leg is abandoned as a draw after this many turns per player. A real 501 leg
@@ -225,12 +231,16 @@ export interface DartsState {
   readonly lastThrower: number;
 }
 
-export interface DartsThrowPayload {
+/**
+ * A type alias rather than an interface on purpose: only aliases pick up the
+ * implicit index signature that makes them assignable to `CborValue`.
+ */
+export type DartsThrowPayload = {
   readonly targetX: number;
   readonly targetY: number;
   /** Timing accuracy in [0, 1]. Quantised to 1/100 on the wire. */
   readonly accuracy: number;
-}
+};
 
 export interface DartsAction extends GameAction {
   readonly type: 'throw';
@@ -360,7 +370,7 @@ export const darts: GameDefinition<DartsState, DartsAction> = {
       dartsThrown: turnOver ? 0 : dartsThrown,
       turnStartScore: turnOver && !won ? (scores[nextIndex] as number) : state.turnStartScore,
       turnsCompleted: state.turnsCompleted + (turnOver ? 1 : 0),
-      winnerIndex: won ? index : -1,
+      winnerIndex: won ? index : state.winnerIndex,
       lastX: x,
       lastY: y,
       lastPoints: hit.points,

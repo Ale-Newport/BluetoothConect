@@ -73,6 +73,8 @@ export class GameSession<TState, TAction extends GameAction = GameAction> {
   private readonly nextSeqByPlayer = new Map<PlayerId, number>();
   private localSeq = 0;
   private elapsedMs = 0;
+  /** Sub-step time carried between tick() calls. See tick(). */
+  private tickRemainder = 0;
   private readonly historyLimit: number;
   private readonly random: SeededGameRandom;
 
@@ -233,19 +235,40 @@ export class GameSession<TState, TAction extends GameAction = GameAction> {
   /**
    * Advance a realtime simulation. Only the host's result is authoritative;
    * a guest ticks too, purely to predict locally between snapshots.
+   *
+   * FIXED TIMESTEP WITH AN ACCUMULATOR. The simulation only ever advances in
+   * whole steps of 1/tickRate, because a variable step would make the physics
+   * non-deterministic and the two devices would drift apart. Time left over
+   * from one call is CARRIED FORWARD rather than discarded: a frame that
+   * delivers 16.6ms when a step is 16.667ms would otherwise silently drop that
+   * step, so the simulation would run slow, and - far worse - two devices with
+   * slightly different frame pacing would accumulate different amounts of
+   * discarded time and diverge.
    */
   tick(deltaMs: number): void {
     const def = this.options.definition;
     if (def.mode !== GameMode.REALTIME || !def.tick) return;
+    if (!Number.isFinite(deltaMs) || deltaMs <= 0) return;
+
     const step = 1000 / (def.tickRate ?? 60);
-    let remaining = deltaMs;
-    // Fixed timestep: a variable step would make the simulation non-deterministic.
-    let guard = 0;
-    while (remaining >= step) {
-      if (++guard > 600) break; // never spiral after a long background pause
+    this.tickRemainder += deltaMs;
+
+    // After a long pause - the app was backgrounded, the phone was locked -
+    // there may be minutes of time to make up. Simulating all of it would lock
+    // the UI, so we cap the catch-up and drop the rest. The host's next
+    // snapshot corrects any resulting difference.
+    const maxSteps = 600;
+    let steps = Math.floor(this.tickRemainder / step);
+    if (steps > maxSteps) {
+      steps = maxSteps;
+      this.tickRemainder = 0;
+    } else {
+      this.tickRemainder -= steps * step;
+    }
+
+    for (let i = 0; i < steps; i++) {
       this.elapsedMs += step;
       this.state = def.tick(this.state, this.context(step));
-      remaining -= step;
     }
   }
 

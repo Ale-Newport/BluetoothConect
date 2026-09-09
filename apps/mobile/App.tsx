@@ -1,45 +1,14 @@
 /**
- * Sample React Native App
- * https://github.com/facebook/react-native
+ * Application entry point.
  *
- * @format
+ * The real screens live under src/. This file exists only to mount the root and
+ * to make the one ordering guarantee that matters: the CSPRNG polyfill must be
+ * installed before anything cryptographic is imported, which is why
+ * index.js imports it first.
  */
+import React from 'react';
+import { AppRoot } from './src/AppRoot';
 
-import { NewAppScreen } from '@react-native/new-app-screen';
-import { StatusBar, StyleSheet, useColorScheme, View } from 'react-native';
-import {
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context';
-
-function App() {
-  const isDarkMode = useColorScheme() === 'dark';
-
-  return (
-    <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
-    </SafeAreaProvider>
-  );
+export default function App(): React.JSX.Element {
+  return <AppRoot />;
 }
-
-function AppContent() {
-  const safeAreaInsets = useSafeAreaInsets();
-
-  return (
-    <View style={styles.container}>
-      <NewAppScreen
-        templateFileName="App.tsx"
-        safeAreaInsets={safeAreaInsets}
-      />
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-});
-
-export default App;
