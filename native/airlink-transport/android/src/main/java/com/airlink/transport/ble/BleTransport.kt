@@ -71,7 +71,7 @@ import java.util.concurrent.TimeUnit
  * finish, which keeps the discipline without giving up the ability to report a
  * failure synchronously.
  */
-class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
+class BleTransport(context: Context) : AirLinkTransport {
 
     override val kind: TransportKind = TransportKind.BLE
 
@@ -157,7 +157,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
             val server = BleGattServer(
                 context = appContext,
                 availability = radio,
-                host = this,
+                host = linkHost,
                 newLinkId = { newLinkId() },
                 onIncomingLink = { link -> registerIncoming(link) },
             )
@@ -309,7 +309,7 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
                 device = device,
                 uuids = uuids,
                 availability = radio,
-                host = this,
+                host = linkHost,
                 linkId = newLinkId(),
                 onIdentity = { endpoint, record ->
                     scanner?.enrich(endpoint, record.name, record.token)
@@ -387,41 +387,56 @@ class BleTransport(context: Context) : AirLinkTransport, BleLinkHost {
         return link.metrics()
     }
 
-    // -- BleLinkHost -----------------------------------------------------------
+    // -- the link host ---------------------------------------------------------
 
-    override val handler: Handler get() = ensureHandler()
+    private val handler: Handler get() = ensureHandler()
 
-    override fun onLinkOpened(link: BleLink) {
-        links[link.id] = link
-        emit {
-            it.linkOpened(
-                linkId = link.id,
-                transport = TransportKind.BLE,
-                endpointId = link.endpointId,
-                maxDatagramSize = link.maxDatagramSize,
-                highBandwidth = link.highBandwidth,
-                incoming = link.incoming,
-            )
+    /**
+     * How every link, connection and server in this package reports back.
+     *
+     * It is a separate object rather than an interface on the transport itself
+     * because `BleTransport` is the one public class in the package: making it
+     * implement an internal interface would either leak the internal types into
+     * the public API or force every collaborator to be public. This keeps the
+     * seam exactly where it belongs - one public class, everything else
+     * internal.
+     */
+    private val linkHost = object : BleLinkHost {
+
+        override val handler: Handler get() = this@BleTransport.handler
+
+        override fun onLinkOpened(link: BleLink) {
+            links[link.id] = link
+            emit {
+                it.linkOpened(
+                    linkId = link.id,
+                    transport = TransportKind.BLE,
+                    endpointId = link.endpointId,
+                    maxDatagramSize = link.maxDatagramSize,
+                    highBandwidth = link.highBandwidth,
+                    incoming = link.incoming,
+                )
+            }
         }
-    }
 
-    override fun onLinkState(link: BleLink, state: LinkState, reason: String) {
-        emit { it.linkState(link.id, state, reason) }
-    }
+        override fun onLinkState(link: BleLink, state: LinkState, reason: String) {
+            emit { it.linkState(link.id, state, reason) }
+        }
 
-    override fun onLinkData(link: BleLink, data: ByteArray) {
-        emit { it.received(link.id, data) }
-    }
+        override fun onLinkData(link: BleLink, data: ByteArray) {
+            emit { it.received(link.id, data) }
+        }
 
-    override fun onLinkDatagramSizeChanged(link: BleLink, maxDatagramSize: Int) {
-        emit { it.mtuChanged(link.id, maxDatagramSize) }
-    }
+        override fun onLinkDatagramSizeChanged(link: BleLink, maxDatagramSize: Int) {
+            emit { it.mtuChanged(link.id, maxDatagramSize) }
+        }
 
-    override fun onLinkRetired(link: BleLink) {
-        links.remove(link.id)
-    }
+        override fun onLinkRetired(link: BleLink) {
+            links.remove(link.id)
+        }
 
-    override fun log(level: String, message: String) = emitLog(level, message)
+        override fun log(level: String, message: String) = emitLog(level, message)
+    }
 
     // -- radio state -----------------------------------------------------------
 

@@ -50,6 +50,21 @@ export interface ReliabilityCallbacks {
 
 export interface ReliabilityOptions {
   readonly maxAttempts?: number;
+  /**
+   * Milliseconds it takes the link to put one byte on the wire.
+   *
+   * Without this the retransmission timer is pure round-trip time, which is
+   * wrong on a slow link with a small MTU: a 4 KB packet fragmented across a
+   * 180-byte Bluetooth MTU spends over a hundred milliseconds simply being
+   * TRANSMITTED, and an acknowledgement cannot possibly arrive before that. A
+   * timer that ignores it fires while the packet is still going out, floods the
+   * link with duplicates, and exhausts the retry budget on a packet that was
+   * never lost.
+   *
+   * The session updates this from the live link, so a transport upgrade widens
+   * the timer automatically.
+   */
+  readonly transmitMsPerByte?: number;
   readonly initialRtoMs?: number;
   readonly minRtoMs?: number;
   readonly maxRtoMs?: number;
@@ -90,6 +105,7 @@ export class ReliableChannel {
   private readonly maxRto: number;
   private readonly windowSize: number;
   private readonly reorderBufferSize: number;
+  private transmitMsPerByte: number;
   private paused = false;
 
   constructor(
@@ -103,10 +119,37 @@ export class ReliableChannel {
     this.maxRto = options.maxRtoMs ?? TIMING.maxRetransmitMs;
     this.windowSize = options.windowSize ?? 64;
     this.reorderBufferSize = options.reorderBufferSize ?? 256;
+    this.transmitMsPerByte = options.transmitMsPerByte ?? 0;
   }
 
   get currentRtoMs(): number {
     return this.rto;
+  }
+
+  /**
+   * Tell the channel how fast the link is. Called whenever the link changes -
+   * a Bluetooth-to-Wi-Fi upgrade cuts this by two orders of magnitude, and the
+   * retransmission timer must follow it down or the session stays sluggish long
+   * after the link got fast.
+   */
+  setLinkThroughput(bytesPerSecond: number | undefined): void {
+    this.transmitMsPerByte =
+      bytesPerSecond !== undefined && Number.isFinite(bytesPerSecond) && bytesPerSecond > 0
+        ? 1000 / bytesPerSecond
+        : 0;
+  }
+
+  /**
+   * How long to wait before assuming a packet was lost.
+   *
+   * Round-trip time, backed off per attempt, PLUS the time the link needs to
+   * transmit the packet at all. The second term is what makes a large payload
+   * survive a slow Bluetooth link.
+   */
+  private deadlineFor(record: OutboundRecord): number {
+    const backoff = Math.min(this.maxRto, this.rto * 2 ** (record.attempts - 1));
+    const transmit = record.payload.length * this.transmitMsPerByte;
+    return record.lastSentAt + backoff + transmit;
   }
 
   get smoothedRttMs(): number | null {
@@ -193,9 +236,7 @@ export class ReliableChannel {
     if (this.paused || this.unacked.size === 0) return;
     let earliestDeadline = Infinity;
     for (const record of this.unacked.values()) {
-      // Exponential backoff per attempt, capped.
-      const backoff = Math.min(this.maxRto, this.rto * 2 ** (record.attempts - 1));
-      earliestDeadline = Math.min(earliestDeadline, record.lastSentAt + backoff);
+      earliestDeadline = Math.min(earliestDeadline, this.deadlineFor(record));
     }
     const delay = Math.max(1, earliestDeadline - this.clock.now());
     this.timer = this.clock.setTimeout(() => {
@@ -210,8 +251,7 @@ export class ReliableChannel {
     const failed: OutboundRecord[] = [];
 
     for (const record of this.unacked.values()) {
-      const backoff = Math.min(this.maxRto, this.rto * 2 ** (record.attempts - 1));
-      if (record.lastSentAt + backoff > now) continue;
+      if (this.deadlineFor(record) > now) continue;
 
       if (record.attempts >= this.maxAttempts) {
         failed.push(record);

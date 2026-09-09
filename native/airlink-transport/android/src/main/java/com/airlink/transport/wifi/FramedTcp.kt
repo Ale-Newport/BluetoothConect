@@ -357,18 +357,23 @@ internal class FramedTcpLink(
     }
 
     private fun drainQueue(cause: IOException) {
+        var sawPoison = false
         while (true) {
             val item = queue.poll() ?: break
             if (item.frame == null) {
-                // The writer's stop signal. It is not ours to consume - putting
-                // it back is what lets the writer thread actually exit.
-                queue.put(item)
-                break
+                // The writer's stop signal. Set aside rather than dropped: a
+                // consumed poison would leave the writer thread blocked on take()
+                // forever. Draining continues past it, because a send racing with
+                // close can have queued a datagram BEHIND it, and that datagram
+                // still owns a promise that has to be settled.
+                sawPoison = true
+                continue
             }
             queuedBytes.addAndGet(-item.payloadLength.toLong())
             queuedCount.decrementAndGet()
             item.completion?.let { done -> post { done(Result.failure(cause)) } }
         }
+        if (sawPoison) queue.put(poison)
     }
 
     private fun readLoop() {

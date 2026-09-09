@@ -48,22 +48,37 @@ internal object BleTuning {
     const val DEFAULT_CONNECT_TIMEOUT_MS: Long = 15_000
 
     /**
-     * How long the L2CAP upgrade may take before the link settles for GATT.
+     * How long the central's L2CAP dial may take before the link settles for
+     * GATT.
      *
      * The LE connection is already up by this point, so a channel that is
      * coming at all comes fast. Waiting longer would delay every connection to
      * a peer whose L2CAP is broken - and a slow connection is far more visible
      * to the user than a slow transfer.
      */
-    const val L2CAP_CONNECT_TIMEOUT_MS: Long = 4_000
+    const val L2CAP_CONNECT_TIMEOUT_MS: Long = 2_500
 
     /**
-     * How long the peripheral side holds a subscribed connection open waiting
-     * for the central's L2CAP channel before opening the link over GATT
-     * instead. Only ever waited when we published a PSM *and* that peer read
-     * our identity characteristic, so a peer with no L2CAP never pays it.
+     * How long the peripheral holds a subscribed connection open waiting for
+     * the central's L2CAP channel before opening the link over GATT instead.
+     * Only ever waited when we published a PSM *and* that peer read our
+     * identity characteristic, so a peer with no L2CAP never pays it.
+     *
+     * DELIBERATELY LONGER THAN THE DIAL TIMEOUT ABOVE, by a wide margin.
+     *
+     * The two sides are racing the same event from opposite ends and cannot
+     * talk to each other about it - agreeing on an upgrade in-band would be
+     * protocol knowledge, which this layer is not allowed to hold. If the
+     * peripheral gave up first, a channel that connected a moment later would
+     * be closed under a link that had already opened on GATT, and the central
+     * would see its brand-new socket die and fail the whole link. Letting the
+     * central give up first means the peripheral's wait always ends in a
+     * decision the central has already made. The residual race - a dial that
+     * completes in the last hundred milliseconds of the margin - costs one
+     * failed link and one reconnect, which the session above survives without
+     * losing a message.
      */
-    const val L2CAP_ACCEPT_GRACE_MS: Long = 2_500
+    const val L2CAP_ACCEPT_GRACE_MS: Long = 4_000
 
     /**
      * How long an incoming GATT connection may sit without subscribing to our

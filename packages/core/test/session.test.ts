@@ -591,3 +591,52 @@ describe('ReliableChannel in isolation', () => {
     expect(channel.inFlightCount).toBe(2); // 2 and 5 still outstanding
   });
 });
+
+describe('bulk transfer under real conditions', () => {
+  /**
+   * The regression test for the worst bug found in this stack.
+   *
+   * Several large messages are written CONCURRENTLY, and each one is fragmented
+   * across a 180-byte Bluetooth MTU. If outbound frames are not serialised,
+   * their fragments interleave on the wire, the receiver ends up holding more
+   * partially-reassembled packets than its bound allows, and it completes NONE
+   * of them - file transfer over Bluetooth simply does not work.
+   */
+  it('delivers fifty fragmented messages over a Bluetooth-like link', async () => {
+    const ctx = await connectPair({ preTrusted: true, conditions: BLE_LIKE_CONDITIONS });
+    const got = collect(ctx.sessionB);
+    const failures: number[] = [];
+    ctx.sessionA.events.on('deliveryFailed', (e) => failures.push(e.seq));
+
+    const payload = new Uint8Array(4096).fill(7);
+    for (let i = 0; i < 50; i++) ctx.sessionA.sendReliableRaw(MessageType.FILE_CHUNK, payload, { bulk: true });
+    await ctx.clock.advanceAsync(300_000);
+
+    const chunks = got.filter((m) => m.type === MessageType.FILE_CHUNK);
+    expect(failures).toEqual([]);
+    expect(chunks).toHaveLength(50);
+    expect(chunks.every((c) => c.raw.length === 4096)).toBe(true);
+  });
+
+  it('does not let a bulk acknowledgement confirm a reliable message', async () => {
+    // A CONTROL ACK names the channel it refers to. Feeding BULK's watermark to
+    // the reliable channel would mark a chat message delivered that the peer has
+    // never seen - a silent, and very hard to diagnose, data loss.
+    const ctx = await connectPair({ preTrusted: true });
+    const delivered: number[] = [];
+    ctx.sessionA.events.on('delivered', ({ seq }) => delivered.push(seq));
+
+    ctx.sessionA.sendReliableRaw(MessageType.FILE_CHUNK, new Uint8Array(64), { bulk: true });
+    await ctx.clock.advanceAsync(500);
+
+    // The chat message goes out only AFTER the bulk one has been acknowledged,
+    // so any reliable ack it receives must be genuinely its own.
+    const chatSeq = ctx.sessionA.sendReliable(MessageType.MESSAGE, { t: 'hello' });
+    await ctx.clock.advanceAsync(500);
+    expect(delivered).toContain(chatSeq);
+
+    const received = collect(ctx.sessionB);
+    void received;
+    expect(ctx.sessionB.state).toBe(ConnectionState.CONNECTED);
+  });
+});

@@ -677,6 +677,17 @@ export class TransportUpgradeController {
     if (!this.session.isSecure) return fail(null, UpgradeFailureReason.SESSION_UNUSABLE, 'no session to reconnect');
     if (this.isBusy) return fail(null, UpgradeFailureReason.BUSY, 'busy');
 
+    // This is a repair, not a reset. A session that is already carrying traffic
+    // needs nothing: dialling anyway would tear down a working link to replace
+    // it with an identical one, and every message in flight would pay for it.
+    // The check matters because `reconnect` is public - an app watching its own
+    // radios calls it on a hunch, and by then the link may have come back.
+    const alreadyUp = this.settledLink();
+    if (alreadyUp) {
+      return { upgraded: true, kind: alreadyUp.transport, reason: UpgradeFailureReason.UNKNOWN };
+    }
+
+    const from = this.currentProfile();
     const peerTransports = this.session.capabilities?.transports;
     const candidates = negotiateTransports(this.capabilities.availableProfiles(), peerTransports);
     for (const candidate of candidates) {
@@ -689,21 +700,34 @@ export class TransportUpgradeController {
           void link.close('controller disposed').catch(() => undefined);
           return fail(candidate.kind, UpgradeFailureReason.ABORTED, 'controller disposed');
         }
-        // Dialling takes time, and the peer may have dialled us in the meantime.
-        // Migrating now would tear down a link that is already working.
-        if (this.session.state === ConnectionState.CONNECTED && this.session.currentLink !== null) {
+        // The same rule, applied again: dialling takes time, and the peer may
+        // have dialled us while we were doing it.
+        const raced = this.settledLink();
+        if (raced) {
           void link.close('the session reconnected by other means').catch(() => undefined);
-          return { upgraded: true, kind: this.session.currentLink.transport, reason: UpgradeFailureReason.UNKNOWN };
+          return { upgraded: true, kind: raced.transport, reason: UpgradeFailureReason.UNKNOWN };
         }
         this.adoptLink(link, 'reconnected');
-        this.downgrades++;
-        this.events.emit('downgraded', { to: candidate.kind, linkId: link.id });
+        // Only call it a downgrade when it actually is one. Coming back on the
+        // same radio, or on a better one, is a recovery - and telling the UI
+        // otherwise puts a "fell back to Bluetooth" warning on a Wi-Fi link.
+        if (from && isTransportUpgrade(candidate.profile, from)) {
+          this.downgrades++;
+          this.events.emit('downgraded', { to: candidate.kind, linkId: link.id });
+        }
         return { upgraded: true, kind: candidate.kind, reason: UpgradeFailureReason.UNKNOWN };
       } catch (err) {
         this.log.info('reconnect attempt failed', { kind: candidate.kind, err: String(err) });
       }
     }
     return fail(null, UpgradeFailureReason.CONNECT_FAILED, 'no transport could re-open a link');
+  }
+
+  /** The link carrying the session right now, or null when there is not one. */
+  private settledLink(): Link | null {
+    const link = this.session.currentLink;
+    if (this.session.state !== ConnectionState.CONNECTED) return null;
+    return link !== null && link.state === LinkState.CONNECTED ? link : null;
   }
 
   diagnostics(): Record<string, unknown> {
@@ -947,7 +971,19 @@ export class TransportUpgradeController {
       if (this.upgradeState === UpgradeState.AWAITING_LINK) this.sendAccept(upgradeId, kind);
       return;
     }
-    if (this.isBusy) return decline(UpgradeFailureReason.BUSY, 'another upgrade is in progress');
+    // A DIFFERENT offer while we are still waiting for the peer's link means the
+    // initiator has moved on: it gave up on the previous attempt - it times out
+    // far sooner than we do - and its abandonment notice rides the CONTROL
+    // channel, which is unreliable by design. Holding the slot for an attempt
+    // nobody is working on would decline every later offer as "busy" until our
+    // own timeout expires, and lose the upgrade to bookkeeping.
+    //
+    // Only from AWAITING_LINK, where nothing has been proven and there is
+    // nothing to lose. From AWAITING_SWITCH we are holding a link we have
+    // already proven and the peer is committing to it; throwing that away is
+    // exactly the divergence the commit design exists to prevent.
+    const supersedable = this.upgradeState === UpgradeState.AWAITING_LINK;
+    if (this.isBusy && !supersedable) return decline(UpgradeFailureReason.BUSY, 'another upgrade is in progress');
     if (!this.sessionUsable()) return decline(UpgradeFailureReason.SESSION_UNUSABLE, 'session cannot carry traffic');
     if (!this.capabilities.isAvailable(kind)) return decline(UpgradeFailureReason.UNAVAILABLE, `${kind} is not usable here`);
 
@@ -966,6 +1002,13 @@ export class TransportUpgradeController {
     // it DOWN is never something the user asked for.
     if (current && profile && !isTransportUpgrade(current, profile)) {
       return decline(UpgradeFailureReason.NO_CANDIDATE, `${kind} is no better than the current transport`);
+    }
+
+    // Everything about the new offer checks out, so it is worth what it costs.
+    // Deliberately after the validation: a junk offer arriving mid-negotiation
+    // must not be able to knock over an attempt that is going fine.
+    if (supersedable) {
+      this.abortAttempt(new UpgradeAbort(UpgradeFailureReason.ABORTED, 'superseded by a newer offer'));
     }
 
     const scope = new AttemptScope();
@@ -1001,6 +1044,11 @@ export class TransportUpgradeController {
       this.completeResponderSwitch('peer switched transport');
     } catch (err) {
       const abort = err instanceof UpgradeAbort ? err : new UpgradeAbort(UpgradeFailureReason.UNKNOWN, String(err));
+      // This attempt may have been abandoned in favour of a newer one, or by
+      // `abortAttempt` on its way past. Either way the controller has already
+      // moved on, and tidying up "our" state now would tear down whatever
+      // replaced us. Unwinding is still ours to do; the bookkeeping is not.
+      const stillCurrent = this.scope === scope;
       if (this.provenLink && this.provenLink === link) {
         // Only close it if we still hold it; a concurrent migration may have
         // taken it, in which case the session owns it now.
@@ -1010,8 +1058,10 @@ export class TransportUpgradeController {
       } else if (link) {
         void link.close('upgrade abandoned').catch(() => undefined);
       }
-      this.notifyPeerOfFailure(upgradeId, abort.reason, abort.message);
-      this.finishAttempt();
+      if (stillCurrent) {
+        this.notifyPeerOfFailure(upgradeId, abort.reason, abort.message);
+        this.finishAttempt();
+      }
       this.upgradesFailed++;
       this.log.warn('incoming transport upgrade failed', { kind, reason: abort.reason, detail: abort.message });
       this.events.emit('upgradeFailed', { kind: kind ?? null, reason: abort.reason, detail: abort.message });

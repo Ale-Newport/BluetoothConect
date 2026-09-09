@@ -1269,13 +1269,13 @@ describe('probe slots cannot be squatted on', () => {
     expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
   });
 
-  it('holds the slot for the endpoint the peer is actually at, under a flood', async () => {
-    // A squatter that keeps dialling, rather than opening a few links and
-    // stopping, churns the pool for as long as the negotiation lasts. Making
-    // room for whoever knocked last is then no defence at all: the peer's link
-    // is evicted moments after it arrives, every time. The endpoint the peer is
-    // known to be at is the one piece of evidence available before the probe,
-    // so it decides who keeps a slot.
+  it('survives a squatter that keeps dialling for the whole negotiation', async () => {
+    // Opening a few links and stopping is the easy case. The hard one is a
+    // squatter that keeps knocking for as long as the negotiation lasts, so the
+    // pool is never quiet. What saves the upgrade is that the peer's link is
+    // useful the instant it arrives - it answers the probe on its first
+    // datagram - so it only has to hold a slot for one round trip, not for the
+    // thirty seconds the responder is prepared to wait.
     const ctx = await connectPair();
     const stranger = ctx.network.createTransport('stranger-flood');
     const target = ctx.responder.fast.trueEndpointId;
@@ -1354,6 +1354,8 @@ describe('a radio coming back rescues a session that gave up reconnecting', () =
     expect(ctx.initiator.session.state).toBe(ConnectionState.RECONNECTING);
 
     // The fast radio comes back. Nothing else changes; nobody taps anything.
+    const downgrades: TransportKind[] = [];
+    ctx.initiator.controller.events.on('downgraded', ({ to }) => downgrades.push(to));
     ctx.responder.fast.setAvailable(true);
     ctx.initiator.fast.setAvailable(true);
     await ctx.clock.advanceAsync(30_000, 10);
@@ -1361,5 +1363,85 @@ describe('a radio coming back rescues a session that gave up reconnecting', () =
     expect(ctx.initiator.session.state).toBe(ConnectionState.CONNECTED);
     expect(ctx.initiator.session.currentLink?.transport).toBe(FAST);
     expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
+    // Coming back on the FAST radio is not a downgrade, and telling the UI it
+    // was would put a "fell back to Bluetooth" warning on a Wi-Fi connection.
+    expect(downgrades).toEqual([]);
+  });
+});
+
+describe('a stale half-finished offer does not block the next one', () => {
+  it('lets a newer offer supersede one still waiting for a link', async () => {
+    // The responder waits thirty seconds for the peer's link. The initiator
+    // gives up far sooner than that and moves to its runner-up - and its
+    // "I have abandoned that one" notice rides the CONTROL channel, which is
+    // unreliable by design. Lose that one datagram and the responder is holding
+    // a slot for an attempt nobody is working on, declining every later offer
+    // as "busy" until its own timeout expires. The upgrade the user is waiting
+    // for is lost to bookkeeping.
+    const ctx = await connectPair();
+
+    // An offer that is never followed up: exactly what the responder is left
+    // holding when the abandonment notice goes missing.
+    ctx.initiator.session.sendControl(MessageType.TRANSPORT_OFFER, {
+      i: new Uint8Array(8).fill(0x5a),
+      k: FAST,
+      n: new Uint8Array(32).fill(0x5b),
+    } as never);
+    await ctx.clock.advanceAsync(1_000);
+    expect(ctx.responder.controller.state).toBe(UpgradeState.AWAITING_LINK);
+
+    // Nothing is proven yet, so the newer offer must win.
+    const running = ctx.initiator.controller.considerUpgrade();
+    await ctx.clock.advanceAsync(20_000);
+
+    expect((await running).upgraded).toBe(true);
+    expect(ctx.initiator.session.currentLink?.transport).toBe(FAST);
+    expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
+  });
+
+  it('does NOT abandon a link it has already proven', async () => {
+    // The other side of the rule. Once the responder holds a proven link the
+    // initiator is committing to it, and a stray offer arriving at that moment
+    // must not throw the proven link away - losing the switch is survivable
+    // precisely because both sides keep holding it.
+    const ctx = await connectPair();
+    ctx.responder.controller.events.on('stateChanged', ({ state }) => {
+      if (state !== UpgradeState.AWAITING_SWITCH) return;
+      ctx.initiator.session.sendControl(MessageType.TRANSPORT_OFFER, {
+        i: new Uint8Array(8).fill(0x7c),
+        k: FAST,
+        n: new Uint8Array(32).fill(0x7d),
+      } as never);
+    });
+
+    const running = ctx.initiator.controller.considerUpgrade();
+    await ctx.clock.advanceAsync(20_000);
+
+    expect((await running).upgraded).toBe(true);
+    expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
+    expect(ctx.responder.controller.state).toBe(UpgradeState.IDLE);
+  });
+});
+
+describe('reconnect() is a repair, not a reset', () => {
+  it('leaves a healthy session on the link it already has', async () => {
+    // reconnect() is public: an app watching its own radios can call it at any
+    // moment, and by the time it does the link may have come back on its own.
+    // Dialling anyway tears down a working connection to replace it with an
+    // identical one, and every message in flight pays for it.
+    const ctx = await connectPair();
+    const linkBefore = ctx.initiator.session.currentLink?.id;
+    const got = collect(ctx.responder.session);
+
+    const outcome = await ctx.initiator.controller.reconnect();
+    await ctx.clock.advanceAsync(2_000);
+
+    expect(outcome.upgraded).toBe(true);
+    expect(ctx.initiator.session.currentLink?.id).toBe(linkBefore);
+    expect(ctx.initiator.session.state).toBe(ConnectionState.CONNECTED);
+
+    ctx.initiator.session.sendReliable(MessageType.MESSAGE, { i: 0 });
+    await ctx.clock.advanceAsync(3_000);
+    expect(chatIndexes(got)).toEqual([0]);
   });
 });

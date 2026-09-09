@@ -95,6 +95,14 @@ export interface PeerSessionOptions {
 /** How much of the link MTU the payload may use, leaving room for headers. */
 const HEADER_BUDGET = 64;
 
+/**
+ * In-flight fragmented packets the receiver will hold at once.
+ *
+ * Must comfortably exceed the reliable send window, or a burst of large packets
+ * evicts its own fragments and nothing ever reassembles.
+ */
+const FRAGMENT_REASSEMBLY_SLOTS = 96;
+
 export class PeerSession {
   readonly events = new TypedEmitter<PeerSessionEvents>();
   readonly stateMachine: ConnectionStateMachine;
@@ -109,12 +117,30 @@ export class PeerSession {
   private readonly reliable: ReliableChannel;
   private readonly bulk: ReliableChannel;
   private readonly realtime: RealtimeChannel;
-  private readonly reassembler = new FragmentReassembler(8, 30_000);
+  /**
+   * Bounded, but wide enough for the reliable window: the sender may have up to
+   * `windowSize` packets outstanding, and although writes are serialised, a
+   * retransmission can legitimately arrive interleaved with a fresh packet.
+   */
+  private readonly reassembler = new FragmentReassembler(FRAGMENT_REASSEMBLY_SLOTS, 30_000);
 
   private keepaliveTimer: TimerHandle | undefined;
   private livenessTimer: TimerHandle | undefined;
   private lastInboundAt = 0;
   private nextFragmentPacketId = 1;
+  /**
+   * Serialises outbound frames onto the link.
+   *
+   * Without it, several fragmented packets are written CONCURRENTLY - each
+   * `writeFrame` awaits the link per fragment, so their fragments interleave on
+   * the wire. The receiver then has N partially-reassembled packets in flight at
+   * once, blows past the reassembler's bound, and completes none of them. On a
+   * Bluetooth link, where a 4 KB message is twenty-odd fragments, this stops
+   * file transfer working at all.
+   *
+   * Fragments of one packet must therefore go out contiguously.
+   */
+  private writeChain: Promise<void> = Promise.resolve();
   private confirmationPending = false;
   private closed = false;
   private readonly log: Logger;
@@ -419,11 +445,36 @@ export class PeerSession {
   private attachLink(link: Link): void {
     this.link = link;
     this.lastInboundAt = this.options.clock.now();
+    this.applyLinkPacing(link);
     this.linkUnsubscribers = [
       link.events.on('data', ({ bytes }) => this.handleDatagram(bytes)),
       link.events.on('state', ({ state, reason }) => this.handleLinkState(state, reason)),
-      link.events.on('mtu', () => this.log.debug('link MTU changed', { mtu: link.maxDatagramSize })),
+      link.events.on('mtu', () => {
+        this.log.debug('link MTU changed', { mtu: link.maxDatagramSize });
+        this.applyLinkPacing(link);
+      }),
     ];
+  }
+
+  /**
+   * Tell the reliability layer how fast the link is.
+   *
+   * Without this the retransmission timer is pure round-trip time, which is
+   * badly wrong on Bluetooth: a 4 KB message fragmented across a 180-byte MTU
+   * spends over a hundred milliseconds simply being transmitted, so a timer
+   * that ignores transmission time fires while the packet is still going out
+   * and floods an already-saturated link with duplicates.
+   *
+   * Where the transport reports real measured throughput we use it; otherwise
+   * we estimate from the MTU, which at least distinguishes a Bluetooth link
+   * from a Wi-Fi one by two orders of magnitude.
+   */
+  private applyLinkPacing(link: Link): void {
+    const measured = link.metrics().throughputBytesPerSecond;
+    const estimated = link.isHighBandwidth ? 2_000_000 : 20_000;
+    const throughput = measured !== undefined && measured > 0 ? measured : estimated;
+    this.reliable.setLinkThroughput(throughput);
+    this.bulk.setLinkThroughput(throughput);
   }
 
   private detachLink(): void {
@@ -503,13 +554,33 @@ export class PeerSession {
       return awaitFlush ? Promise.resolve() : undefined;
     }
     const mode = envelope.channel === Channel.REALTIME ? SendMode.REALTIME : SendMode.RELIABLE;
-    const promise = this.writeFrame(link, frame, mode).catch((err: unknown) => {
+    // Realtime traffic is deliberately NOT queued behind bulk: a paddle position
+    // that waits for a file chunk is worse than useless. It fits in one datagram
+    // by construction, so it cannot interleave with anything.
+    const promise =
+      mode === SendMode.REALTIME
+        ? this.writeFrame(link, frame, mode)
+        : this.enqueueWrite(() => this.writeFrame(link, frame, mode));
+
+    const guarded = promise.catch((err: unknown) => {
       this.packetsDropped++;
       this.log.debug('send failed', { err: String(err) });
     });
-    if (awaitFlush) return promise;
-    void promise;
+    if (awaitFlush) return guarded;
+    void guarded;
     return undefined;
+  }
+
+  /** Run `task` after every previously queued write has finished. */
+  private enqueueWrite(task: () => Promise<void>): Promise<void> {
+    const next = this.writeChain.then(task, task);
+    // Keep the chain alive after a failure; one dropped frame must not wedge
+    // every frame behind it.
+    this.writeChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   }
 
   private async writeFrame(link: Link, frame: Uint8Array, mode: SendMode): Promise<void> {
@@ -672,8 +743,15 @@ export class PeerSession {
   }
 
   private processEnvelope(envelope: Envelope): void {
-    // Piggybacked acknowledgements apply regardless of the message type.
-    if (envelope.channel === Channel.RELIABLE || envelope.channel === Channel.CONTROL) {
+    // Piggybacked acknowledgements apply regardless of the message type - but
+    // ONLY to the RELIABLE channel, which is the one they are computed from.
+    //
+    // An explicit ACK message names the channel it refers to, so it must be
+    // excluded here and routed in handleControlMessage instead: feeding BULK's
+    // watermark to the reliable channel would acknowledge chat messages the peer
+    // has never seen.
+    const isExplicitAck = envelope.channel === Channel.CONTROL && envelope.messageType === MessageType.ACK;
+    if (!isExplicitAck && (envelope.channel === Channel.RELIABLE || envelope.channel === Channel.CONTROL)) {
       this.reliable.handleAck(envelope.ack, envelope.ackBits);
     }
 
@@ -727,6 +805,7 @@ export class PeerSession {
               ? (value as Record<string, CborValue>).c
               : undefined;
           if (channel === Channel.BULK) this.bulk.handleAck(envelope.ack, envelope.ackBits);
+          else if (channel === Channel.RELIABLE) this.reliable.handleAck(envelope.ack, envelope.ackBits);
         } catch {
           // A malformed ACK simply does not acknowledge anything.
         }
