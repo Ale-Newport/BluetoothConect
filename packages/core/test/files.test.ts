@@ -45,6 +45,7 @@ import {
 } from '../src/files/progress.js';
 import { MemoryFileStore } from '../src/files/memoryStore.js';
 import { FileTransferProtocol } from '../src/files/protocol.js';
+import type { IncomingTransfer, OutgoingTransfer } from '../src/files/transfer.js';
 import {
   FILE_LIMITS,
   FileErrorCode,
@@ -1087,7 +1088,9 @@ describe('DEBUG', () => {
     const id = await protoA.offer({ filename: 'clip.mp4', fileBytes: contents.length, store: new MemoryFileStore(contents) });
     for (let i = 0; i < 40; i++) {
       await ctx.clock.advanceAsync(250, 5);
-      console.log(i, 'now', ctx.clock.now(), 'A', JSON.stringify(protoA.progressOf(id)), 'B', protoB.progressOf(id)?.transferredBytes, 'diagA', JSON.stringify(protoA.diagnostics()));
+      const tA = protoA.activeTransfers[0] as OutgoingTransfer | undefined;
+      const tB = protoB.activeTransfers[0] as IncomingTransfer | undefined;
+      console.log(i, 'now', ctx.clock.now(), 'ackedA', tA?.ackedChunks, 'inflightA', tA?.inFlightMessages, 'recvB', tB?.receivedChunks, 'writes', sink.writes.length, 'sessA', JSON.stringify({q: (ctx.sessionA.diagnostics() as any).bulkInFlight, s: (ctx.sessionA.diagnostics() as any).packetsSent}), 'sessB', (ctx.sessionB.diagnostics() as any).packetsReceived);
     }
   }, 60_000);
 });

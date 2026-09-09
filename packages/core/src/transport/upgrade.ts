@@ -27,10 +27,19 @@
  *    walks out of Wi-Fi range - the session does not end. It falls back to the
  *    floor transport and carries on, keys and queued messages intact.
  *
- * Negotiation messages ride the RELIABLE channel of the existing session rather
- * than the CONTROL channel: they are few, small, and must arrive. The
- * reliability layer already retransmits and orders them across a lossy BLE
- * link, and reimplementing that here would be a second, worse copy.
+ * Negotiation messages ride the CONTROL channel of the existing session, and
+ * each one is repeated until the reply it expects arrives. Two reasons:
+ *
+ *  - The RELIABLE channel is ordered, so an offer sent while a 4 MB photo is in
+ *    flight waits behind it. An upgrade that cannot overtake the transfer it
+ *    exists to accelerate is worse than no upgrade at all.
+ *  - Every step here is a request expecting a reply within a bounded window, so
+ *    repeating the request IS the retransmission strategy, and a stale repeat
+ *    costs one 60-byte datagram. Ordering buys us nothing: each message is
+ *    matched to its attempt by an explicit id.
+ *
+ * Losing the final TRANSPORT_SWITCH is survivable by construction rather than
+ * by acknowledgement - see `completeResponderSwitch`.
  */
 import { MessageType, TIMING } from '../protocol/constants.js';
 import { TransportKind, isTransportKind } from '../protocol/capabilities.js';
@@ -197,6 +206,8 @@ export interface UpgradeOutcome {
 }
 
 export interface UpgradeTimings {
+  /** How often an unanswered negotiation message is repeated. */
+  retryIntervalMs: number;
   /** Waiting for TRANSPORT_ACCEPT after offering. */
   offerTimeoutMs: number;
   /** Opening the new link. */
@@ -205,8 +216,8 @@ export interface UpgradeTimings {
   probeTimeoutMs: number;
   /** Initiator waiting for the peer's TRANSPORT_READY. */
   readyTimeoutMs: number;
-  /** Initiator waiting for TRANSPORT_SWITCH to be acknowledged. */
-  switchTimeoutMs: number;
+  /** How long TRANSPORT_SWITCH is repeated before the initiator moves anyway. */
+  switchGraceMs: number;
   /** Responder waiting for the incoming link and its probe. */
   responderLinkTimeoutMs: number;
   /** Responder holding a proven link, waiting to be told to switch. */
@@ -220,48 +231,30 @@ export interface UpgradeTimings {
 }
 
 /**
- * How long the reliability layer will keep trying before it gives up on one
- * message: the retransmit timeout doubles from `initialRetransmitMs` up to
- * `maxRetransmitMs`, over `maxRetransmitAttempts` attempts. About 36 seconds
- * with the shipping constants.
- */
-function reliableRetryBudgetMs(): number {
-  let total = 0;
-  let rto = TIMING.initialRetransmitMs;
-  for (let i = 0; i < TIMING.maxRetransmitAttempts; i++) {
-    total += rto;
-    rto = Math.min(TIMING.maxRetransmitMs, rto * 2);
-  }
-  return total;
-}
-
-const RELIABLE_RETRY_BUDGET_MS = reliableRetryBudgetMs();
-
-/**
- * Every step that waits for a message the peer must send over the OLD link is
- * given MORE than the reliability layer's retry budget.
+ * Timeouts are generous because the negotiation runs over the OLD link, which
+ * is the slow one, and because nothing is at stake while it runs: the
+ * conversation is working normally the whole time, on the link it is already
+ * on. Timing out early would not help the user, it would only abandon upgrades
+ * that were about to succeed. The cases that deserve to fail fast - the peer
+ * refusing, the link dying, the controller shutting down - abort the attempt
+ * immediately by other means; these numbers are the backstop for a peer that
+ * has gone silent without anything noticing.
  *
- * This looks alarmingly long until you notice what is happening during it: the
- * conversation is running normally the entire time, on the link it was already
- * on. Timing out sooner would not help the user, it would just abandon upgrades
- * that were seconds from completing - and on a BLE link with a wall in the way,
- * a negotiation message really does sometimes take twenty seconds to land. The
- * cases that genuinely deserve a fast failure - the peer's reliability layer
- * giving up, the link dying, the peer refusing - all abort the attempt
- * immediately by other means; these numbers are only the backstop for a peer
- * that has gone silent without anything noticing.
+ * `retryIntervalMs` is the one to think about on a real radio: it must be
+ * longer than the link's round trip, or the repeats are just noise. 1.5s is
+ * comfortably above BLE's worst realistic RTT.
  */
 export const DEFAULT_UPGRADE_TIMINGS: UpgradeTimings = {
-  offerTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 4_000,
+  retryIntervalMs: 1_500,
+  offerTimeoutMs: 15_000,
   connectTimeoutMs: 15_000,
-  // The probe runs on the NEW link, which is the fast one; it does not need the
-  // BLE budget, and a fast link that cannot answer in eight seconds is not one
-  // we want the conversation on.
+  // The probe runs on the NEW link, which is the fast one; a fast link that
+  // cannot answer in eight seconds is not one we want the conversation on.
   probeTimeoutMs: 8_000,
-  readyTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 4_000,
-  switchTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 4_000,
-  responderLinkTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 20_000,
-  responderSwitchTimeoutMs: RELIABLE_RETRY_BUDGET_MS + 20_000,
+  readyTimeoutMs: 15_000,
+  switchGraceMs: 1_500,
+  responderLinkTimeoutMs: 30_000,
+  responderSwitchTimeoutMs: 30_000,
   failureCooldownMs: 60_000,
   minAttemptIntervalMs: 5_000,
   qualitySampleIntervalMs: 2_000,
@@ -704,17 +697,25 @@ export class TransportUpgradeController {
     this.log.info('offering a transport upgrade', { kind: candidate.kind, id: toHex(upgradeId) });
 
     try {
-      // 1. Offer. The nonce is confidential: it travels sealed inside the
-      //    session, and it is what makes the probe unforgeable.
-      if (this.send(MessageType.TRANSPORT_OFFER, { i: upgradeId, k: candidate.kind, n: nonce }) === null) {
-        throw new UpgradeAbort(UpgradeFailureReason.SESSION_UNUSABLE, 'could not send the offer');
+      // 1. Offer, repeating until answered. The nonce is confidential: it
+      //    travels sealed inside the session, and it is what makes the probe
+      //    unforgeable.
+      const stopOffering = this.repeatSend(MessageType.TRANSPORT_OFFER, {
+        i: upgradeId,
+        k: candidate.kind,
+        n: nonce,
+      });
+      let accept: Record<string, CborValue>;
+      try {
+        accept = await this.waitForMessage(
+          MessageType.TRANSPORT_ACCEPT,
+          upgradeId,
+          this.timings.offerTimeoutMs,
+          scope,
+        );
+      } finally {
+        stopOffering();
       }
-      const accept = await this.waitForMessage(
-        MessageType.TRANSPORT_ACCEPT,
-        upgradeId,
-        this.timings.offerTimeoutMs,
-        scope,
-      );
 
       // The peer names the endpoint to dial. Prefer it over our discovery
       // record: they know their own handle on that radio better than we do.
@@ -740,17 +741,21 @@ export class TransportUpgradeController {
       //    probe proves the pipe; READY proves the peer is committed to it.
       await this.waitForMessage(MessageType.TRANSPORT_READY, upgradeId, this.timings.readyTimeoutMs, scope);
 
-      // 5. Commit. We wait for the peer to acknowledge the switch over the OLD
-      //    link, so we know they have it before we let that link go.
+      // 5. Commit. TRANSPORT_SWITCH goes out several times across a short
+      //    grace window and is then treated as delivered - deliberately, and
+      //    not out of laziness. Waiting for an acknowledgement would only move
+      //    the problem: the acknowledgement can be the packet that is lost.
+      //    What makes that safe is the peer's fallback rule: it is holding a
+      //    link it has already proven, and migrating this session closes the
+      //    old one, which is a signal it cannot miss. So the two sides converge
+      //    whether the switch arrives or not.
       this.setState(UpgradeState.COMMITTING);
-      const seq = this.send(MessageType.TRANSPORT_SWITCH, { i: upgradeId });
-      if (seq === null) throw new UpgradeAbort(UpgradeFailureReason.SESSION_UNUSABLE, 'could not send the switch');
-      await this.waitForDelivery(seq, this.timings.switchTimeoutMs, scope);
+      await this.announceSwitch(upgradeId, scope);
 
       // 6. Migrate. Keys, sequence numbers and queued messages all survive.
-      //    The peer moved a moment earlier, when it saw the switch, so there is
-      //    a window of one link latency in which it is talking on the new link
-      //    and we are not yet listening there. That is exactly what the
+      //    The peer moves at roughly the same moment, so there is a window of
+      //    about one link latency in which one side is talking on the new link
+      //    and the other is not yet listening there. That is exactly what the
       //    reliability layer exists for: anything sent into the gap is
       //    retransmitted, and nothing is lost.
       const from = this.session.currentLink?.transport ?? null;
@@ -881,6 +886,14 @@ export class TransportUpgradeController {
     // Both sides compute the same answer from the same two ids, so a peer
     // offering when it is not the initiator is a bug or an injection attempt.
     if (this.isInitiator) return decline(UpgradeFailureReason.ROLE_CONFLICT, 'this side initiates upgrades');
+
+    // The initiator repeats its offer until it hears back, so a repeat of the
+    // offer we are ALREADY working on means our acceptance was the thing that
+    // got lost. Say it again rather than declining ourselves as busy.
+    if (this.responderOfferId && bytesEqual(this.responderOfferId, upgradeId)) {
+      if (this.upgradeState === UpgradeState.AWAITING_LINK) this.sendAccept(upgradeId, kind);
+      return;
+    }
     if (this.isBusy) return decline(UpgradeFailureReason.BUSY, 'another upgrade is in progress');
     if (!this.sessionUsable()) return decline(UpgradeFailureReason.SESSION_UNUSABLE, 'session cannot carry traffic');
     if (!this.capabilities.isAvailable(kind)) return decline(UpgradeFailureReason.UNAVAILABLE, `${kind} is not usable here`);

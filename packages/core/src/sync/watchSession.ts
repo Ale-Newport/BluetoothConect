@@ -436,6 +436,12 @@ export class WatchTogetherSession {
    * corrected.
    */
   end(reason = 'ended'): void {
+    // An invitation that was never accepted is declined, not silently dropped:
+    // the peer is sitting there waiting for a join that will never come.
+    if (this.state === WatchState.INVITED) {
+      this.decline(reason);
+      return;
+    }
     if (!this.sessionId || !this.isActive) return;
     const type = this.role === SyncRole.HOST ? MessageType.SYNC_END : MessageType.SYNC_LEAVE;
     this.send(type, encodeFarewell({ sessionId: this.sessionId, reason }));
@@ -705,7 +711,10 @@ export class WatchTogetherSession {
       this.localContent && reply.content ? compareContent(this.localContent, reply.content) : null;
     this.events.emit('contentAnswered', { reply, match });
 
-    if (reply.availability === ContentAvailability.HAVE && match !== ContentMatch.SIZE_MISMATCH) {
+    // Trust but verify: a peer that claims HAVE while sending back a descriptor
+    // that does not match ours is broken or lying, and either way is not
+    // somebody to start a session with.
+    if (reply.availability === ContentAvailability.HAVE && (match === null || match === ContentMatch.MATCH)) {
       this.setState(WatchState.READY);
       return;
     }
