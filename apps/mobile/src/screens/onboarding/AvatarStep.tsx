@@ -1,8 +1,9 @@
 import React from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { avatarColorFor, strings } from '@airlink/config';
-import { Avatar, Gap, Label, haptic, useTheme } from '../../ui/index.js';
-import { AVATAR_COLORS, colorName } from './avatars.js';
+import { Avatar, Gap, Label, useTheme } from '../../ui/index.js';
+import { colorName } from './avatars.js';
+import { ColorPalette } from './ColorPalette.js';
 
 /**
  * Choose an avatar colour.
@@ -37,40 +38,6 @@ export function AvatarStep({
   const automatic = avatarColorFor(peerId ?? (name || 'you'));
   const shown = color ?? automatic;
 
-  const swatch = (value: string | null): React.JSX.Element => {
-    const resolved = value ?? automatic;
-    const selected = value === color;
-    const label = value === null ? strings.onboarding.avatarAutomatic : colorName(resolved);
-    return (
-      <Pressable
-        key={value ?? 'auto'}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-        accessibilityState={{ selected }}
-        onPress={() => {
-          haptic('selection');
-          onSelect(value);
-        }}
-        style={{
-          width: 56,
-          height: 56,
-          borderRadius: 28,
-          backgroundColor: resolved,
-          alignItems: 'center',
-          justifyContent: 'center',
-          borderWidth: selected ? 3 : 0,
-          borderColor: theme.colors.text,
-        }}
-      >
-        {value === null ? (
-          <Label variant="caption" tone="onAccent">
-            {strings.onboarding.avatarAutoShort}
-          </Label>
-        ) : null}
-      </Pressable>
-    );
-  };
-
   return (
     // Scrollable and centred, not a plain centred View. The two headings, the
     // 96pt preview and eleven 56pt swatches come to more than the content area
@@ -104,17 +71,7 @@ export function AvatarStep({
       </View>
 
       <Gap size="xxl" />
-      <View
-        style={{
-          flexDirection: 'row',
-          flexWrap: 'wrap',
-          gap: theme.spacing.md,
-          justifyContent: 'center',
-        }}
-      >
-        {swatch(null)}
-        {AVATAR_COLORS.map((value) => swatch(value))}
-      </View>
+      <ColorPalette peerId={peerId} name={name} selected={color} onSelect={onSelect} />
     </ScrollView>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, Pressable, View, type ViewStyle } from 'react-native';
+import { Alert, View } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { Conversation } from '@airlink/db';
@@ -19,7 +19,7 @@ import type { AirLinkClient } from '../../client/AirLinkClient.js';
 import { useClient } from '../../client/ClientProvider.js';
 import { selectDeveloperMode, selectProfile, useAppStore } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
-import { AVATAR_COLORS, colorName } from '../onboarding/avatars.js';
+import { ColorPalette } from '../onboarding/ColorPalette.js';
 import { MAX_NAME_LENGTH, isUsableName, normaliseName } from '../onboarding/name.js';
 import { local } from './localStrings.js';
 import { Chevron, Group, NavRow, Sheet, TextField, asString, formatWhen } from './shared.js';
@@ -207,14 +207,15 @@ export function SettingsScreen(): React.JSX.Element {
       <Gap size="lg" />
       <SectionHeading>{local.settings.avatarSection}</SectionHeading>
       <Card>
-        <AvatarPicker
-          name={normalised || storedName}
+        <ColorPalette
           peerId={peerId}
+          name={normalised || storedName}
           selected={draftColor}
           onSelect={(color) => {
             setDraftColor(color);
             setSaved(false);
           }}
+          size={52}
         />
       </Card>
 
@@ -301,77 +302,6 @@ export function SettingsScreen(): React.JSX.Element {
         <Button title={strings.common.cancel} variant="secondary" onPress={() => setPicking(false)} />
       </Sheet>
     </Screen>
-  );
-}
-
-/**
- * The same palette as onboarding, so the two screens cannot drift.
- *
- * "Automatic" is first because it is the default and the quietest option: a
- * monogram on a colour derived from the peer id is already a perfectly good
- * identity, and picking a colour is a preference rather than a requirement.
- * Every swatch carries the colour's name as its accessibility label, so the
- * choice is never colour-only.
- */
-function AvatarPicker({
-  name,
-  peerId,
-  selected,
-  onSelect,
-}: {
-  name: string;
-  peerId: string | null;
-  selected: string | null;
-  onSelect: (color: string | null) => void;
-}): React.JSX.Element {
-  const theme = useTheme();
-  const tile = 52;
-
-  const tileStyle = (isSelected: boolean): ViewStyle => ({
-    width: tile,
-    height: tile,
-    borderRadius: theme.radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: isSelected ? theme.colors.accentMuted : theme.colors.surfaceElevated,
-    borderWidth: isSelected ? 2 : 0,
-    borderColor: theme.colors.accent,
-  });
-
-  return (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm }}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={local.settings.avatarNone}
-        accessibilityState={{ selected: selected === null }}
-        onPress={() => {
-          haptic('selection');
-          onSelect(null);
-        }}
-        style={({ pressed }) => [tileStyle(selected === null), pressed ? { opacity: 0.7 } : null]}
-      >
-        <Avatar name={name} peerId={peerId} color={null} size={tile - theme.spacing.sm} />
-      </Pressable>
-
-      {AVATAR_COLORS.map((color) => {
-        const isSelected = color === selected;
-        return (
-          <Pressable
-            key={color}
-            accessibilityRole="button"
-            accessibilityLabel={colorName(color)}
-            accessibilityState={{ selected: isSelected }}
-            onPress={() => {
-              haptic('selection');
-              onSelect(color);
-            }}
-            style={({ pressed }) => [tileStyle(isSelected), pressed ? { opacity: 0.7 } : null]}
-          >
-            <Avatar name={name} color={color} size={tile - theme.spacing.sm} />
-          </Pressable>
-        );
-      })}
-    </View>
   );
 }
 
