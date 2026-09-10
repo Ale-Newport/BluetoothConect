@@ -15,6 +15,7 @@ pnpm test                                  # everything
 pnpm --filter @airlink/core test           # protocol, crypto, transports, features
 pnpm --filter @airlink/games test          # 12 games + the conformance suite
 pnpm --filter @airlink/db test             # against real SQLite
+pnpm --filter @airlink/mobile test         # the screens, mounted for real
 pnpm typecheck
 ```
 
@@ -116,6 +117,46 @@ Real SQLite via `node:sqlite`: migrations, idempotency, foreign keys, CHECK
 constraints, transaction rollback, savepoints, and the rule that delivery status
 never moves backwards.
 
+### The screens
+
+Everything above tests logic that never opens a socket, which leaves one class
+of defect untouched: the app failing before any logic runs. Two real ones got
+through — a blank white screen caused by a missing Babel plugin, where every
+screen module threw at import time; and a crash on first launch caused by the
+SQLite driver returning BLOBs in a shape the repositories did not expect. A
+thousand passing logic tests noticed neither, because none of them imported a
+screen.
+
+So `apps/mobile` mounts the real tree under Node with React Native Testing
+Library and drives it the way a person meets it, by visible text and
+accessibility label:
+
+- a first run reaches onboarding rather than a failure screen
+- a name and a colour is the whole of onboarding, and it ends on Home
+- all five tabs open, each asserted by a sentence only that screen renders
+- a peer pushed in as a native `onPeerDiscovered` event reaches Home, so the
+  chain native → transport → registry → client → store → screen runs end to end
+- `start()` asks for the permissions the radios need, which is the assertion
+  that would have caught Android never being prompted at all
+- the radio state the app *starts* in reaches the interface, not just changes
+- nothing on the way in uses the vocabulary of failure - no "error", no "no
+  internet", no "unavailable" - because the radios are mocked **unavailable**,
+  which is the case that would tempt it
+- every icon name draws actual paths, and every game in the catalogue has a mark
+
+The doubles live in `apps/mobile/jest.setup.js` and are deliberately faithful
+rather than convenient. Two of them had to be corrected during the writing, and
+both corrections were real properties of the thing being stood in for: op-sqlite
+hands BLOBs over as `ArrayBuffer` where `node:sqlite` wants `Uint8Array`, and
+the TurboModule's events are codegen `EventEmitter` properties subscribed as
+`onPeerDiscovered(callback)`, not plain callbacks. A double that shrugged at
+either would have tested nothing. The keychain and the database remember what
+they are given, per test file, because a keychain that forgets is not a
+keychain.
+
+What they do **not** do is simulate a radio. That is `MockTransport`'s job, one
+layer down, and two phones' job below that.
+
 ---
 
 ## 3. Failure scenarios
@@ -188,6 +229,18 @@ Everything below happens with no internet, no Wi-Fi network and no server.
 
 **Nothing in this list may ever crash the app.** A failure is a message, not a
 stack trace.
+
+### Two dev-only warnings you will see, and can ignore
+
+Both come from dependencies, appear only in a debug build, and neither is
+fixable here without patching someone else's package:
+
+- `DrawerLayoutAndroid is deprecated` — emitted by
+  `react-native-gesture-handler/src/index.ts`, which re-exports it. React
+  Navigation requires gesture-handler, and nothing in AirLink uses a drawer.
+- `Attempted to import the module ".../featureflags/ReactNativeFeatureFlags"
+  which is not listed in the "exports"` — `@react-native/virtualized-lists`
+  reaching into a private React Native path its own exports map does not list.
 
 ---
 

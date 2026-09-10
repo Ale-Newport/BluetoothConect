@@ -117,6 +117,32 @@ install it.
 `ACCESS_FINE_LOCATION` is capped at `maxSdkVersion="30"` because on API 23–30 it
 was genuinely required for BLE scanning, and only for that.
 
+### Who asks, and when
+
+Declaring a permission is not asking for it, and this is where Android differs
+from iOS in a way that is easy to get wrong — it was wrong here for a while.
+
+On **iOS** there is no request API. The system sheet appears the first time
+CoreBluetooth or the local network is actually touched, which happens inside
+`AirLinkClient.start()`, so nothing needs to ask.
+
+On **Android** nothing is granted until something calls
+`Activity.requestPermissions`. `AirLinkTransportModule.requestPermissions`
+(`AirLinkTransportModule.kt:378`) does that, computing the needed set from the
+API level, and `AirLinkClient.start()` calls it — once, for every transport the
+host reports, immediately after the native stack comes up and immediately after
+the onboarding screen has explained why each one is needed.
+
+For a while nothing called it. The result was an app that declared every
+permission correctly, explained them all clearly, and then granted none of them:
+transports reported `permission_*`, discovery found nobody, and the first run
+ended on a home screen offering to open Settings for a permission Android had
+never asked about and therefore does not list. If you are porting this logic,
+that is the wire to keep connected.
+
+A refusal is not fatal. Whatever is granted comes up; whatever is not reports
+itself unavailable with a reason, and the interface says so calmly.
+
 ---
 
 ## 5. Bluetooth — the traps

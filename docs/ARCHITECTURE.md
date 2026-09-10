@@ -121,6 +121,16 @@ hostile.
 - **Skia** for realtime game rendering: physics runs in a worklet on the UI
   thread and repaints without a React render, which matters in an app whose JS
   thread is also doing networking.
+- **Drawn icons, never characters.** Every mark in the interface is an SVG path
+  (`ui/Icon.tsx`, and one per game in `screens/play/gameArt.tsx`). This started
+  as a bug fix and became a rule: the app originally used emoji and geometric
+  symbols as icons, and on the device it was built against every one of them
+  drew as an empty box, silently, with nothing in any log. A character is only
+  as reliable as the font behind it, and a missing glyph cannot be detected at
+  runtime — so a text icon is a bet on the host's font stack that can never be
+  checked. `IconName` is derived from the array of names rather than the other
+  way round, which is what makes "every icon draws something" a test that cannot
+  quietly cover less than the whole set.
 
 ---
 
@@ -132,6 +142,7 @@ hostile.
 | Whole protocol, two+ peers | Integration tests over `MockTransport` with a virtual clock |
 | Degraded links | The same tests under 15% loss, 20% reordering, 10% duplication |
 | Database | Against real SQLite via `node:sqlite` |
+| App screens | Mounted for real under Node, driven by text and a11y label |
 | iOS native | Compiled by `scripts/build-ios.sh`; radios need hardware |
 | Android native | **Not yet compiled** — see [ANDROID.md](ANDROID.md) |
 

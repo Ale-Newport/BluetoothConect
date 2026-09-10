@@ -192,16 +192,16 @@ These are written down so the product never promises them.
 | 7 | Transport negotiation, upgrade and downgrade | **done** |
 | 8 | Chat, file transfer, watch-together, groups, pairing protocols | **done** |
 | 9 | Design system, navigation, store, client, native adapter | **done** |
-| 10 | The app screens | **done** — 51 files, no placeholders |
-| 11 | Integration tests, network harness, offline acceptance test | **done** — 1070 tests |
+| 10 | The app screens | **done** — 51 files, no placeholders, mounted by tests |
+| 11 | Integration tests, network harness, offline acceptance test | **done** — 1140 tests |
 | 12 | Store readiness: identifiers, versions, placeholder artwork, checklists | **done** |
 
 ### Verified by running it
 
 The app was built, installed and driven on an iPhone 17 Pro simulator: the whole
-onboarding flow, Home, and the profile. Doing so found **eleven defects that no
-test caught**, seven of them before a single screen rendered — see the commit
-history. Three were protocol bugs found by the network harness rather than by
+onboarding flow, all five tabs, the profile and Developer Mode. Doing so found
+**fifteen defects that no test caught**, seven of them before a single screen
+rendered — see the commit history. Three were protocol bugs found by the network harness rather than by
 the unit tests, because each only appears at scale or under packet loss:
 
 - outbound frames interleaved, so nothing reassembled over a Bluetooth MTU;
@@ -212,11 +212,41 @@ The others were build and integration: ML Kit forcing an x86_64 build that
 cannot install on an Apple Silicon simulator, Metro not resolving `.ts` sibling
 imports, a missing Babel plugin leaving a blank screen, op-sqlite returning
 `ArrayBuffer` where the tests returned `Uint8Array`, the app discovering itself
-over Bonjour, a missing safe-area inset, unrenderable icon glyphs, and an
-identity surviving a database wipe with no profile to go with it.
+over Bonjour, a missing safe-area inset, and an identity surviving a database
+wipe with no profile to go with it.
 
-That is the argument for the acceptance test and the harness being part of the
-deliverable rather than an afterthought.
+And then, on the screens themselves:
+
+- **Every icon in the app was a missing glyph.** The interface used two dozen
+  emoji and a handful of geometric symbols as icons. Screenshots showed each of
+  them drawing as an empty box with a question mark, silently, with nothing in
+  any log — a character is only as reliable as the font behind it, and there is
+  no way to feature-detect a missing glyph at runtime. They are paths now
+  (`ui/Icon.tsx`, one mark per game in `screens/play/gameArt.tsx`), which is
+  also why the avatar is a colour rather than an emoji.
+- **Android was never asked for its permissions.** The native module has a
+  `requestPermissions` that raises the dialog and nothing called it, so an
+  Android first run granted nothing and dead-ended on a home screen offering
+  Settings for a permission the system had never mentioned. Found by reading the
+  start path while writing a test for it, not by running — this machine has no
+  Android SDK.
+- **The radio state the app started in never reached the interface**, because
+  `availabilityChanged` fires on a change. A phone whose Bluetooth was on the
+  whole time would have been told to go and turn it on.
+- **Developer Mode said "Unavailable  no"** for an unavailable transport, which
+  states the opposite of the truth, on the one screen whose whole job is to be
+  read literally.
+
+`apps/mobile` now has a test suite of its own — 52 tests that mount the real
+tree, walk a first run to Home, open all five tabs and push a peer in through
+the native module's own event. Both of the two defects above that are testable
+without hardware have a test that fails without the fix. Its absence until now
+was itself a defect: the package had one test, the React Native template's
+smoke test, and it had never run, because the preset does not transform the ESM
+half these libraries ship.
+
+That is the argument for the acceptance test, the harness and a running device
+being part of the deliverable rather than an afterthought.
 
 ### Deferred, and why
 

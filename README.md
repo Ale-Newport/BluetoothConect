@@ -61,7 +61,7 @@ Details and sources: [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md).
 # Requires Node 22+, pnpm, Xcode 26+ for iOS, JDK 17 + Android SDK for Android
 pnpm install
 
-pnpm test            # ~1000 tests, no phone required
+pnpm test            # ~1140 tests, no phone required
 pnpm typecheck
 ```
 
