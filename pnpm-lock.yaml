@@ -62,9 +62,6 @@ importers:
       '@shopify/react-native-skia':
         specifier: 2.11.2
         version: 2.11.2(7d85eb9ee98172aee95864b8a96d8e2d)
-      jsqr:
-        specifier: 1.4.0
-        version: 1.4.0
       react:
         specifier: 19.2.3
         version: 19.2.3
@@ -3194,9 +3191,6 @@ packages:
 
   jsonfile@4.0.0:
     resolution: {integrity: sha512-m6F1R3z8jjlf2imQHS2Qez5sjKWQzbuuhuJ/FKYFRZvPE3PuHcSMVZzfsLhGVOkfd20obL5SWEBew5ShlquNxg==}
-
-  jsqr@1.4.0:
-    resolution: {integrity: sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==}
 
   jsx-ast-utils@3.3.5:
     resolution: {integrity: sha512-ZZow9HBI5O6EPgSJLUb8n2NKgmVWTwCvHGwFuJlMjvLFqlGG6pjirPhtdsseaLZjSibD8eegzmYpUZwoIlj2cQ==}
@@ -8378,8 +8372,6 @@ snapshots:
   jsonfile@4.0.0:
     optionalDependencies:
       graceful-fs: 4.2.11
-
-  jsqr@1.4.0: {}
 
   jsx-ast-utils@3.3.5:
     dependencies:

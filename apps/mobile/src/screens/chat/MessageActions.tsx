@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Pressable, StyleSheet, View } from 'react-native';
+import { Modal, Pressable, View } from 'react-native';
 import { strings } from '@airlink/config';
 import type { Message } from '@airlink/db';
 import { Divider, Label, haptic, useTheme } from '../../ui/index.js';
@@ -191,8 +191,3 @@ function ActionRow({
     </View>
   );
 }
-
-export { QUICK_REACTIONS };
-
-/** A hairline of the same weight the rest of the app uses. */
-export const ACTION_SHEET_HAIRLINE = StyleSheet.hairlineWidth;

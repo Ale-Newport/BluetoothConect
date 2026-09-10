@@ -428,6 +428,14 @@ class BleTransport(context: Context) : AirLinkTransport {
 
     // -- the link host ---------------------------------------------------------
 
+    /**
+     * The radio's thread.
+     *
+     * Only ever read while the transport is started - `start()` creates it, and
+     * every collaborator captures it once at construction rather than asking
+     * again later. That is what keeps a callback arriving after `stop()` from
+     * building a fresh thread for a transport nobody is using any more.
+     */
     private val handler: Handler get() = ensureHandler()
 
     /**

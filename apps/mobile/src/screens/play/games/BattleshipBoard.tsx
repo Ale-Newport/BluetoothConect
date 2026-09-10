@@ -54,6 +54,7 @@ export function BattleshipBoard({
   turn,
   live,
   width,
+  sessionKey,
 }: GameRendererProps<BattleshipState>): React.JSX.Element {
   const theme = useTheme();
 
@@ -62,8 +63,9 @@ export function BattleshipBoard({
   const grid = Math.min(width, MAX_GRID);
   const cell = grid / SEA_SIZE;
 
-  // The room owns the session id; the fleet is filed under it.
-  const { secret, loading, save } = useFleetSecret(useSessionKey(state, players));
+  // The fleet is filed under this game's own id, so a rematch starts with a
+  // fresh one rather than reusing a layout the opponent has already seen.
+  const { secret, loading, save } = useFleetSecret(sessionKey);
 
   const [draft, setDraft] = useState<readonly Ship[] | null>(null);
   const [selected, setSelected] = useState(0);
@@ -395,16 +397,4 @@ function anchorTo(ships: readonly Ship[], index: number, cell: number): Ship[] |
     }
   }
   return next;
-}
-
-/**
- * A stable key for this fleet.
- *
- * The renderer contract deliberately does not hand out the session id - a
- * renderer has no business knowing about sessions - so the fleet is filed under
- * something derived from what it does get: the two seats and their commitments
- * identify this game uniquely on this device.
- */
-function useSessionKey(state: BattleshipState, players: readonly string[]): string {
-  return useMemo(() => players.join('~'), [players]);
 }

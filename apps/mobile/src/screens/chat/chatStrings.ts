@@ -59,6 +59,7 @@ export const chatCopy = {
   actionsTitle: 'Message',
   actionsHint: 'Long press a message for reply, react, copy and delete',
   reactOffline: (name: string): string => `${name} has to be in range to see a reaction.`,
+  copyNeedsText: 'There is no text to copy.',
   copied: 'Copied',
 
   /** The header, and what the two of you are doing right now. */

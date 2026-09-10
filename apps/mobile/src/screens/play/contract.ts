@@ -58,6 +58,16 @@ export interface GameRendererProps<TState> {
   readonly elapsedMs: number;
   /** Width available to the board, already inside the screen's padding. */
   readonly width: number;
+  /**
+   * An opaque, stable id for THIS game.
+   *
+   * Present for one reason: Battleship. A commitment game keeps its fleet off
+   * the shared state by definition, so that renderer has to file a private
+   * secret somewhere and find it again after a restart - and it must not find
+   * the PREVIOUS game's fleet, or its own reveal would fail the audit and it
+   * would look like a cheat. Nothing else needs this, and nothing may render it.
+   */
+  readonly sessionKey: string;
 }
 
 export type GameRenderer<TState> = (props: GameRendererProps<TState>) => React.JSX.Element;
