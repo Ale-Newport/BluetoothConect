@@ -325,16 +325,22 @@ internal class L2capSender(
     /**
      * Fails every datagram still waiting, exactly once each.
      *
-     * The poison pill has no completion, so it is simply consumed - which is
-     * only ever correct because every caller either has not put it yet or has
-     * already seen the writer act on it.
+     * The poison pill is PUT BACK rather than swallowed. Taking it out would
+     * leave the writer thread blocked in `take()` for the life of the process -
+     * one leaked thread per link - because nothing else ever wakes it.
      */
     private fun drain(cause: Throwable) {
+        var sawPoison = false
         while (true) {
             val item = queue.poll() ?: break
-            val done = item.onDone ?: continue
+            val done = item.onDone
+            if (done == null) {
+                sawPoison = true
+                continue
+            }
             handler.post { done(cause) }
         }
+        if (sawPoison) queue.put(poison)
     }
 
     private fun broke(reason: String) {

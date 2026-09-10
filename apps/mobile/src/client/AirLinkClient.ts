@@ -122,23 +122,42 @@ export class AirLinkClient {
    * triggers the system permission prompts. Nothing here asks the user for
    * anything.
    */
-  async load(): Promise<{ hasIdentity: boolean }> {
+  async load(): Promise<{ hasIdentity: boolean; hasProfile: boolean }> {
     const db = openAppDatabase();
     migrate(db);
     this.repositories = createRepositories(db);
     this.trust = new SqliteTrustStore(this.repositories.peers);
 
     const existing = await loadIdentity();
-    if (!existing) return { hasIdentity: false };
+    if (!existing) return { hasIdentity: false, hasProfile: false };
     this.identity = existing;
-    return { hasIdentity: true };
+
+    // The two halves live in different places - the key in the platform
+    // keystore, the profile in SQLite - and they can genuinely come apart: a
+    // reinstall, a restore, or a wiped database. Reporting them separately lets
+    // the app ask for a name again while KEEPING the identity, so every existing
+    // friendship survives. Treating it as a first run would have quietly
+    // orphaned them all.
+    return { hasIdentity: true, hasProfile: this.repositories.users.get() !== null };
   }
 
-  /** First run: create the identity and the local profile row. */
+  /**
+   * Create the local profile.
+   *
+   * Reuses the existing identity when there is one. That matters: the identity
+   * is what friends recognise, so generating a fresh one here would silently
+   * break every pairing the user had.
+   */
   async createProfile(displayName: string, avatarEmoji: string | null): Promise<void> {
     const now = Date.now();
-    this.identity = await createAndStoreIdentity(now);
+    if (!this.identity) this.identity = await createAndStoreIdentity(now);
     const publicIdentity = publicIdentityOf(this.identity);
+
+    const existingProfile = this.repositories.users.get();
+    if (existingProfile) {
+      this.repositories.users.updateProfile(displayName, avatarEmoji, null, now);
+      return;
+    }
     this.repositories.users.create({
       peerId: publicIdentity.peerId,
       displayName,

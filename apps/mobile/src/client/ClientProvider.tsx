@@ -84,9 +84,12 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
 
     void (async () => {
       try {
-        const { hasIdentity } = await instance.load();
+        const { hasIdentity, hasProfile } = await instance.load();
         if (cancelled) return;
-        if (!hasIdentity) {
+        // A key with no profile is not a first run - the identity, and therefore
+        // every friendship, is intact. Onboarding asks for a name again and
+        // keeps the key.
+        if (!hasIdentity || !hasProfile) {
           store.getState().setPhase(AppPhase.ONBOARDING);
         } else {
           store.getState().setProfile(instance.profile);
