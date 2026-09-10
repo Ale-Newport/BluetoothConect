@@ -92,7 +92,17 @@ export class ReliableChannel {
 
   // Receive side
   private deliveredThrough = 0;
-  private readonly reorderBuffer = new Map<number, Uint8Array>();
+  /**
+   * Packets held behind a sequence gap.
+   *
+   * Stores the WHOLE item, not just its bytes. Storing only the payload was a
+   * real defect: a packet released from behind a gap was then delivered with
+   * whichever envelope happened to be arriving at that moment, so a file chunk
+   * could surface as a chat message and raw bytes could reach the CBOR decoder.
+   * The buffer is generic precisely so the metadata cannot be separated from
+   * the payload again.
+   */
+  private readonly reorderBuffer = new Map<number, unknown>();
   private readonly seenAboveWatermark = new Set<number>();
 
   // RTT estimation, RFC 6298
@@ -316,10 +326,15 @@ export class ReliableChannel {
 
   /**
    * Register a received sequence number.
-   * Returns the payloads that are now deliverable, in order. An empty array
-   * means the packet was a duplicate or is waiting on an earlier one.
+   *
+   * `item` is whatever the caller needs back later - in practice the entire
+   * decoded envelope, so the message type, flags and timestamp travel with the
+   * payload rather than being re-derived from whatever arrives next.
+   *
+   * Returns the items that are now deliverable, in order. An empty array means
+   * the packet was a duplicate or is waiting on an earlier one.
    */
-  receive(seq: number, payload: Uint8Array): Uint8Array[] {
+  receive<T>(seq: number, item: T): T[] {
     if (seq <= this.deliveredThrough) return []; // duplicate, already delivered
     if (this.reorderBuffer.has(seq)) return []; // duplicate, already buffered
 
@@ -329,14 +344,14 @@ export class ReliableChannel {
       return [];
     }
 
-    this.reorderBuffer.set(seq, payload);
+    this.reorderBuffer.set(seq, item);
     this.seenAboveWatermark.add(seq);
 
-    const ready: Uint8Array[] = [];
+    const ready: T[] = [];
     for (;;) {
       const next = this.deliveredThrough + 1;
-      const buffered = this.reorderBuffer.get(next);
-      if (buffered === undefined) break;
+      if (!this.reorderBuffer.has(next)) break;
+      const buffered = this.reorderBuffer.get(next) as T;
       this.reorderBuffer.delete(next);
       this.seenAboveWatermark.delete(next);
       this.deliveredThrough = next;

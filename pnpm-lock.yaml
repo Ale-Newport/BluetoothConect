@@ -245,6 +245,25 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.4)(terser@5.51.2)(yaml@2.9.0)
 
+  tests:
+    dependencies:
+      '@airlink/core':
+        specifier: workspace:*
+        version: link:../packages/core
+      '@airlink/db':
+        specifier: workspace:*
+        version: link:../packages/db
+      '@airlink/games':
+        specifier: workspace:*
+        version: link:../packages/games
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.13.4)(terser@5.51.2)(yaml@2.9.0)
+
 packages:
 
   '@babel/code-frame@7.29.7':

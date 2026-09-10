@@ -1399,6 +1399,29 @@ describe('a stale half-finished offer does not block the next one', () => {
     expect(ctx.responder.session.currentLink?.transport).toBe(FAST);
   });
 
+  it('does not let a junk offer knock over a negotiation that is going fine', async () => {
+    // Superseding is for an offer we would actually accept. One naming a radio
+    // we cannot use is not evidence that the peer moved on, and must cost the
+    // attempt in progress nothing.
+    const ctx = await connectPair();
+    ctx.initiator.session.sendControl(MessageType.TRANSPORT_OFFER, {
+      i: new Uint8Array(8).fill(0x5a),
+      k: FAST,
+      n: new Uint8Array(32).fill(0x5b),
+    } as never);
+    await ctx.clock.advanceAsync(1_000);
+    expect(ctx.responder.controller.state).toBe(UpgradeState.AWAITING_LINK);
+
+    ctx.initiator.session.sendControl(MessageType.TRANSPORT_OFFER, {
+      i: new Uint8Array(8).fill(0x6a),
+      k: TransportKind.WIFI_DIRECT, // not registered on this device
+      n: new Uint8Array(32).fill(0x6b),
+    } as never);
+    await ctx.clock.advanceAsync(1_000);
+
+    expect(ctx.responder.controller.state).toBe(UpgradeState.AWAITING_LINK);
+  });
+
   it('does NOT abandon a link it has already proven', async () => {
     // The other side of the rule. Once the responder holds a proven link the
     // initiator is committing to it, and a stray offer arriving at that moment

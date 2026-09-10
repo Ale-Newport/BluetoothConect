@@ -54,6 +54,8 @@ export const syncStrings = {
   speed: 'Speed',
   subtitles: 'Subtitles',
   subtitlesOff: 'Off',
+  showControls: 'Show the controls',
+  hideControls: 'Hide the controls',
 
   // -- not connected -------------------------------------------------------
   needsConnection: 'Watching together needs a connection.',

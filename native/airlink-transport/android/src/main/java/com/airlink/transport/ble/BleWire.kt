@@ -81,8 +81,18 @@ internal object BleWire {
                 )
             }
 
+            /**
+             * The four UUIDs differ only in `time_low` - the first eight hex
+             * digits - so the offset is added to the TOP 32 bits of the most
+             * significant half, not to the whole of it. Adding it to the low end
+             * would walk `time_mid` and `time_hi` instead and produce a UUID
+             * that matches nothing, silently: the consistency check below would
+             * fail, the identity characteristic would be dropped, and the only
+             * symptom would be a missing L2CAP upgrade. Verified against the
+             * four constants in packages/core/src/protocol/constants.ts.
+             */
             private fun offset(base: UUID, by: Int): UUID =
-                UUID(base.mostSignificantBits + by, base.leastSignificantBits)
+                UUID(base.mostSignificantBits + (by.toLong() shl 32), base.leastSignificantBits)
         }
     }
 

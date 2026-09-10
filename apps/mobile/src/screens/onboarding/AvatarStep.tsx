@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import { initialsFor, strings } from '@airlink/config';
 import { Avatar, Gap, Label, haptic, useTheme } from '../../ui/index.js';
 import { AVATAR_EMOJI } from './avatars.js';
@@ -36,7 +36,7 @@ export function AvatarStep({
     onSelect(next);
   };
 
-  const tileStyle = (selected: boolean): StyleSheet.NamedStyles<never>[string] => ({
+  const tileStyle = (selected: boolean): ViewStyle => ({
     width: tile,
     height: tile,
     borderRadius: theme.radius.md,
@@ -65,9 +65,15 @@ export function AvatarStep({
         <Label variant="headline" align="center" numberOfLines={1}>
           {name}
         </Label>
-        <Label variant="footnote" tone="tertiary" align="center">
-          {emoji ? strings.onboarding.avatarTitle : onboardingCopy.useInitials}
-        </Label>
+        {/* The caption slot keeps its height either way, so the grid below does
+            not jump every time a tile is tapped. */}
+        <View style={{ minHeight: theme.spacing.lg + theme.spacing.xs, justifyContent: 'center' }}>
+          {emoji === null ? (
+            <Label variant="footnote" tone="tertiary" align="center">
+              {onboardingCopy.useInitials}
+            </Label>
+          ) : null}
+        </View>
       </View>
 
       <Gap size="xl" />

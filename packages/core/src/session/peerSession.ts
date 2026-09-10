@@ -767,10 +767,15 @@ export class PeerSession {
       case Channel.RELIABLE:
       case Channel.BULK: {
         const channel = envelope.channel === Channel.BULK ? this.bulk : this.reliable;
-        const ready = channel.receive(envelope.seq, envelope.payload);
+        // The WHOLE envelope goes into the reorder buffer, not just its bytes.
+        // A packet released from behind a gap must be delivered with its OWN
+        // message type, flags and timestamp - delivering it with whichever
+        // envelope happened to arrive last would surface a file chunk as a chat
+        // message and hand raw bytes to the CBOR decoder.
+        const ready = channel.receive<Envelope>(envelope.seq, envelope);
         // Acknowledge even a duplicate: the peer's ACK may have been the loss.
         this.sendAck(envelope.channel);
-        for (const payload of ready) this.deliver(envelope, payload);
+        for (const released of ready) this.deliver(released, released.payload);
         return;
       }
 

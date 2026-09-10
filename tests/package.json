@@ -1,0 +1,13 @@
+{
+  "name": "@airlink/acceptance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "vitest run" },
+  "dependencies": {
+    "@airlink/core": "workspace:*",
+    "@airlink/db": "workspace:*",
+    "@airlink/games": "workspace:*"
+  },
+  "devDependencies": { "typescript": "^5.9.2", "vitest": "^3.2.4" }
+}

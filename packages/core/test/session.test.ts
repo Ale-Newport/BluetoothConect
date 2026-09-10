@@ -640,3 +640,62 @@ describe('bulk transfer under real conditions', () => {
     expect(ctx.sessionB.state).toBe(ConnectionState.CONNECTED);
   });
 });
+
+describe('out-of-order delivery preserves message identity', () => {
+  /**
+   * The regression test for a subtle and nasty defect: the reorder buffer used
+   * to store only a packet's BYTES, so a packet released from behind a sequence
+   * gap was delivered with whichever envelope happened to be arriving at that
+   * moment. A file chunk surfaced as a chat message, and raw bytes were handed
+   * to the CBOR decoder.
+   */
+  it('releases each buffered packet with its own type, flags and timestamp', () => {
+    const clock = new VirtualClock();
+    const channel = new ReliableChannel(clock, {
+      transmit: () => undefined,
+      onAcknowledged: () => undefined,
+      onDeliveryFailed: () => undefined,
+    });
+
+    // Two packets of DIFFERENT kinds, arriving out of order.
+    const chat = { seq: 1, type: MessageType.MESSAGE, raw: false };
+    const chunk = { seq: 2, type: MessageType.FILE_CHUNK, raw: true };
+
+    expect(channel.receive(chunk.seq, chunk)).toEqual([]); // held: 1 is missing
+    const released = channel.receive(chat.seq, chat);
+
+    expect(released).toHaveLength(2);
+    expect(released[0]).toBe(chat);
+    expect(released[1]).toBe(chunk);
+    // Each kept its OWN identity rather than inheriting the other's.
+    expect(released[0]?.type).toBe(MessageType.MESSAGE);
+    expect(released[1]?.type).toBe(MessageType.FILE_CHUNK);
+    expect(released[1]?.raw).toBe(true);
+  });
+
+  it('delivers interleaved chat and binary messages correctly over a lossy link', async () => {
+    const ctx = await connectPair({ preTrusted: true, conditions: WIFI_LIKE_CONDITIONS });
+    const got = collect(ctx.sessionB);
+    ctx.network.setConditions(HOSTILE_CONDITIONS);
+
+    // Alternate CBOR chat messages and raw binary chunks, so any confusion
+    // between them shows up as a decode failure or a missing message.
+    for (let i = 0; i < 12; i++) {
+      if (i % 2 === 0) {
+        ctx.sessionA.sendReliable(MessageType.MESSAGE, { i });
+      } else {
+        const blob = new Uint8Array(64).fill(i);
+        ctx.sessionA.sendReliableRaw(MessageType.FILE_CHUNK, blob);
+      }
+    }
+    await ctx.clock.advanceAsync(180_000);
+
+    const chats = got.filter((m) => m.type === MessageType.MESSAGE);
+    const chunks = got.filter((m) => m.type === MessageType.FILE_CHUNK);
+    expect(chats.map((m) => (m.value as { i: number }).i)).toEqual([0, 2, 4, 6, 8, 10]);
+    expect(chunks).toHaveLength(6);
+    // Every chat message decoded as CBOR, and every chunk stayed raw.
+    expect(chats.every((m) => m.value !== null)).toBe(true);
+    expect(chunks.every((m) => m.value === null && m.raw.length === 64)).toBe(true);
+  });
+});
