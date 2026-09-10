@@ -185,14 +185,25 @@ These are written down so the product never promises them.
 |---|---|---|
 | 1 | Monorepo, protocol, crypto, transport contract, MockTransport, database | **done** |
 | 2 | Reliability, connection state machine, clock sync, PeerSession | **done** |
-| 3 | Game engine, runtimes, conformance suite, reference game | **done** |
-| 4 | The 12 games | in progress |
-| 5 | Native BLE (iOS + Android), TurboModule bridge | in progress |
-| 6 | Local network + peer-to-peer Wi-Fi transports, negotiation and upgrade | in progress |
-| 7 | Chat, file transfer, sync protocols on top of `PeerSession` | in progress |
-| 8 | React Native app: onboarding, home, chat, play, share, sync, profile, developer mode | in progress |
-| 9 | Integration tests, failure-scenario suite, offline acceptance harness | in progress |
-| 10 | Store readiness: icons, launch screen, privacy strings, release config | pending |
+| 3 | Game engine, runtimes, conformance suite | **done** |
+| 4 | The 12 games | **done** — 485 tests |
+| 5 | Native BLE, iOS and Android | **done** — iOS compiles; Android unbuilt, see below |
+| 6 | Local network, peer-to-peer Wi-Fi, Wi-Fi Direct, hotspot handoff | **done** |
+| 7 | Transport negotiation, upgrade and downgrade | **done** |
+| 8 | Chat, file transfer, watch-together, groups, pairing protocols | **done** |
+| 9 | Design system, navigation, store, client, native adapter | **done** |
+| 10 | The 20 app screens | in progress |
+| 11 | Integration tests, network harness, offline acceptance test | **done** — 1070 tests |
+| 12 | Store readiness: identifiers, versions, placeholder artwork, checklists | **done** |
+
+### Deferred, and why
+
+**Trip Mode** (grouping a journey's chats, games, photos and notes) has its
+database tables and repository, but no feature module or screen. It is the one
+part of the brief explicitly described as optional, and the brief is equally
+explicit that five reliable features beat twenty mediocre ones. The core —
+discover, connect, chat, play, share, sync — comes first. The schema is in place
+so adding it later is a feature module and a screen, not a migration.
 
 ### Android build status
 

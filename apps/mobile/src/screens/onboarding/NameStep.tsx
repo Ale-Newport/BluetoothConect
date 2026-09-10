@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Keyboard, TextInput, View, type TextStyle } from 'react-native';
+import { Keyboard, TextInput, View, type TextInputInstance, type TextStyle } from 'react-native';
 import { strings } from '@airlink/config';
 import { Gap, Label, useTheme } from '../../ui/index.js';
 import { MAX_NAME_LENGTH } from './name.js';
@@ -28,7 +28,9 @@ export function NameStep({
   onSubmit: () => void;
 }): React.JSX.Element {
   const theme = useTheme();
-  const input = useRef<TextInput>(null);
+  // `TextInput` is a function component under the New Architecture, so the ref
+  // holds the host instance type rather than the component itself.
+  const input = useRef<TextInputInstance>(null);
 
   useEffect(() => {
     if (!active) {
