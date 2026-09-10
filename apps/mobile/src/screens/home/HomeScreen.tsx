@@ -88,7 +88,7 @@ export function HomeScreen(): React.JSX.Element {
     return () => clearTimeout(timer);
   }, []);
 
-  // A connected peer has its own card below, which says everything a row says
+  // A connected peer has its own card above, which says everything a row says
   // and more; listing them twice on one screen makes the same person look like
   // two.
   const sortedFriends = useMemo(() => friends.filter(notConnected).sort(byPresence), [friends]);
@@ -183,10 +183,7 @@ export function HomeScreen(): React.JSX.Element {
         // offline - a hard-coded value wearing the clothes of a fact. What we
         // do know is the radio, which is event-driven and true, and being
         // offline is the point of this product rather than news anyway.
-        <StatusBanner
-          tone={bannerTone}
-          title={radios.bluetoothOn ? strings.status.offlineDetail : strings.home.searching}
-        />
+        <StatusBanner tone={bannerTone} title={strings.status.offlineDetail} />
       )}
 
       <Gap size="xl" />
@@ -321,6 +318,14 @@ function PeerRow({ peer, onOpen }: { peer: PeerView; onOpen: (peer: PeerView) =>
     />
   );
 
+  // A row mid-attempt needs no hint: its own subtitle already says
+  // "Connecting…", and the sheet it opens says the rest.
+  const hint = connected
+    ? homeCopy.openChatWith(peer.displayName)
+    : working
+      ? undefined
+      : homeCopy.connectTo(peer.displayName);
+
   const row = (
     <ListRow
       title={peer.displayName}
@@ -338,7 +343,7 @@ function PeerRow({ peer, onOpen }: { peer: PeerView; onOpen: (peer: PeerView) =>
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`${peer.displayName}, ${statusLine(peer)}`}
-      accessibilityHint={connected ? homeCopy.openChatWith(peer.displayName) : homeCopy.connectTo(peer.displayName)}
+      accessibilityHint={hint}
       onPress={() => {
         haptic('selection');
         onOpen(peer);

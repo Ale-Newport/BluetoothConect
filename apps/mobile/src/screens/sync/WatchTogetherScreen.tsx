@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   StatusBar,
@@ -60,9 +60,10 @@ import { SetupOutcome, useWatchTogether } from './useWatchTogether.js';
  * file does is hand the protocol a `MediaController` (useMediaBinding) and put
  * the result on screen.
  *
- * The one position this screen does read is the anchor's own projection, four
- * times a second, to draw the scrubber. It is computed locally from the line and
- * is never sent anywhere - which is why the scrubber glides instead of twitching.
+ * The one position this screen does read is the anchor's own projection, and
+ * only while the controls are on screen, to draw the scrubber. It is computed
+ * locally from the line and is never sent anywhere - which is why the scrubber
+ * glides instead of twitching.
  *
  * ORIENTATION. The player is full-bleed and follows the window. It does not
  * force landscape: this app declares itself portrait-only on iPhone, and the
@@ -180,23 +181,27 @@ export function WatchTogetherScreen(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [picking, resetFile]);
 
-  const handleLoad = (event: OnLoadData): void => {
-    media.notePositionSeconds(event.currentTime);
-    const ms = Math.round(event.duration * 1000);
-    if (!Number.isFinite(ms) || ms <= 0) {
-      // Nothing can be matched or seeked without a duration, so this file is of
-      // no use to us even though the decoder opened it.
-      setReadFailed(true);
-      return;
-    }
-    setDurationMs(ms);
-    setSubtitles(
-      event.textTracks.map((track, position) => ({
-        index: track.index,
-        label: track.title ?? track.language ?? syncStrings.subtitleTrack(position + 1),
-      })),
-    );
-  };
+  const notePositionSeconds = media.notePositionSeconds;
+  const handleLoad = useCallback(
+    (event: OnLoadData): void => {
+      notePositionSeconds(event.currentTime);
+      const ms = Math.round(event.duration * 1000);
+      if (!Number.isFinite(ms) || ms <= 0) {
+        // Nothing can be matched or seeked without a duration, so this file is
+        // of no use to us even though the decoder opened it.
+        setReadFailed(true);
+        return;
+      }
+      setDurationMs(ms);
+      setSubtitles(
+        event.textTracks.map((track, position) => ({
+          index: track.index,
+          label: track.title ?? track.language ?? syncStrings.subtitleTrack(position + 1),
+        })),
+      );
+    },
+    [notePositionSeconds],
+  );
 
   // The decoder is the only thing on this device that knows how long the film
   // is, and the duration is part of what the two phones compare - so the
@@ -287,14 +292,20 @@ export function WatchTogetherScreen(): React.JSX.Element {
    * decoder's reading is the jittery one, and putting it on screen would make
    * the thumb twitch several times a second even when the two phones are
    * perfectly in step. This value is computed locally and is never sent.
+   *
+   * It only ticks while the controls are up. Once they hide there is no
+   * scrubber to move, and a screen that has to decode video for two hours has
+   * better things to do than re-render four times a second to update a number
+   * nobody can see.
    */
+  const positionMs = media.positionMs;
   useEffect(() => {
-    if (!inPlayer || !session) return;
-    const tick = (): void => setLinePositionMs(session.targetPositionMs ?? media.positionMs());
+    if (!inPlayer || !session || !controlsVisible) return;
+    const tick = (): void => setLinePositionMs(session.targetPositionMs ?? positionMs());
     tick();
     const timer = setInterval(tick, POSITION_TICK_MS);
     return () => clearInterval(timer);
-  }, [inPlayer, session, media]);
+  }, [inPlayer, session, controlsVisible, positionMs]);
 
   const shownPositionMs = scrubMs ?? linePositionMs;
   const baseRate = session?.currentAnchor?.rate ?? 1;
@@ -429,10 +440,18 @@ export function WatchTogetherScreen(): React.JSX.Element {
     backgroundColor: cinema.background,
   };
 
-  const selectedTextTrack: SelectedTrack =
-    selectedSubtitle === null
-      ? { type: SelectedTrackType.DISABLED }
-      : { type: SelectedTrackType.INDEX, value: selectedSubtitle };
+  // `react-native-video` memoises the source and the track selection by
+  // REFERENCE, so a fresh object literal on every render would be a fresh
+  // native prop on every render - and on a screen that ticks while the controls
+  // are up, that is a reload of the file several times a second.
+  const source = useMemo(() => ({ uri: video?.uri }), [video?.uri]);
+  const selectedTextTrack: SelectedTrack = useMemo(
+    () =>
+      selectedSubtitle === null
+        ? { type: SelectedTrackType.DISABLED }
+        : { type: SelectedTrackType.INDEX, value: selectedSubtitle },
+    [selectedSubtitle],
+  );
 
   return (
     <View style={{ flex: 1, backgroundColor: inPlayer ? cinema.background : theme.colors.background }}>
@@ -451,7 +470,7 @@ export function WatchTogetherScreen(): React.JSX.Element {
         <View style={surface}>
           <Video
             ref={media.videoRef}
-            source={{ uri: video.uri }}
+            source={source}
             style={StyleSheet.absoluteFill}
             resizeMode="contain"
             controls={false}
@@ -464,8 +483,8 @@ export function WatchTogetherScreen(): React.JSX.Element {
             preventsDisplaySleepDuringVideoPlayback
             ignoreSilentSwitch="ignore"
             onLoad={handleLoad}
-            onProgress={(event: OnProgressData) => media.notePositionSeconds(event.currentTime)}
-            onSeek={(event: OnSeekData) => media.notePositionSeconds(event.currentTime)}
+            onProgress={(event: OnProgressData) => notePositionSeconds(event.currentTime)}
+            onSeek={(event: OnSeekData) => notePositionSeconds(event.currentTime)}
             onError={() => setReadFailed(true)}
             accessibilityLabel={video.title || syncStrings.untitled}
           />

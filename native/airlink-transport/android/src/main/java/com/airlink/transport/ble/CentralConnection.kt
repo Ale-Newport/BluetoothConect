@@ -705,6 +705,17 @@ internal class CentralConnection(
 
     // -- helpers --------------------------------------------------------------
 
+    /**
+     * Turns an API 33 `BluetoothStatusCodes` value into a queue decision.
+     *
+     * `BluetoothStatusCodes` is itself API 33, and this method exists on every
+     * device we run on - which is safe only because every name below is a Java
+     * compile-time constant. The compiler folds each one into a literal, so the
+     * class is never referenced at runtime and there is nothing for an API 26
+     * verifier to fail to resolve. Adding a reference to anything on that class
+     * that is NOT a constant - a method, a non-final field - would break that
+     * and would only show up on an old device.
+     */
     private fun statusToIssue(status: Int): GattIssue = when (status) {
         BluetoothStatusCodes.SUCCESS -> GattIssue.Accepted
         BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY -> GattIssue.Busy

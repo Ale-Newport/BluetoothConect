@@ -9,6 +9,7 @@ import { selectPendingPairings, useAppStore, type PendingPairing } from '../../s
 import type { RootStackParams } from '../../navigation/routes.js';
 import { PulsingDot } from './controls.js';
 import { useOptionalClient } from './useOptionalClient.js';
+import { markPairingAnswered } from './pairingRouting.js';
 import { homeCopy } from './peerPresentation.js';
 
 /**
@@ -52,9 +53,10 @@ const PARTNER_TIMEOUT_MS = 45_000;
  */
 const AVATAR_SIZE = 56;
 
-type Answer = 'none' | 'confirmed' | 'timedOut';
+type Answer = 'none' | 'confirmed' | 'timedOut' | 'refused';
 
 export function PairingConfirmScreen(): React.JSX.Element {
+  const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
   const { peerKey } = useRoute<RouteProp<RootStackParams, 'PairingConfirm'>>().params;
   const client = useOptionalClient();
@@ -84,7 +86,29 @@ export function PairingConfirmScreen(): React.JSX.Element {
   }, []);
 
   /**
-   * Leave only once the user has answered.
+   * The other phone's answer.
+   *
+   * The store only records that a pairing stopped being pending, not how it
+   * ended, so a refusal and a success look identical from there - and the
+   * screen would close on both. Someone who has just vouched for six digits is
+   * owed the outcome, so we listen for it at the source. The ref is written
+   * inside the event, before any re-render, so the dismissal below can never
+   * win the race against it.
+   */
+  const refused = useRef(false);
+  /** Our own "they don't match" comes straight back as a refusal; ignore it. */
+  const declinedHere = useRef(false);
+  useEffect(() => {
+    if (!client) return;
+    return client.events.on('pairingResolved', (event) => {
+      if (event.peerKey !== peerKey || event.trusted || declinedHere.current) return;
+      refused.current = true;
+      setAnswer('refused');
+    });
+  }, [client, peerKey]);
+
+  /**
+   * Leave only once the user has answered, and only on a good ending.
    *
    * The pairing disappearing while the question is still on screen is not a
    * reason to dismiss: the user is looking at six digits and deciding, and
@@ -92,7 +116,7 @@ export function PairingConfirmScreen(): React.JSX.Element {
    * cosmetic. They get told instead.
    */
   useEffect(() => {
-    if (answer !== 'confirmed' || pairing) return;
+    if (answer !== 'confirmed' || pairing || refused.current) return;
     navigation.goBack();
   }, [answer, pairing, navigation]);
 
@@ -104,8 +128,14 @@ export function PairingConfirmScreen(): React.JSX.Element {
 
   const close = useCallback(() => navigation.goBack(), [navigation]);
 
+  /** Why "They match" cannot be pressed yet, or null when it can. */
+  const waitReason = client === null ? homeCopy.startingUp : armed ? null : homeCopy.compareFirst;
+
   const onMatch = useCallback(() => {
     if (!client) return;
+    // Recorded before the answer goes out: the decision latches in the pairing
+    // machine, so from this moment on nothing may offer the question again.
+    markPairingAnswered(peerKey);
     client.confirmPairing(peerKey);
     setAnswer('confirmed');
   }, [client, peerKey]);
@@ -113,12 +143,29 @@ export function PairingConfirmScreen(): React.JSX.Element {
   const onMismatch = useCallback(() => {
     // Declining ends the session outright. Nothing to wait for, and nothing the
     // user should have to dismiss afterwards.
+    declinedHere.current = true;
+    markPairingAnswered(peerKey);
     client?.declinePairing(peerKey);
     navigation.goBack();
   }, [client, navigation, peerKey]);
 
-  // Checked before the pairing itself: once we have given up waiting, that is
-  // the news, whether or not the request is still in the store.
+  // Checked before the pairing itself: the other phone said no, and that is the
+  // news whether or not the request is still in the store.
+  if (answer === 'refused') {
+    return (
+      <Screen scroll style={{ flexGrow: 1, justifyContent: 'center' }}>
+        <EmptyState
+          icon="◎"
+          title={homeCopy.pairingRefusedTitle}
+          body={homeCopy.pairingRefusedBody}
+          action={<Button title={strings.common.close} variant="secondary" onPress={close} />}
+        />
+      </Screen>
+    );
+  }
+
+  // Likewise: once we have given up waiting, that is the news, whether or not
+  // the request is still in the store.
   if (answer === 'timedOut') {
     return (
       <Screen scroll style={{ flexGrow: 1, justifyContent: 'center' }}>
@@ -192,16 +239,30 @@ export function PairingConfirmScreen(): React.JSX.Element {
           </>
         ) : (
           <>
+            {/* The reason sits above the buttons in a slot that keeps its
+                height when it goes. Under the button it would push both
+                answers upwards a second after the screen appeared - moving
+                the target under a thumb that is already on its way down, on
+                the one screen where the wrong answer is permanent. */}
+            <View style={{ minHeight: theme.typography.footnote.lineHeight, justifyContent: 'center' }}>
+              {waitReason ? (
+                <Label variant="footnote" tone="tertiary" align="center">
+                  {waitReason}
+                </Label>
+              ) : null}
+            </View>
+            <Gap size="sm" />
             <Button
               title={strings.connection.confirmYes}
               onPress={onMatch}
               // Nothing is pre-selected and nothing is focused: the answer has
               // to be a deliberate press, and for the first moment it cannot be
               // one at all.
-              disabled={!armed || client === null}
-              disabledReason={client === null ? homeCopy.startingUp : homeCopy.compareFirst}
+              disabled={waitReason !== null}
             />
             <Gap size="sm" />
+            {/* Never disabled, whatever else is not ready: this is also the way
+                out of the screen. */}
             <Button title={strings.connection.confirmNo} variant="secondary" onPress={onMismatch} />
           </>
         )}

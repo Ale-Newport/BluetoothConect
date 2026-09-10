@@ -301,35 +301,25 @@ export class ChatCenter {
 
     const now = Date.now();
     const handle = this.handleFor(peerId);
-    let id: string | null = null;
-    let status: MessageStatus = 'pending';
-
-    if (handle) {
-      const entry = this.safe(() =>
-        handle.chat.send({
-          text: body,
-          ...(replyToRowId ? { replyToId: this.wireIdOf(replyToRowId) } : {}),
-        }),
-      );
-      if (entry) {
-        // The protocol names the message, so the row and the wire agree and no
-        // alias is needed. The status is whatever the flush achieved: SENT if a
-        // link took it, PENDING if the session is down.
-        id = entry.message.id;
-        status = statusName(entry.status);
-      }
-    }
-
-    if (!id) {
-      // Nobody in range - or a protocol that refused. Either way the message is
-      // kept, and the queue is drained the next time a session comes up.
-      id = newSortableId(systemRandom, now);
-      status = 'pending';
-    }
+    // With a session in hand the protocol names the message, so the row and the
+    // wire agree and no alias is needed; the status it comes back with is
+    // whatever the flush achieved - SENT if a link took it, PENDING if not.
+    const entry = handle
+      ? this.safe(() =>
+          handle.chat.send({
+            text: body,
+            ...(replyToRowId ? { replyToId: this.wireIdOf(replyToRowId) } : {}),
+          }),
+        )
+      : undefined;
+    // Nobody in range - or a protocol that refused. Either way the message is
+    // kept, and the queue is drained the next time a session comes up.
+    const messageId = entry?.message.id ?? newSortableId(systemRandom, now);
+    const status: MessageStatus = entry ? statusName(entry.status) : 'pending';
 
     const stored = this.safe(() =>
       this.client.db.messages.insert({
-        id: id as string,
+        id: messageId,
         conversationId,
         senderPeerId: LOCAL_SENDER,
         kind: 'text',
@@ -358,10 +348,17 @@ export class ChatCenter {
       this.publish();
       return;
     }
-    // A message the protocol still holds is re-armed rather than re-composed:
-    // sending it again under a new id would arrive as a second bubble.
-    if (this.safe(() => handle.chat.retry(this.wireIdOf(rowId))) === true) {
-      this.safe(() => this.client.db.messages.setStatus(rowId, 'sent'));
+    // A message the protocol still holds is re-armed rather than re-composed.
+    // Composing a second copy of something already in the outbox is how a
+    // "retry" turns into two bubbles on the other phone, so the queue is asked
+    // first and only a message it has forgotten is sent again.
+    const wireId = this.wireIdOf(rowId);
+    const queued = (this.safe(() => handle.chat.outboxSnapshot()) ?? []).some(
+      (entry) => entry.message.id === wireId,
+    );
+    if (queued) {
+      const armed = this.safe(() => handle.chat.retry(wireId)) === true;
+      this.safe(() => this.client.db.messages.setStatus(rowId, armed ? 'sent' : 'pending'));
     } else {
       this.handToProtocol(handle, row);
     }

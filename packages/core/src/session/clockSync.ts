@@ -43,11 +43,19 @@ export class ClockSynchronizer {
   private best: ClockSample | null = null;
   private timer: TimerHandle | undefined;
   private roundRemaining = 0;
+  /** Deadline for the probe currently in flight. See `probe()`. */
+  private probeTimer: TimerHandle | undefined;
 
   constructor(
     private readonly clock: Clock,
     private readonly sendRequest: (payload: CborValue) => void,
     private readonly historyLimit = 32,
+    /**
+     * How long to wait for one probe's answer before moving on. Generous
+     * relative to any real link: a Bluetooth round trip is tens of milliseconds,
+     * and a sample that took two seconds would be discarded as too noisy anyway.
+     */
+    private readonly probeTimeoutMs = 2000,
   ) {}
 
   /**
@@ -97,12 +105,33 @@ export class ClockSynchronizer {
     }
   }
 
+  /**
+   * Send one probe, and arm a deadline for it.
+   *
+   * The deadline is what makes this work on a real radio. Probes travel on the
+   * CONTROL channel, which is best-effort by design - it must not be retried by
+   * the reliability layer, because a clock sample that arrives late is worse
+   * than no sample at all. So a lost probe would otherwise stall the round for
+   * ever: nothing else re-triggers `probe()`, and the offset never converges.
+   * On a Bluetooth link with real packet loss that meant watch-together simply
+   * never started.
+   *
+   * A timed-out probe is abandoned - never retried with the same id, since its
+   * answer may still be in flight - and the round moves on to the next one.
+   */
   private probe(): void {
+    this.clearProbeTimer();
     if (this.roundRemaining <= 0) return;
     this.roundRemaining -= 1;
     const id = this.nextId++;
     const t1 = this.clock.wallNow();
     this.pending.set(id, { id, t1 });
+    this.probeTimer = this.clock.setTimeout(() => {
+      this.probeTimer = undefined;
+      // Its reply may yet arrive; handleResponse simply will not find it.
+      this.pending.delete(id);
+      this.probe();
+    }, this.probeTimeoutMs);
     // Bound the outstanding-probe map: a peer that never answers cannot grow it.
     if (this.pending.size > 64) {
       const oldest = this.pending.keys().next().value;
@@ -164,6 +193,7 @@ export class ClockSynchronizer {
     if (!this.best || roundTripMs < this.best.roundTripMs) this.best = sample;
 
     if (this.roundRemaining > 0) this.probe();
+    else this.clearProbeTimer();
     return sample;
   }
 
@@ -175,7 +205,15 @@ export class ClockSynchronizer {
     return sorted.length % 2 === 0 ? ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2 : (sorted[mid] as number);
   }
 
+  private clearProbeTimer(): void {
+    if (this.probeTimer !== undefined) {
+      this.clock.clearTimeout(this.probeTimer);
+      this.probeTimer = undefined;
+    }
+  }
+
   reset(): void {
+    this.clearProbeTimer();
     this.pending.clear();
     this.samples.length = 0;
     this.best = null;

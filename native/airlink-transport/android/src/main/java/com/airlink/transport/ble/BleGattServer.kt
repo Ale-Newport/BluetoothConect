@@ -723,6 +723,13 @@ internal class BleGattServer(
 
             val accepted = try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    // `confirm = false` is a notification rather than an
+                    // indication: no ATT acknowledgement, twice the throughput,
+                    // and the link layer underneath still retransmits until the
+                    // peer's controller has it. BluetoothStatusCodes.SUCCESS is
+                    // a Java compile-time constant, so it is folded into a
+                    // literal here and the API 33 class is never referenced at
+                    // runtime on an older device.
                     current.notifyCharacteristicChanged(peer.device, tx, false, datagram) ==
                         BluetoothStatusCodes.SUCCESS
                 } else {

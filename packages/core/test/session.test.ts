@@ -699,3 +699,31 @@ describe('out-of-order delivery preserves message identity', () => {
     expect(chunks.every((m) => m.value === null && m.raw.length === 64)).toBe(true);
   });
 });
+
+describe('handshake on a lossy link', () => {
+  /**
+   * Handshake frames deliberately bypass the reliability layer - there is no
+   * session yet to sequence them against - so on a link with real packet loss a
+   * four-message exchange used to fail more often than it succeeded, and the
+   * user saw "Couldn't connect" for no reason they could act on. The session
+   * retransmits, DTLS-style, and both sides replay past each other until the
+   * exchange completes.
+   */
+  it('connects over a link that loses one packet in six', async () => {
+    const ctx = await connectPair({ preTrusted: true, conditions: HOSTILE_CONDITIONS });
+    // Retries back off, so give the exchange the time a real one would have -
+    // still far inside the state machine's own AUTHENTICATING timeout.
+    await ctx.clock.advanceAsync(12_000);
+    // A handshake with no retransmission completes about a quarter of the time
+    // under these conditions. With it, this is deterministic.
+    expect(ctx.sessionA.state).toBe(ConnectionState.CONNECTED);
+    expect(ctx.sessionB.state).toBe(ConnectionState.CONNECTED);
+    expect(ctx.sessionA.isSecure).toBe(true);
+
+    const got = collect(ctx.sessionB);
+    ctx.sessionA.sendReliable(MessageType.MESSAGE, { t: 'made it' });
+    await ctx.clock.advanceAsync(60_000);
+    expect(got.some((m) => m.type === MessageType.MESSAGE)).toBe(true);
+  });
+
+});

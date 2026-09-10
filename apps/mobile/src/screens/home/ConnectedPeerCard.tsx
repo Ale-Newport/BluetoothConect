@@ -20,6 +20,17 @@ import { homeCopy, statusLine, statusTone } from './peerPresentation.js';
  * does nothing when tapped.
  */
 
+/**
+ * Component dimensions.
+ *
+ * Named rather than written into the styles because the design system has no
+ * scale for them yet - `Avatar` and `StatusDot` take numbers. The tile height
+ * is comfortably past the 44pt minimum target.
+ */
+const AVATAR_SIZE = 44;
+const TILE_MIN_HEIGHT = 64;
+const STATUS_DOT_SIZE = 6;
+
 interface ActionSpec {
   readonly key: string;
   /** Matches the placeholder glyph language of the tab bar. */
@@ -65,7 +76,8 @@ export function ConnectedPeerCard({ peer }: { peer: PeerView }): React.JSX.Eleme
       glyph: '✉',
       title: strings.home.chat,
       enabled: has('chat'),
-      reason: unknown ? pendingReason : strings.chat.notConnected,
+      // Never "Not connected": this card only exists because we are.
+      reason: unknown ? pendingReason : homeCopy.noChat(peer.displayName),
       onPress: () => navigation.navigate('Conversation', { peerKey: peer.key, title: peer.displayName }),
     },
     {
@@ -97,18 +109,21 @@ export function ConnectedPeerCard({ peer }: { peer: PeerView }): React.JSX.Eleme
     },
   ];
 
-  const unavailable = actions.filter((action) => !action.enabled);
+  // One sentence per reason, not per tile: while the handshake is still
+  // settling every tile has the same thing to say, and four identical lines
+  // read as a stutter rather than an explanation.
+  const reasons = [...new Set(actions.filter((action) => !action.enabled).map((action) => action.reason))];
 
   return (
     <Card>
       <Row gap="md">
-        <Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={44} />
+        <Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={AVATAR_SIZE} />
         <View style={{ flex: 1 }}>
           <Label variant="headline" numberOfLines={1}>
             {peer.displayName}
           </Label>
           <Row gap="xs">
-            <StatusDot tone={statusTone(peer.connection)} size={6} />
+            <StatusDot tone={statusTone(peer.connection)} size={STATUS_DOT_SIZE} />
             <Label variant="footnote" tone="secondary">
               {statusLine(peer)}
             </Label>
@@ -126,11 +141,11 @@ export function ConnectedPeerCard({ peer }: { peer: PeerView }): React.JSX.Eleme
         ))}
       </Row>
 
-      {unavailable.length > 0 ? (
+      {reasons.length > 0 ? (
         <View style={{ marginTop: theme.spacing.md }}>
-          {unavailable.map((action) => (
-            <Label key={action.key} variant="caption" tone="tertiary">
-              {action.reason}
+          {reasons.map((reason) => (
+            <Label key={reason} variant="caption" tone="tertiary">
+              {reason}
             </Label>
           ))}
         </View>
@@ -155,7 +170,7 @@ function ActionTile({ action }: { action: ActionSpec }): React.JSX.Element {
       style={({ pressed }) => [
         {
           flex: 1,
-          minHeight: 64,
+          minHeight: TILE_MIN_HEIGHT,
           alignItems: 'center',
           justifyContent: 'center',
           gap: theme.spacing.xs,

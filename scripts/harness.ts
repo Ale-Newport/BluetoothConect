@@ -98,7 +98,10 @@ async function buildPair(conditions: Partial<typeof BLE_LIKE_CONDITIONS>): Promi
   await clock.advanceAsync(300);
   const linkA = await pending;
   await a.startAsInitiator(linkA);
-  await clock.advanceAsync(3000);
+  // Long enough for the handshake to retransmit its way through a lossy link.
+  for (let waited = 0; waited < 20_000 && !a.isSecure; waited += 500) {
+    await clock.advanceAsync(500);
+  }
 
   return { clock, network, a, b, linkA, transportA, transportB };
 }

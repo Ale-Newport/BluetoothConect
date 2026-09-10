@@ -83,6 +83,10 @@ export interface ConversationBinding {
   readonly conversationId: string | null;
   readonly connection: ConnectionState;
   readonly isConnected: boolean;
+  /** They are advertising right now, so connecting is something we can offer. */
+  readonly nearby: boolean;
+  /** The key the connect sheet needs, which is not always the peer id. */
+  readonly liveKey: string;
   readonly peerTyping: boolean;
   readonly page: ConversationPage;
   readonly loadMore: () => void;
@@ -131,6 +135,11 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
   const displayName = live?.displayName ?? stored?.displayName ?? fallbackName;
   const avatarEmoji = live?.avatarEmoji ?? stored?.avatarEmoji ?? null;
 
+  // Resolved during render rather than in an effect so the first paint already
+  // has the messages: a two-pass render would flash an empty conversation at
+  // someone who has hundreds of them. It is safe to do here because it is
+  // idempotent - the row is looked up first and only created when a
+  // conversation with this person genuinely does not exist yet.
   const conversationId = useMemo(
     () => {
       void version;
@@ -214,6 +223,8 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
     conversationId,
     connection,
     isConnected: connection === ConnectionState.CONNECTED,
+    nearby: live?.nearby ?? false,
+    liveKey: live?.key ?? peerKey,
     peerTyping: centre?.isPeerTyping(peerId) ?? false,
     page,
     loadMore,

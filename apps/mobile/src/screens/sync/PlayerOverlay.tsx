@@ -214,10 +214,10 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
               <PlayerText variant="caption" tone="secondary">
                 {formatClock(positionMs)}
               </PlayerText>
+              <View style={{ flex: 1 }} />
               <PlayerText variant="caption" tone="tertiary">
                 {formatClock(durationMs)}
               </PlayerText>
-              <View style={{ flex: 1 }} />
               <GlyphButton
                 glyph={formatSpeed(speed)}
                 glyphVariant="footnote"

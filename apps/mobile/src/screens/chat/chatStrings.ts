@@ -65,6 +65,9 @@ export const chatCopy = {
   /** The header, and what the two of you are doing right now. */
   backLabel: 'Back',
   typingBy: (name: string): string => `${name} is typing`,
+  /** They are in range but there is no session yet. An offer, not a warning. */
+  nearbyNow: (name: string): string => `${name} is nearby`,
+  connectTo: (name: string): string => `Connect to ${name}`,
 
   /** Someone is here but has never been messaged. */
   sayHello: 'Say hello',

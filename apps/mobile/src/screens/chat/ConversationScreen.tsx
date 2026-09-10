@@ -3,6 +3,7 @@ import {
   Animated,
   Clipboard,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -20,6 +21,7 @@ import {
   Button,
   EmptyState,
   Label,
+  StatusBanner,
   StatusDot,
   haptic,
   useTheme,
@@ -74,6 +76,8 @@ export function ConversationScreen(): React.JSX.Element {
     avatarEmoji,
     connection,
     isConnected,
+    nearby,
+    liveKey,
     peerTyping,
     page,
     loadMore,
@@ -90,6 +94,7 @@ export function ConversationScreen(): React.JSX.Element {
   const [actionTarget, setActionTarget] = useState<Message | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const listRef = useRef<FlatList<BubbleRow>>(null);
+  const keyboardUp = useKeyboardVisible();
 
   // The header lives inside the screen, so the navigator's one is turned off.
   useLayoutEffect(() => {
@@ -180,6 +185,26 @@ export function ConversationScreen(): React.JSX.Element {
         // so the keyboard's overlap needs no correction for it.
         keyboardVerticalOffset={0}
       >
+        {/* Nearby but not connected is worth an offer, not a warning: they are
+            right there, and the alternative is walking back to Home. Being out
+            of range entirely gets no banner at all - the header already says
+            so, and there would be nothing to tap. */}
+        {peerId !== null && !isConnected && nearby ? (
+          <View style={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.sm }}>
+            <StatusBanner
+              tone="disconnected"
+              title={chatCopy.nearbyNow(displayName)}
+              action={
+                <BannerAction
+                  title={strings.home.connect}
+                  accessibilityLabel={chatCopy.connectTo(displayName)}
+                  onPress={() => navigation.navigate('Connect', { peerKey: liveKey })}
+                />
+              }
+            />
+          </View>
+        ) : null}
+
         {peerId === null ? (
           <View style={{ flex: 1, justifyContent: 'center' }}>
             <EmptyState
@@ -244,7 +269,11 @@ export function ConversationScreen(): React.JSX.Element {
         ) : null}
 
         {peerId !== null ? (
-          <View style={{ paddingBottom: insets.bottom }}>
+          // The home indicator needs clearing when the keyboard is down and
+          // must NOT be cleared when it is up: `KeyboardAvoidingView` already
+          // pads by the keyboard's full height, and adding the inset on top of
+          // that leaves a strip of surface floating above the keys.
+          <View style={{ paddingBottom: keyboardUp ? 0 : insets.bottom }}>
             <Composer
               value={draft}
               onChangeText={onChangeDraft}
@@ -279,6 +308,64 @@ export function ConversationScreen(): React.JSX.Element {
       />
     </View>
   );
+}
+
+/**
+ * A text action inside the banner.
+ *
+ * `Button` is the right weight for a decision at the foot of a screen and far
+ * too heavy for a line under a header.
+ */
+function BannerAction({
+  title,
+  accessibilityLabel,
+  onPress,
+}: {
+  title: string;
+  accessibilityLabel: string;
+  onPress: () => void;
+}): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      onPress={() => {
+        haptic('selection');
+        onPress();
+      }}
+      hitSlop={theme.spacing.md}
+      style={({ pressed }) => [
+        { minHeight: BACK_TARGET, justifyContent: 'center', paddingHorizontal: theme.spacing.xs },
+        pressed ? { opacity: 0.6 } : null,
+      ]}
+    >
+      <Label variant="footnote" tone="accent">
+        {title}
+      </Label>
+    </Pressable>
+  );
+}
+
+/**
+ * Whether the keyboard is on screen.
+ *
+ * iOS gets the "will" events so the composer moves with the keyboard rather
+ * than after it; Android only fires the "did" pair.
+ */
+function useKeyboardVisible(): boolean {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvent, () => setVisible(true));
+    const hide = Keyboard.addListener(hideEvent, () => setVisible(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+  return visible;
 }
 
 /**

@@ -78,6 +78,13 @@ export const local = {
     cameraBody: `${brand.name} uses the camera only to read a friend's code. Nothing is recorded and nothing leaves this device.`,
     noCameraTitle: 'No camera',
     noCameraBody: 'This device has no camera to scan with. You can still connect to someone nearby and compare six digits.',
+    /**
+     * Not a failure and not a "coming soon": a plain statement of what this
+     * phone can do today, with both working routes offered rather than a dead
+     * end. See the note in ScannerCamera for why this case exists.
+     */
+    noScannerHereTitle: 'Scanning is not available on this phone yet',
+    noScannerHereBody: `You can still be added the same way. Show your own code for your friend to scan, or connect to them nearby and compare six digits - both are just as secure.`,
     cameraFailedTitle: `Camera didn't start`,
     cameraFailedBody: 'Close this screen and open it again. If it keeps happening, connect to your friend nearby and compare six digits instead.',
     starting: 'Starting the camera…',

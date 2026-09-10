@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View } from 'react-native';
+import { AccessibilityInfo, View } from 'react-native';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ConnectionState } from '@airlink/core';
@@ -9,6 +9,7 @@ import { selectPeer, selectPendingPairings, useAppStore, type PeerView } from '.
 import type { RootStackParams } from '../../navigation/routes.js';
 import { PulsingDot } from './controls.js';
 import { useOptionalClient } from './useOptionalClient.js';
+import { isPairingAnswered } from './pairingRouting.js';
 import { homeCopy, statusLine } from './peerPresentation.js';
 
 /**
@@ -123,6 +124,25 @@ export function ConnectSheet(): React.JSX.Element {
   }, [stage, navigation]);
 
   /**
+   * Say the connection out loud.
+   *
+   * `accessibilityLiveRegion` is Android-only, so on iOS the status block
+   * changes in silence: a VoiceOver user presses Connect and is told nothing
+   * for twenty seconds. Only on a move, and never for the state the sheet
+   * opened on, which they have just read.
+   */
+  const spoken = useRef<Stage>('idle');
+  useEffect(() => {
+    if (stage === spoken.current) return;
+    spoken.current = stage;
+    if (!view) return;
+    const status = describe(stage, view);
+    AccessibilityInfo.announceForAccessibility(
+      status.detail ? `${status.title}. ${status.detail}` : status.title,
+    );
+  }, [stage, view]);
+
+  /**
    * A first meeting interrupts everything.
    *
    * `replace` rather than `navigate`: the sheet has nothing left to say once the
@@ -130,19 +150,34 @@ export function ConnectSheet(): React.JSX.Element {
    * dismiss the most security-critical screen in the app and then dismiss a
    * stale sheet behind it.
    */
-  const pairing = pendingPairings.find((p) => p.peerKey === peerKey);
+  // Not one the user has already answered: a confirmed pairing stays pending
+  // until the other phone answers too, and re-opening the ceremony over it
+  // would ask a question that can no longer be answered.
+  const pairing = pendingPairings.find((p) => p.peerKey === peerKey && !isPairingAnswered(p.peerKey));
   useEffect(() => {
     if (!pairing) return;
     navigation.replace('PairingConfirm', { peerKey });
   }, [pairing, navigation, peerKey]);
 
+  /**
+   * Which attempt is on screen.
+   *
+   * `connect()` cannot be called off once it is in flight, so a retry can be
+   * running while an earlier attempt is still on its way to a rejection. Only
+   * the current one is allowed to move the sheet; otherwise a stale failure
+   * would drop a live attempt onto "Couldn't connect".
+   */
+  const attempt = useRef(0);
+
   const beginConnect = useCallback(() => {
     if (!client) return;
+    const mine = ++attempt.current;
     setStage('connecting');
     void (async () => {
       try {
         await client.connect(peerKey);
       } catch {
+        if (attempt.current !== mine) return;
         // Deliberately not the thrown message: it comes from a transport and
         // can carry wording written for a log file. One plain sentence and a
         // retry is all the user can act on anyway.

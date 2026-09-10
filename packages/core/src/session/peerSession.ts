@@ -34,7 +34,7 @@ import {
 } from '../protocol/frame.js';
 import { decodeCbor, encodeCbor, type CborValue } from '../protocol/cbor.js';
 import type { PeerCapabilities } from '../protocol/capabilities.js';
-import { Handshake, HandshakeError, HandshakeRole, type HandshakeConfig, type HandshakeResult } from '../crypto/handshake.js';
+import { Handshake, HandshakeError, HandshakeMessage, HandshakePhase, HandshakeRole, type HandshakeConfig, type HandshakeResult } from '../crypto/handshake.js';
 import { SecureSession } from '../crypto/session.js';
 import { deriveSasCode } from '../crypto/sas.js';
 import { DecodeError } from '../util/varint.js';
@@ -125,6 +125,22 @@ export class PeerSession {
   private readonly reassembler = new FragmentReassembler(FRAGMENT_REASSEMBLY_SLOTS, 30_000);
 
   private keepaliveTimer: TimerHandle | undefined;
+  /**
+   * The last handshake message we put on the wire, kept so it can be resent.
+   *
+   * Handshake frames deliberately do NOT go through the reliability layer -
+   * there is no session yet, so there is nothing to sequence them against. On a
+   * clean link that is fine. On a real Bluetooth link with 15% loss, a
+   * four-message handshake completes barely a quarter of the time, and the user
+   * sees "Couldn't connect" three tries out of four for no reason they can act
+   * on. So this layer retransmits, DTLS-style: resend the last message on a
+   * timer, and resend it again if the peer replays something we have already
+   * processed - which is exactly what a peer does when ITS message was the one
+   * that got lost.
+   */
+  private handshakeOutbox: Uint8Array[] = [];
+  private handshakeRetryTimer: TimerHandle | undefined;
+  private handshakeAttempts = 0;
   private livenessTimer: TimerHandle | undefined;
   private lastInboundAt = 0;
   private nextFragmentPacketId = 1;
@@ -400,6 +416,7 @@ export class PeerSession {
       }
     }
     this.stopKeepalive();
+    this.clearHandshakeRetry();
     this.reliable.dispose();
     this.bulk.dispose();
     this.clockSync.dispose();
@@ -507,8 +524,54 @@ export class PeerSession {
   private async sendHandshake(body: Uint8Array): Promise<void> {
     const link = this.link;
     if (!link) throw new Error('sendHandshake: no link attached');
+    // Everything sent so far in this handshake is retained, not just the last
+    // message. The responder sends TWO (its RESPONSE and its AUTH), and if the
+    // initiator lost the first it will keep replaying its INIT; resending only
+    // the AUTH would leave both sides replaying past each other for ever.
+    this.handshakeOutbox.push(body);
+    this.handshakeAttempts = 0;
     const frame = encodeHandshakeFrame(body);
     await this.writeFrame(link, frame, SendMode.RELIABLE);
+    this.armHandshakeRetry();
+  }
+
+  /**
+   * Resend every handshake message sent so far, in order.
+   *
+   * Safe because each step is idempotent: a peer that has already processed one
+   * of them is in a later phase and will simply replay its own answer, which is
+   * precisely the behaviour that recovers the exchange.
+   */
+  private resendHandshake(): void {
+    const link = this.link;
+    if (this.handshakeOutbox.length === 0 || !link || link.state !== LinkState.CONNECTED) return;
+    for (const body of this.handshakeOutbox) {
+      void this.writeFrame(link, encodeHandshakeFrame(body), SendMode.RELIABLE).catch(() => undefined);
+    }
+  }
+
+  private armHandshakeRetry(): void {
+    this.clearHandshakeRetry();
+    if (this.handshakeOutbox.length === 0) return;
+    // Backs off, and gives up well inside the state machine's own
+    // AUTHENTICATING timeout so the failure is reported once, in one place.
+    const delay = Math.min(3000, TIMING.initialRetransmitMs * 2 ** this.handshakeAttempts);
+    this.handshakeRetryTimer = this.options.clock.setTimeout(() => {
+      this.handshakeRetryTimer = undefined;
+      if (this.secure || this.closed) return;
+      if (this.handshakeAttempts >= 6) return;
+      this.handshakeAttempts += 1;
+      this.log.debug('resending handshake message', { attempt: this.handshakeAttempts });
+      this.resendHandshake();
+      this.armHandshakeRetry();
+    }, delay);
+  }
+
+  private clearHandshakeRetry(): void {
+    if (this.handshakeRetryTimer !== undefined) {
+      this.options.clock.clearTimeout(this.handshakeRetryTimer);
+      this.handshakeRetryTimer = undefined;
+    }
   }
 
   private transmitReliable(
@@ -644,41 +707,74 @@ export class PeerSession {
   private handleHandshakeFrame(bodyBytes: Uint8Array): void {
     const hs = this.handshake;
     if (!hs) {
-      this.log.debug('handshake frame with no handshake in progress');
+      // Already authenticated. The peer is replaying because our final message
+      // was lost; there is nothing left to send, and their retry will stop when
+      // our application traffic reaches them.
+      this.log.debug('handshake frame after the handshake completed');
       return;
     }
+    if (bodyBytes.length === 0) return;
+
+    // Dispatch on the message TYPE, not on our own phase.
+    //
+    // Retransmission means a message we have ALREADY processed can arrive
+    // again, and feeding a replayed RESPONSE into the step that expects an
+    // AUTH is a fatal protocol error - which is exactly what used to happen,
+    // turning a single lost packet into a failed connection. A message that
+    // does not match the step we are on means our answer to it never arrived,
+    // so the right response is to send that answer again.
+    const type = bodyBytes[0] as number;
+
+    if (type === HandshakeMessage.REJECT) {
+      // Let the handshake produce its own error, with the peer's reason.
+      this.dispatchHandshake(hs, bodyBytes, type);
+      return;
+    }
+
+    const expected = this.expectedHandshakeMessage(hs);
+    if (expected === null) return;
+    if (type !== expected) {
+      this.log.debug('replaying handshake message', { got: type, expected });
+      this.resendHandshake();
+      return;
+    }
+    this.dispatchHandshake(hs, bodyBytes, type);
+  }
+
+  /** Which handshake message this side is waiting for, given its role and phase. */
+  private expectedHandshakeMessage(hs: Handshake): number | null {
     if (hs.role === HandshakeRole.RESPONDER) {
-      switch (hs.currentPhase) {
-        case 'idle': {
-          const response = hs.readInitAndCreateResponse(bodyBytes);
-          void this.sendHandshake(response).then(() => this.sendHandshake(hs.createResponderAuth()));
-          return;
-        }
-        case 'sentAuth': {
-          this.completeHandshake(hs.readInitiatorAuth(bodyBytes));
-          return;
-        }
-        default:
-          this.log.debug('unexpected handshake frame', { phase: hs.currentPhase });
-          return;
-      }
+      if (hs.currentPhase === HandshakePhase.IDLE) return HandshakeMessage.INIT;
+      if (hs.currentPhase === HandshakePhase.SENT_AUTH) return HandshakeMessage.AUTH_INITIATOR;
+      return null;
     }
-    switch (hs.currentPhase) {
-      case 'sentInit':
-        hs.readResponse(bodyBytes);
-        return;
-      case 'sentResponse': {
-        const { message, result } = hs.readResponderAuthAndCreateAuth(bodyBytes);
-        void this.sendHandshake(message);
-        this.completeHandshake(result);
+    if (hs.currentPhase === HandshakePhase.SENT_INIT) return HandshakeMessage.RESPONSE;
+    if (hs.currentPhase === HandshakePhase.SENT_RESPONSE) return HandshakeMessage.AUTH_RESPONDER;
+    return null;
+  }
+
+  private dispatchHandshake(hs: Handshake, bodyBytes: Uint8Array, type: number): void {
+    if (hs.role === HandshakeRole.RESPONDER) {
+      if (type === HandshakeMessage.INIT) {
+        const response = hs.readInitAndCreateResponse(bodyBytes);
+        void this.sendHandshake(response).then(() => this.sendHandshake(hs.createResponderAuth()));
         return;
       }
-      default:
-        this.log.debug('unexpected handshake frame', { phase: hs.currentPhase });
+      this.completeHandshake(hs.readInitiatorAuth(bodyBytes));
+      return;
     }
+    if (type === HandshakeMessage.RESPONSE) {
+      hs.readResponse(bodyBytes);
+      return;
+    }
+    const { message, result } = hs.readResponderAuthAndCreateAuth(bodyBytes);
+    void this.sendHandshake(message);
+    this.completeHandshake(result);
   }
 
   private completeHandshake(result: HandshakeResult): void {
+    this.clearHandshakeRetry();
+    this.handshakeOutbox = [];
     this.result = result;
     this.secure = new SecureSession(result.keys);
     this.handshake = null;

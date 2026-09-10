@@ -26,7 +26,7 @@ import { useClient } from '../../client/ClientProvider.js';
 import { selectProfile, useAppStore } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
 import { local } from './localStrings.js';
-import { ScannerCamera } from './ScannerCamera.js';
+import { SCANNING_IS_SUPPORTED, ScannerCamera } from './ScannerCamera.js';
 
 /**
  * Scan a friend.
@@ -40,11 +40,13 @@ import { ScannerCamera } from './ScannerCamera.js';
  * unreadable or simply not ours is a mishap, and a code whose signature does not
  * verify is not - the second is the only one that says "do not add this device".
  *
- * The decoding itself is deliberately not a native detector; see
- * `docs/adr-001-qr-scanning.md` and the note in `ScannerCamera`. The one thing
- * it changes here is timing: a code is found within a few hundred milliseconds
- * rather than instantly, which is why the screen says "Looking for a code…"
- * rather than sitting silent.
+ * PLATFORM LIMIT, stated here because it changes what this screen can offer.
+ * Reading a code needs a decoder, and the only one in this app is Vision
+ * Camera's own object output, which is implemented on iOS alone - see the note
+ * in `ScannerCamera` and `docs/adr-001-qr-scanning.md`. So where scanning does
+ * not exist this screen does not pretend: it says so and offers the two routes
+ * that genuinely work, which are just as secure. A viewfinder that could never
+ * fire would be worse than an honest sentence.
  */
 
 /**
@@ -143,9 +145,13 @@ export function ScanCodeScreen(): React.JSX.Element {
 
       const result = recordScannedFriend(client.trustStore, code, Date.now());
       if (!result.ok) {
-        // The one reason `recordScannedFriend` refuses is a blocked peer, and
-        // that is a decision the user made and can undo.
-        return { kind: 'rejected', title: local.scan.blockedTitle, body: local.scan.blockedBody, peerId: null };
+        // Today the only refusal is a blocked peer - a decision the user made
+        // and can undo - but the reason is checked rather than assumed, so a new
+        // refusal added upstream cannot quietly show the wrong sentence.
+        if (client.trustStore.isBlocked(code.peerId) || before?.blocked === true) {
+          return { kind: 'rejected', title: local.scan.blockedTitle, body: local.scan.blockedBody, peerId: null };
+        }
+        return { kind: 'rejected', title: local.scan.saveFailed, body: local.scan.saveFailedBody, peerId: null };
       }
 
       if (before && !before.blocked) {
@@ -202,6 +208,26 @@ export function ScanCodeScreen(): React.JSX.Element {
   }, []);
 
   // --- everything that stops us reaching a viewfinder -----------------------
+
+  // Checked before the permission prompt, and before `ScannerCamera` is allowed
+  // anywhere near the tree: its `useObjectOutput` throws on a platform with no
+  // implementation, and a hook cannot be called conditionally.
+  if (!SCANNING_IS_SUPPORTED) {
+    return (
+      <Screen scroll>
+        <Gap size="xl" />
+        <Label variant="title2">{local.scan.noScannerHereTitle}</Label>
+        <Gap size="sm" />
+        <Label variant="body" tone="secondary">
+          {local.scan.noScannerHereBody}
+        </Label>
+        <Gap size="xl" />
+        <Button title={strings.profile.showQr} onPress={() => navigation.replace('MyCode')} />
+        <Gap size="sm" />
+        <Button title={strings.common.close} variant="ghost" onPress={() => navigation.goBack()} />
+      </Screen>
+    );
+  }
 
   if (!hasPermission) {
     if (canRequestPermission) {

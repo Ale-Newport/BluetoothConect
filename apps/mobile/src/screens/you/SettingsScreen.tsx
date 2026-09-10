@@ -216,11 +216,18 @@ export function SettingsScreen(): React.JSX.Element {
       </Card>
 
       <Gap size="lg" />
+      {/*
+        Once a save lands the button becomes its own confirmation. Saying
+        "Saved" and "Nothing to save yet" at the same time would be two answers
+        to one question, so the reason is dropped in that state.
+      */}
       <Button
         title={saved && !dirty ? local.settings.nameSaved : strings.common.save}
         onPress={saveProfile}
         disabled={!dirty || !nameUsable}
-        disabledReason={!nameUsable ? local.settings.nameEmpty : !dirty ? local.settings.nameUnchanged : undefined}
+        disabledReason={
+          !nameUsable ? local.settings.nameEmpty : !dirty && !saved ? local.settings.nameUnchanged : undefined
+        }
       />
 
       <Gap size="xl" />
