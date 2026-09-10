@@ -204,3 +204,18 @@ Before shipping: generate an upload keystore, set `applicationId` (currently
 placeholder icons, and check the permission list against what the Play Console
 prompts for — `NEARBY_WIFI_DEVICES` and `BLUETOOTH_SCAN` both require a
 declaration of why they are used.
+
+---
+
+## 9. Release checklist
+
+- [ ] `applicationId` and `namespace` are `com.airlink.app`, from
+      [`packages/config/src/brand.ts`](../packages/config/src/brand.ts)
+- [ ] Real launcher artwork — `assets/icon-source.svg` then `scripts/make-icons.sh`
+- [ ] An upload keystore, and `signingConfigs.release` pointing at it
+- [ ] `versionCode` bumped; `versionName` matches `apps/mobile/package.json`
+- [ ] `./gradlew assembleRelease` succeeds and the APK installs
+- [ ] Play Console declarations for `BLUETOOTH_SCAN` and `NEARBY_WIFI_DEVICES`,
+      including the `neverForLocation` justification
+- [ ] Data safety form: no data collected, no data shared — which is true, and
+      is the whole point

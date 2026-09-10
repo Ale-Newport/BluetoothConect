@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!--
+    PLACEHOLDER app icon.
+
+    Two nodes and the arc between them: the product in one mark, with no
+    Bluetooth glyph, because Bluetooth is an implementation detail rather than
+    the idea. Deliberately simple so it is obviously a placeholder and reads at
+    40 px while it is one.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0A6CFF"/>
+      <stop offset="100%" stop-color="#0B4FCC"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <g stroke="#FFFFFF" fill="none" stroke-linecap="round">
+    <path d="M 312 600 Q 512 380 712 600" stroke-width="46" opacity="0.95"/>
+    <path d="M 372 668 Q 512 520 652 668" stroke-width="34" opacity="0.55"/>
+  </g>
+  <circle cx="312" cy="600" r="62" fill="#FFFFFF"/>
+  <circle cx="712" cy="600" r="62" fill="#FFFFFF"/>
+</svg>

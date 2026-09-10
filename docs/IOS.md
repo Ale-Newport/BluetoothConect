@@ -184,3 +184,18 @@ The simulator has no Bluetooth radio, so discovery and connection can only be
 tested on hardware. Everything above the transport — protocol, crypto,
 reliability, games, file transfer, sync — is covered by the mock transport and
 runs in Node. See [TESTING.md](TESTING.md).
+
+---
+
+## 8. Release checklist
+
+- [ ] `PRODUCT_BUNDLE_IDENTIFIER` is `com.airlink.app`, from
+      [`packages/config/src/brand.ts`](../packages/config/src/brand.ts)
+- [ ] Real app icon — `assets/icon-source.svg` then `scripts/make-icons.sh`
+- [ ] `MARKETING_VERSION` matches `apps/mobile/package.json`; `CURRENT_PROJECT_VERSION` bumped
+- [ ] Every usage-description string reads as an explanation, not a demand
+- [ ] `NSBonjourServices` lists the exact service type the app registers
+- [ ] Release configuration builds and archives
+- [ ] App Privacy: no data collected, no tracking — which is true
+- [ ] Tested on two physical devices in airplane mode, per
+      [TESTING.md](TESTING.md) §5
