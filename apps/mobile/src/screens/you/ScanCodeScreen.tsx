@@ -283,7 +283,7 @@ export function ScanCodeScreen(): React.JSX.Element {
     return (
       <Screen>
         <EmptyState
-          icon="🎥"
+          icon="camera"
           title={strings.permissions.deniedTitle}
           body={`${local.scan.cameraBody} ${strings.permissions.deniedBody}`}
           action={
@@ -298,7 +298,7 @@ export function ScanCodeScreen(): React.JSX.Element {
     return (
       <Screen>
         <EmptyState
-          icon="🎥"
+          icon="camera"
           title={local.scan.cameraFailedTitle}
           body={local.scan.cameraFailedBody}
           action={<Button title={strings.common.close} onPress={() => navigation.goBack()} />}
@@ -311,14 +311,14 @@ export function ScanCodeScreen(): React.JSX.Element {
     if (!deviceTimedOut) {
       return (
         <Screen>
-          <EmptyState icon="🎥" title={local.scan.starting} />
+          <EmptyState icon="camera" title={local.scan.starting} />
         </Screen>
       );
     }
     return (
       <Screen>
         <EmptyState
-          icon="🎥"
+          icon="camera"
           title={local.scan.noCameraTitle}
           body={local.scan.noCameraBody}
           action={<Button title={strings.common.close} onPress={() => navigation.goBack()} />}

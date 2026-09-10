@@ -4,7 +4,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { systemRandom, toHex } from '@airlink/core';
 import { strings } from '@airlink/config';
-import { Avatar, Card, Divider, Gap, Label, Row, StatusDot, haptic, useTheme } from '../../ui/index.js';
+import { Avatar, Card, Divider, Gap, Icon, Label, Row, StatusDot, haptic, useTheme, type IconName } from '../../ui/index.js';
 import type { PeerView } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
 import { useOptionalClient } from './useOptionalClient.js';
@@ -33,8 +33,8 @@ const STATUS_DOT_SIZE = 6;
 
 interface ActionSpec {
   readonly key: string;
-  /** Matches the placeholder glyph language of the tab bar. */
-  readonly glyph: string;
+  /** From the app's drawn icon set - the same marks the tab bar uses. */
+  readonly icon: IconName;
   readonly title: string;
   readonly enabled: boolean;
   /** Shown under the row when the action is unavailable. Plain words only. */
@@ -73,7 +73,7 @@ export function ConnectedPeerCard({ peer }: { peer: PeerView }): React.JSX.Eleme
   const actions: ActionSpec[] = [
     {
       key: 'chat',
-      glyph: '✉',
+      icon: 'chat',
       title: strings.home.chat,
       enabled: has('chat'),
       // Never "Not connected": this card only exists because we are.
@@ -82,7 +82,7 @@ export function ConnectedPeerCard({ peer }: { peer: PeerView }): React.JSX.Eleme
     },
     {
       key: 'play',
-      glyph: '◆',
+      icon: 'play',
       title: strings.home.play,
       // The peer sends the games it actually has, so an invite can never arrive
       // for something the other side cannot open.
@@ -92,7 +92,7 @@ export function ConnectedPeerCard({ peer }: { peer: PeerView }): React.JSX.Eleme
     },
     {
       key: 'share',
-      glyph: '↑',
+      icon: 'share',
       title: strings.home.share,
       enabled: has('files'),
       reason: unknown ? pendingReason : homeCopy.noFiles(peer.displayName),
@@ -100,7 +100,7 @@ export function ConnectedPeerCard({ peer }: { peer: PeerView }): React.JSX.Eleme
     },
     {
       key: 'sync',
-      glyph: '▶',
+      icon: 'start',
       title: strings.home.sync,
       enabled: has('sync'),
       reason: unknown ? pendingReason : homeCopy.noWatchTogether(peer.displayName),
@@ -117,7 +117,7 @@ export function ConnectedPeerCard({ peer }: { peer: PeerView }): React.JSX.Eleme
   return (
     <Card>
       <Row gap="md">
-        <Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={AVATAR_SIZE} />
+        <Avatar name={peer.displayName} peerId={peer.peerId} color={peer.avatarColor} size={AVATAR_SIZE} />
         <View style={{ flex: 1 }}>
           <Label variant="headline" numberOfLines={1}>
             {peer.displayName}
@@ -182,9 +182,11 @@ function ActionTile({ action }: { action: ActionSpec }): React.JSX.Element {
         pressed ? { opacity: 0.7 } : null,
       ]}
     >
-      <Label variant="callout" tone={action.enabled ? 'accent' : 'tertiary'}>
-        {action.glyph}
-      </Label>
+      <Icon
+        name={action.icon}
+        size={22}
+        color={action.enabled ? theme.colors.accent : theme.colors.textTertiary}
+      />
       <Label variant="caption" tone={action.enabled ? 'primary' : 'tertiary'}>
         {action.title}
       </Label>

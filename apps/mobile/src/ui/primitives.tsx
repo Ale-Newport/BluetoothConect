@@ -11,6 +11,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Icon, type IconName } from './Icon.js';
 import { avatarColorFor, initialsFor } from '@airlink/config';
 import { useTheme } from './theme.js';
 import { haptic } from './haptics.js';
@@ -279,32 +280,36 @@ export function Button({
 export function Avatar({
   name,
   peerId,
-  emoji,
+  color,
   size = 44,
 }: {
   name: string;
   peerId?: string | null;
-  emoji?: string | null;
+  /** A chosen colour. Null or absent means derive one, which is the default. */
+  color?: string | null;
   size?: number;
 }): React.JSX.Element {
-  const theme = useTheme();
-  // Derived from the peer id so a friend's colour never changes, and so two
-  // people with the same name still look different.
-  const background = avatarColorFor(peerId ?? name);
+  // Initials on a colour, and nothing else. An avatar built out of an emoji is
+  // only as reliable as the font behind it, and a glyph the font does not have
+  // draws as an empty box with no way to detect it at runtime - so the identity
+  // people see is drawn entirely from type the app is already rendering.
+  //
+  // Without a choice the colour is derived from the peer id, so a friend's
+  // colour never changes and two people with the same name still look
+  // different.
+  const background = color ?? avatarColorFor(peerId ?? name);
   return (
     <View
       style={{
         width: size,
         height: size,
         borderRadius: size / 2,
-        backgroundColor: emoji ? theme.colors.surfaceElevated : background,
+        backgroundColor: background,
         alignItems: 'center',
         justifyContent: 'center',
       }}
     >
-      <Text style={{ fontSize: size * (emoji ? 0.5 : 0.38), fontWeight: '600', color: '#FFFFFF' }}>
-        {emoji ?? initialsFor(name)}
-      </Text>
+      <Text style={{ fontSize: size * 0.38, fontWeight: '600', color: '#FFFFFF' }}>{initialsFor(name)}</Text>
     </View>
   );
 }
@@ -387,7 +392,12 @@ export function EmptyState({
   body,
   action,
 }: {
-  icon: string;
+  /**
+   * A name from the drawn icon set, not a character. An empty state whose icon
+   * is a missing-glyph box is worse than one with no icon at all, and that is
+   * what every text icon in this app turned out to be - see ui/Icon.tsx.
+   */
+  icon: IconName;
   title: string;
   body?: string;
   action?: React.ReactNode;
@@ -395,7 +405,15 @@ export function EmptyState({
   const theme = useTheme();
   return (
     <View style={{ alignItems: 'center', paddingVertical: theme.spacing.xxxl, paddingHorizontal: theme.spacing.xl }}>
-      <Text style={{ fontSize: 44, marginBottom: theme.spacing.lg }}>{icon}</Text>
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={{ marginBottom: theme.spacing.lg }}
+      >
+        {/* Decorative: the title below says the same thing in words, so
+            announcing the icon as well would say it twice. */}
+        <Icon name={icon} size={44} color={theme.colors.textSecondary} />
+      </View>
       <Label variant="headline" align="center">
         {title}
       </Label>

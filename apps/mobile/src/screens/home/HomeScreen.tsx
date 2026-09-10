@@ -223,7 +223,7 @@ export function HomeScreen(): React.JSX.Element {
         <View>
           {searchHintVisible ? (
             <EmptyState
-              icon="◎"
+              icon="radar"
               title={strings.home.nobodyNearby}
               body={strings.home.nobodyNearbyBody}
               action={
@@ -329,7 +329,7 @@ function PeerRow({ peer, onOpen }: { peer: PeerView; onOpen: (peer: PeerView) =>
     <ListRow
       title={peer.displayName}
       subtitle={statusLine(peer)}
-      left={<Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={AVATAR_SIZE} />}
+      left={<Avatar name={peer.displayName} peerId={peer.peerId} color={peer.avatarColor} size={AVATAR_SIZE} />}
       right={right}
     />
   );

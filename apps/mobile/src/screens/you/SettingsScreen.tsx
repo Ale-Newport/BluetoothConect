@@ -19,7 +19,7 @@ import type { AirLinkClient } from '../../client/AirLinkClient.js';
 import { useClient } from '../../client/ClientProvider.js';
 import { selectDeveloperMode, selectProfile, useAppStore } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
-import { AVATAR_EMOJI } from '../onboarding/avatars.js';
+import { AVATAR_COLORS, colorName } from '../onboarding/avatars.js';
 import { MAX_NAME_LENGTH, isUsableName, normaliseName } from '../onboarding/name.js';
 import { local } from './localStrings.js';
 import { Chevron, Group, NavRow, Sheet, TextField, asString, formatWhen } from './shared.js';
@@ -33,7 +33,7 @@ import { Chevron, Group, NavRow, Sheet, TextField, asString, formatWhen } from '
  * what this thing actually is.
  *
  * The name and the avatar are reused from onboarding rather than redefined -
- * the same emoji set and the same normalisation rules, so a name that was
+ * the same palette and the same normalisation rules, so a name that was
  * acceptable on the first run is acceptable on the hundredth.
  */
 
@@ -54,11 +54,11 @@ export function SettingsScreen(): React.JSX.Element {
   const developerMode = useAppStore(selectDeveloperMode);
 
   const storedName = profile?.displayName ?? client.profile?.displayName ?? '';
-  const storedEmoji = profile?.avatarEmoji ?? client.profile?.avatarEmoji ?? null;
+  const storedColor = profile?.avatarColor ?? client.profile?.avatarColor ?? null;
   const peerId = profile?.peerId ?? client.profile?.peerId ?? null;
 
   const [draftName, setDraftName] = useState(storedName);
-  const [draftEmoji, setDraftEmoji] = useState<string | null>(storedEmoji);
+  const [draftColor, setDraftColor] = useState<string | null>(storedColor);
   const [saved, setSaved] = useState(false);
   const [conversations, setConversations] = useState<readonly ClearableConversation[]>([]);
   const [picking, setPicking] = useState(false);
@@ -96,14 +96,14 @@ export function SettingsScreen(): React.JSX.Element {
 
   const normalised = normaliseName(draftName);
   const nameChanged = normalised !== storedName;
-  const emojiChanged = draftEmoji !== storedEmoji;
-  const dirty = nameChanged || emojiChanged;
+  const colorChanged = draftColor !== storedColor;
+  const dirty = nameChanged || colorChanged;
   const nameUsable = isUsableName(draftName);
 
   const saveProfile = useCallback(() => {
     if (!nameUsable || !dirty) return;
     try {
-      client.db.users.updateProfile(normalised, draftEmoji, null, Date.now());
+      client.db.users.updateProfile(normalised, null, draftColor, Date.now());
       // The store is what every other screen reads, and the advertising loop
       // re-reads the users table on its own each cycle - so this one write is
       // enough for a friend nearby to see the new name.
@@ -116,7 +116,7 @@ export function SettingsScreen(): React.JSX.Element {
       // what the user needs to know is that their old name still stands.
       Alert.alert(local.settings.nameSaveFailed, local.settings.nameSaveFailedBody);
     }
-  }, [client, dirty, draftEmoji, nameUsable, normalised]);
+  }, [client, dirty, draftColor, nameUsable, normalised]);
 
   const clearOne = useCallback(
     (conversation: ClearableConversation) => {
@@ -180,7 +180,7 @@ export function SettingsScreen(): React.JSX.Element {
       <SectionHeading>{local.settings.profileSection}</SectionHeading>
       <Card>
         <View style={{ alignItems: 'center' }}>
-          <Avatar name={normalised || storedName} peerId={peerId} emoji={draftEmoji} size={72} />
+          <Avatar name={normalised || storedName} peerId={peerId} color={draftColor} size={72} />
         </View>
         <Gap size="lg" />
         <Label variant="footnote" tone="secondary">
@@ -209,9 +209,10 @@ export function SettingsScreen(): React.JSX.Element {
       <Card>
         <AvatarPicker
           name={normalised || storedName}
-          selected={draftEmoji}
-          onSelect={(emoji) => {
-            setDraftEmoji(emoji);
+          peerId={peerId}
+          selected={draftColor}
+          onSelect={(color) => {
+            setDraftColor(color);
             setSaved(false);
           }}
         />
@@ -304,20 +305,24 @@ export function SettingsScreen(): React.JSX.Element {
 }
 
 /**
- * The same emoji set as onboarding, so the two screens cannot drift.
+ * The same palette as onboarding, so the two screens cannot drift.
  *
- * "Initials" is first because it is the default and the quietest option, and
- * because a coloured monogram is a perfectly good identity - the emoji is a
- * choice, not a requirement.
+ * "Automatic" is first because it is the default and the quietest option: a
+ * monogram on a colour derived from the peer id is already a perfectly good
+ * identity, and picking a colour is a preference rather than a requirement.
+ * Every swatch carries the colour's name as its accessibility label, so the
+ * choice is never colour-only.
  */
 function AvatarPicker({
   name,
+  peerId,
   selected,
   onSelect,
 }: {
   name: string;
+  peerId: string | null;
   selected: string | null;
-  onSelect: (emoji: string | null) => void;
+  onSelect: (color: string | null) => void;
 }): React.JSX.Element {
   const theme = useTheme();
   const tile = 52;
@@ -345,24 +350,24 @@ function AvatarPicker({
         }}
         style={({ pressed }) => [tileStyle(selected === null), pressed ? { opacity: 0.7 } : null]}
       >
-        <Avatar name={name} emoji={null} size={tile - theme.spacing.sm} />
+        <Avatar name={name} peerId={peerId} color={null} size={tile - theme.spacing.sm} />
       </Pressable>
 
-      {AVATAR_EMOJI.map((emoji) => {
-        const isSelected = emoji === selected;
+      {AVATAR_COLORS.map((color) => {
+        const isSelected = color === selected;
         return (
           <Pressable
-            key={emoji}
+            key={color}
             accessibilityRole="button"
-            accessibilityLabel={emoji}
+            accessibilityLabel={colorName(color)}
             accessibilityState={{ selected: isSelected }}
             onPress={() => {
               haptic('selection');
-              onSelect(emoji);
+              onSelect(color);
             }}
             style={({ pressed }) => [tileStyle(isSelected), pressed ? { opacity: 0.7 } : null]}
           >
-            <Label variant="title2">{emoji}</Label>
+            <Avatar name={name} color={color} size={tile - theme.spacing.sm} />
           </Pressable>
         );
       })}

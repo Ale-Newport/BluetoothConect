@@ -132,7 +132,7 @@ export interface ConversationBinding {
   /** Null when this device no longer knows who this is. */
   readonly peerId: string | null;
   readonly displayName: string;
-  readonly avatarEmoji: string | null;
+  readonly avatarColor: string | null;
   readonly conversationId: string | null;
   readonly connection: ConnectionState;
   readonly isConnected: boolean;
@@ -189,7 +189,7 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
   // where the nearby list's copy can be an unauthenticated advertisement - or
   // a placeholder standing in for an advertisement that carried no name at all.
   const displayName = firstNamed(stored?.displayName, live?.displayName, fallbackName);
-  const avatarEmoji = live?.avatarEmoji ?? stored?.avatarEmoji ?? null;
+  const avatarColor = live?.avatarColor ?? stored?.avatarColor ?? null;
 
   // Resolved during render rather than in an effect so the first paint already
   // has the messages: a two-pass render would flash an empty conversation at
@@ -285,7 +285,7 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
     centre,
     peerId,
     displayName,
-    avatarEmoji,
+    avatarColor,
     conversationId,
     connection,
     isConnected: connection === ConnectionState.CONNECTED,

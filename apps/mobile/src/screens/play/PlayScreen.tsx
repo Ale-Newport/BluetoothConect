@@ -214,7 +214,7 @@ export function PlayScreen(): React.JSX.Element {
             onResume={resume}
           />
           <EmptyState
-            icon="🎲"
+            icon="dice"
             title={playText.tabs.nobodyTitle}
             body={playText.tabs.nobodyBody}
             action={
@@ -454,7 +454,7 @@ function PeerSheet({
               <ListRow
                 title={peer.displayName}
                 subtitle={availability.playable ? strings.home.connected : availability.reason ?? undefined}
-                left={<Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={40} />}
+                left={<Avatar name={peer.displayName} peerId={peer.peerId} color={peer.avatarColor} size={40} />}
                 onPress={availability.playable ? () => onPick(peer) : undefined}
               />
             </View>

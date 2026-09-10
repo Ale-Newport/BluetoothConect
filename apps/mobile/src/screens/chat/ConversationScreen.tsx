@@ -74,7 +74,7 @@ export function ConversationScreen(): React.JSX.Element {
     centre,
     peerId,
     displayName,
-    avatarEmoji,
+    avatarColor,
     connection,
     isConnected,
     nearby,
@@ -181,7 +181,7 @@ export function ConversationScreen(): React.JSX.Element {
       <Header
         name={displayName}
         peerId={peerId}
-        avatarEmoji={avatarEmoji}
+        avatarColor={avatarColor}
         statusText={status.text}
         statusTone={status.tone}
         topInset={insets.top}
@@ -223,7 +223,7 @@ export function ConversationScreen(): React.JSX.Element {
           <View style={{ flex: 1, justifyContent: 'center' }}>
             {centre ? (
               <EmptyState
-                icon="✉"
+                icon="chat"
                 title={chatCopy.unknownTitle}
                 body={chatCopy.unknownBody}
                 action={
@@ -238,7 +238,7 @@ export function ConversationScreen(): React.JSX.Element {
           </View>
         ) : rows.length === 0 ? (
           <View style={{ flex: 1, justifyContent: 'center' }}>
-            <EmptyState icon="✉" title={strings.chat.emptyTitle} body={strings.chat.emptyBody} />
+            <EmptyState icon="chat" title={strings.chat.emptyTitle} body={strings.chat.emptyBody} />
           </View>
         ) : (
           <FlatList
@@ -451,7 +451,7 @@ function headerStatus(connection: ConnectionState, isConnected: boolean): { text
 function Header({
   name,
   peerId,
-  avatarEmoji,
+  avatarColor,
   statusText,
   statusTone,
   topInset,
@@ -459,7 +459,7 @@ function Header({
 }: {
   name: string;
   peerId: string | null;
-  avatarEmoji: string | null;
+  avatarColor: string | null;
   statusText: string;
   statusTone: StatusTone;
   topInset: number;
@@ -498,7 +498,7 @@ function Header({
           </Label>
         </Pressable>
 
-        <Avatar name={name} peerId={peerId} emoji={avatarEmoji} size={HEADER_AVATAR} />
+        <Avatar name={name} peerId={peerId} color={avatarColor} size={HEADER_AVATAR} />
 
         <View style={{ flex: 1 }}>
           <Label variant="headline" numberOfLines={1}>

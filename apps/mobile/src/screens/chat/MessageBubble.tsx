@@ -2,7 +2,7 @@ import React, { useCallback, useMemo } from 'react';
 import { Image, Pressable, StyleSheet, View } from 'react-native';
 import { strings } from '@airlink/config';
 import type { Message, MessageStatus, Reaction } from '@airlink/db';
-import { Label, haptic, useTheme } from '../../ui/index.js';
+import { Icon, Label, haptic, useTheme } from '../../ui/index.js';
 import { isOutgoing, isOwnReaction } from './chatCenter.js';
 import { clockTime } from './chatTime.js';
 import { chatCopy } from './chatStrings.js';
@@ -378,9 +378,7 @@ function Attachment({
           opacity: 0.8,
         }}
       >
-        <Label variant="footnote" style={{ color }}>
-          {isImage ? '▣' : '◫'}
-        </Label>
+        <Icon name={isImage ? 'image' : 'document'} size={FILE_ICON_SIZE * 0.62} color={color} />
       </View>
       <View style={{ flex: 1 }}>
         <Label variant="footnote" numberOfLines={1} style={{ color }}>

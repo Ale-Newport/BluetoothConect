@@ -1,5 +1,4 @@
 import {
-  BLE_IDENTITY_CHARACTERISTIC_UUID,
   BLE_RX_CHARACTERISTIC_UUID,
   BLE_SERVICE_UUID,
   BLE_TX_CHARACTERISTIC_UUID,
@@ -142,27 +141,47 @@ export class AirLinkClient {
   }
 
   /**
-   * Create the local profile.
+   * Create the identity if there isn't one, and return its peer id.
+   *
+   * Onboarding needs the peer id before the profile exists, because the
+   * automatic avatar colour is derived from it: without this, the colour shown
+   * under "Auto" would be seeded from the name and would then change the moment
+   * the profile was written, which is a preview that lies.
+   *
+   * Safe to call repeatedly - it reuses the stored identity - and safe to call
+   * early, because it touches the keystore and nothing else. No radio, so no
+   * permission prompt.
+   */
+  async ensureIdentityPeerId(): Promise<string> {
+    if (!this.identity) this.identity = await createAndStoreIdentity(Date.now());
+    return publicIdentityOf(this.identity).peerId;
+  }
+
+  /**
+   * Write the local profile.
    *
    * Reuses the existing identity when there is one. That matters: the identity
    * is what friends recognise, so generating a fresh one here would silently
    * break every pairing the user had.
+   *
+   * `avatarColor` is a hex string from the palette or null for "derive one from
+   * my peer id", which is what everyone who never opens the picker gets.
    */
-  async createProfile(displayName: string, avatarEmoji: string | null): Promise<void> {
+  async createProfile(displayName: string, avatarColor: string | null): Promise<void> {
     const now = Date.now();
     if (!this.identity) this.identity = await createAndStoreIdentity(now);
     const publicIdentity = publicIdentityOf(this.identity);
 
     const existingProfile = this.repositories.users.get();
     if (existingProfile) {
-      this.repositories.users.updateProfile(displayName, avatarEmoji, null, now);
+      this.repositories.users.updateProfile(displayName, null, avatarColor, now);
       return;
     }
     this.repositories.users.create({
       peerId: publicIdentity.peerId,
       displayName,
-      avatarEmoji,
-      avatarColor: null,
+      avatarEmoji: null,
+      avatarColor,
       identityPublic: publicIdentity.identityKey,
       deviceId: this.identity.deviceId,
       createdAt: now,
@@ -170,13 +189,13 @@ export class AirLinkClient {
     });
   }
 
-  get profile(): { peerId: string; displayName: string; avatarEmoji: string | null; deviceId: string } | null {
+  get profile(): { peerId: string; displayName: string; avatarColor: string | null; deviceId: string } | null {
     const user = this.repositories?.users.get();
     if (!user) return null;
     return {
       peerId: user.peerId,
       displayName: user.displayName,
-      avatarEmoji: user.avatarEmoji,
+      avatarColor: user.avatarColor,
       deviceId: user.deviceId,
     };
   }

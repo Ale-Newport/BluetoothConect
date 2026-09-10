@@ -1,39 +1,37 @@
-/**
- * The avatar set.
- *
- * Deliberately narrow and deliberately calm: faces and travel, nothing that
- * reads as a sticker pack. An emoji here is a real product feature - it is what
- * a friend sees in a list row - rather than decoration, which is why the app
- * has no other emoji in its furniture.
- *
- * Order matters: the first row is what most people will pick from without
- * scrolling, so it holds the plainest options.
- */
-export const AVATAR_EMOJI = [
-  '\u{1F642}', // slightly smiling face
-  '\u{1F60E}', // smiling face with sunglasses
-  '\u{1F913}', // nerd face
-  '\u{1F609}', // winking face
-  '\u{1F60C}', // relieved face
-  '\u{1F98A}', // fox
-  '\u{1F43B}', // bear
-  '\u{1F43C}', // panda
-  '\u{1F428}', // koala
-  '\u{1F981}', // lion
-  '\u{1F427}', // penguin
-  '\u{1F989}', // owl
-  '\u{1F422}', // turtle
-  '\u{1F433}', // whale
-  '\u{1F340}', // four leaf clover
-  '\u{1F335}', // cactus
-  '\u{1F30A}', // wave
-  '\u{2708}\u{FE0F}', // airplane
-  '\u{1FA90}', // ringed planet
-  '\u{1F3A7}', // headphones
-  '\u{1F4F7}', // camera
-  '\u{1F3B8}', // guitar
-  '\u{26A1}', // high voltage
-  '\u{1F319}', // crescent moon
-] as const;
+import { avatarPalette } from '@airlink/config';
 
-export type AvatarEmoji = (typeof AVATAR_EMOJI)[number];
+/**
+ * The avatar options.
+ *
+ * COLOURS, not emoji, and the reason is worth recording. An emoji avatar is only
+ * as reliable as the font behind it: the first version offered two dozen
+ * well-supported emoji and every single one rendered as an empty box in the
+ * environment this was built in. An avatar the user cannot see is worse than no
+ * choice at all, and there is no way to feature-detect a missing glyph at
+ * runtime.
+ *
+ * Initials on a colour need no font beyond the one already drawing the app's
+ * text. It is also what the product already does for a friend who has chosen
+ * nothing - `avatarColorFor` derives a stable colour from the peer id - so
+ * picking a colour makes the deliberate choice and the automatic one the same
+ * shape, rather than two systems that look different.
+ */
+export const AVATAR_COLORS: readonly string[] = avatarPalette;
+
+/** Human-readable names, so the swatches are not colour-only. */
+export const AVATAR_COLOR_NAMES: Readonly<Record<string, string>> = {
+  '#0A6CFF': 'Blue',
+  '#12A150': 'Green',
+  '#E5A100': 'Amber',
+  '#E5484D': 'Red',
+  '#8E4EC6': 'Purple',
+  '#0BA5A5': 'Teal',
+  '#F76808': 'Orange',
+  '#D6409F': 'Pink',
+  '#3E63DD': 'Indigo',
+  '#46A758': 'Moss',
+};
+
+export function colorName(color: string): string {
+  return AVATAR_COLOR_NAMES[color] ?? 'Colour';
+}

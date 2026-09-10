@@ -14,6 +14,6 @@
       "@airlink/config": ["../../packages/config/src/index.ts"]
     }
   },
-  "include": ["src/**/*", "specs/**/*", "index.js", "App.tsx", "__tests__/**/*"],
+  "include": ["src/**/*", "specs/**/*", "types/**/*", "index.js", "App.tsx", "__tests__/**/*"],
   "exclude": ["node_modules", "ios", "android"]
 }

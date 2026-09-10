@@ -175,7 +175,7 @@ export function FriendsScreen(): React.JSX.Element {
           half of the same handshake instead, which works everywhere.
         */}
         <EmptyState
-          icon="👋"
+          icon="wave"
           title={local.friends.emptyTitle}
           body={SCANNING_IS_SUPPORTED ? local.friends.emptyBody : local.friends.emptyBodyNoScanner}
           action={

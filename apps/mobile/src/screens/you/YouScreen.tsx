@@ -40,7 +40,7 @@ export function YouScreen(): React.JSX.Element {
 
   const displayName = profile?.displayName ?? client.profile?.displayName ?? '';
   const peerId = profile?.peerId ?? client.profile?.peerId ?? null;
-  const avatarEmoji = profile?.avatarEmoji ?? client.profile?.avatarEmoji ?? null;
+  const avatarColor = profile?.avatarColor ?? client.profile?.avatarColor ?? null;
 
   // The friend list is not reactive - it is a synchronous table read by the
   // handshake - so it is re-read whenever this screen comes back into view.
@@ -94,7 +94,7 @@ export function YouScreen(): React.JSX.Element {
 
       <Card onPress={() => navigation.navigate('Settings')}>
         <View style={{ alignItems: 'center' }}>
-          <Avatar name={displayName} peerId={peerId} emoji={avatarEmoji} size={84} />
+          <Avatar name={displayName} peerId={peerId} color={avatarColor} size={84} />
           <Gap size="md" />
           <Label variant="title2" align="center" numberOfLines={1}>
             {displayName}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { ConnectionState, newUuidLike, systemRandom } from '@airlink/core';
 import { strings } from '@airlink/config';
 import type { GameCatalogueEntry } from '@airlink/games';
@@ -8,6 +8,7 @@ import type { AirLinkClient } from '../../client/AirLinkClient.js';
 import { MIN_TARGET } from './boardKit.js';
 import { playText } from './strings.js';
 import { hasRenderer } from './games/index.js';
+import { GameArt } from './gameArt.js';
 
 /**
  * What can actually be played, and the tile that says so.
@@ -122,10 +123,9 @@ export function peerKeyForPeerId(client: AirLinkClient | null, peerId: string | 
 /**
  * One game.
  *
- * Icon, name, blurb, length. The emoji are the catalogue's own and are the one
- * place in the app where an emoji is deliberate furniture rather than
- * decoration - they are placeholders for artwork, and they say so by being
- * quiet and uniform in size.
+ * Mark, name, blurb, length. The mark is drawn from the game's id rather than
+ * carried by the game package, which holds rules and has no opinion about
+ * pixels.
  */
 export function GameTile({
   entry,
@@ -166,16 +166,16 @@ export function GameTile({
           pressed ? { opacity: 0.75, transform: [{ scale: 0.98 }] } : null,
         ]}
       >
-        <Text
+        <View
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
-          // The one size in the file, and it comes from the type scale: the
-          // catalogue's emoji are placeholder ARTWORK, so they are sized like a
-          // heading rather than picked by eye.
-          style={{ fontSize: theme.typography.title.fontSize, marginBottom: theme.spacing.xs }}
+          style={{ marginBottom: theme.spacing.xs }}
         >
-          {entry.icon}
-        </Text>
+          {/* Decorative - the game's name is right underneath - and drawn
+              rather than typed, because a character is only as reliable as the
+              font behind it. See ui/Icon.tsx. */}
+          <GameArt gameId={entry.definition.id} size={theme.typography.title.fontSize} />
+        </View>
         <Label variant="headline" numberOfLines={1}>
           {entry.definition.name}
         </Label>

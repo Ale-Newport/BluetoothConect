@@ -245,7 +245,7 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
 
       <SectionHeading>{shareStrings.sendTo}</SectionHeading>
       {connected.length === 0 ? (
-        <EmptyState icon="◎" title={shareStrings.noRecipientsTitle} body={shareStrings.noRecipientsBody} />
+        <EmptyState icon="radar" title={shareStrings.noRecipientsTitle} body={shareStrings.noRecipientsBody} />
       ) : (
         <Card style={{ paddingVertical: theme.spacing.xs }}>
           {connected.map((peer, index) => (
@@ -259,7 +259,7 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
                 subtitle={qualityWord(peer.quality) ?? strings.home.connected}
                 selected={peer.key === recipientKey}
                 accessibilityLabel={shareStrings.recipientLabel(peer.displayName)}
-                left={<Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={ROW_TILE} />}
+                left={<Avatar name={peer.displayName} peerId={peer.peerId} color={peer.avatarColor} size={ROW_TILE} />}
                 onPress={() => setRecipientKey(peer.key)}
               />
             </View>

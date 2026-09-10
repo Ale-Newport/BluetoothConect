@@ -120,7 +120,7 @@ export function IncomingFileScreen({
     return (
       <Screen>
         <EmptyState
-          icon="↓"
+          icon="download"
           title={shareStrings.incomingGone}
           action={<Button title={strings.common.close} variant="secondary" onPress={() => navigation.goBack()} />}
         />

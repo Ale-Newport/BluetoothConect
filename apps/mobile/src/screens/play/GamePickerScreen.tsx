@@ -47,7 +47,7 @@ export function GamePickerScreen(): React.JSX.Element {
       <Screen safeTop={false} scroll>
         <Gap size="xl" />
         <EmptyState
-          icon="📡"
+          icon="signal"
           title={playText.tabs.notConnected}
           body={playText.tabs.connectFirst(name)}
           action={<Button title={strings.common.close} variant="secondary" onPress={() => navigation.goBack()} />}
@@ -60,7 +60,7 @@ export function GamePickerScreen(): React.JSX.Element {
     <Screen scroll>
       <Gap size="lg" />
       <Row gap="md">
-        <Avatar name={name} peerId={peer?.peerId ?? null} emoji={peer?.avatarEmoji ?? null} size={44} />
+        <Avatar name={name} peerId={peer?.peerId ?? null} color={peer?.avatarColor ?? null} size={44} />
         <View style={{ flex: 1 }}>
           <Label variant="title2" numberOfLines={1}>
             {name}

@@ -1,57 +1,83 @@
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View, type ViewStyle } from 'react-native';
-import { initialsFor, strings } from '@airlink/config';
+import { Pressable, ScrollView, View } from 'react-native';
+import { avatarColorFor, strings } from '@airlink/config';
 import { Avatar, Gap, Label, haptic, useTheme } from '../../ui/index.js';
-import { AVATAR_EMOJI } from './avatars.js';
-import { onboardingCopy } from './copy.js';
+import { AVATAR_COLORS, colorName } from './avatars.js';
 
 /**
- * Optional, and it has to feel optional.
+ * Choose an avatar colour.
  *
- * The initials are the first tile rather than an absence, so choosing them is a
- * choice like any other and Skip is not a door marked "gave up". The preview is
- * the real `Avatar`, so what you see here is exactly what a friend's phone will
- * draw in a list row.
+ * Deliberately optional and deliberately low-stakes: the automatic colour,
+ * derived from the peer id, already looks right, so Skip has to feel like a
+ * perfectly good answer rather than a failure. See avatars.ts for why this
+ * offers colours rather than emoji.
  */
 export function AvatarStep({
   width,
   name,
-  emoji,
+  peerId,
+  color,
   onSelect,
 }: {
   width: number;
   name: string;
-  emoji: string | null;
-  onSelect: (emoji: string | null) => void;
+  /**
+   * The local peer id, once the keystore has answered. The automatic colour is
+   * derived from it everywhere else in the app, so seeding from it here is what
+   * makes the "Auto" swatch show the colour actually about to be used. Null
+   * falls back to the name - one colour change is better than a preview that
+   * waits.
+   */
+  peerId: string | null;
+  /** null means "whatever AirLink picks for me". */
+  color: string | null;
+  onSelect: (color: string | null) => void;
 }): React.JSX.Element {
   const theme = useTheme();
+  const automatic = avatarColorFor(peerId ?? (name || 'you'));
+  const shown = color ?? automatic;
 
-  // 44pt is the floor for a touch target; this sits comfortably above it and
-  // still fits five to a row on the narrowest phone we support.
-  const tile = theme.spacing.xxxl + theme.spacing.md;
-  const preview = theme.spacing.xxxl * 2;
-
-  const choose = (next: string | null): void => {
-    haptic('selection');
-    onSelect(next);
+  const swatch = (value: string | null): React.JSX.Element => {
+    const resolved = value ?? automatic;
+    const selected = value === color;
+    const label = value === null ? strings.onboarding.avatarAutomatic : colorName(resolved);
+    return (
+      <Pressable
+        key={value ?? 'auto'}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityState={{ selected }}
+        onPress={() => {
+          haptic('selection');
+          onSelect(value);
+        }}
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 28,
+          backgroundColor: resolved,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderWidth: selected ? 3 : 0,
+          borderColor: theme.colors.text,
+        }}
+      >
+        {value === null ? (
+          <Label variant="caption" tone="onAccent">
+            {strings.onboarding.avatarAutoShort}
+          </Label>
+        ) : null}
+      </Pressable>
+    );
   };
 
-  const tileStyle = (selected: boolean): ViewStyle => ({
-    width: tile,
-    height: tile,
-    borderRadius: theme.radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: selected ? theme.colors.accent : theme.colors.separator,
-    backgroundColor: selected ? theme.colors.accent : theme.colors.surface,
-  });
-
   return (
-    // Scrollable, and centred only while there is room to centre in. Twenty-five
-    // tiles, a preview and two headings do not fit above the fold on a 4.7"
-    // phone, and they fit on nothing once the system text size is turned up -
-    // an emoji you cannot reach is worse than one you have to scroll to.
+    // Scrollable and centred, not a plain centred View. The two headings, the
+    // 96pt preview and eleven 56pt swatches come to more than the content area
+    // of a small phone once the system text size is turned up, and
+    // `justifyContent: 'center'` splits an overflow in half - clipping the
+    // title off the top and the last row of swatches off the bottom, with no
+    // way to reach either.
     <ScrollView
       style={{ width }}
       contentContainerStyle={{
@@ -61,82 +87,33 @@ export function AvatarStep({
         paddingVertical: theme.spacing.lg,
       }}
       showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
     >
-      <View accessible accessibilityRole="header">
-        <Label variant="title">{strings.onboarding.avatarTitle}</Label>
-      </View>
-      <Gap size="sm" />
+      <Label variant="largeTitle">{strings.onboarding.avatarTitle}</Label>
       <Label variant="subheadline" tone="secondary">
         {strings.onboarding.avatarSubtitle}
       </Label>
 
-      <Gap size="xl" />
-
-      {/* Deliberately NOT one `accessible` element: collapsing the preview into
-          a single node labelled with the name is what hides the "just my
-          initials" caption from a screen reader, which is the one line here
-          that says what the current choice actually is. The avatar itself is
-          decorative - the label directly beneath it says the same thing. */}
+      <Gap size="xxl" />
       <View style={{ alignItems: 'center' }}>
-        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-          <Avatar name={name} emoji={emoji} size={preview} />
-        </View>
-        <Gap size="sm" />
-        <Label variant="headline" align="center" numberOfLines={1}>
-          {name}
+        <Avatar name={name || 'You'} color={shown} size={96} />
+        <Gap size="md" />
+        <Label variant="headline">{name}</Label>
+        <Label variant="footnote" tone="tertiary">
+          {color === null ? strings.onboarding.avatarAutomatic : colorName(shown)}
         </Label>
-        {/* The caption slot keeps its height either way, so the grid below does
-            not jump every time a tile is tapped. */}
-        <View style={{ minHeight: theme.spacing.lg + theme.spacing.xs, justifyContent: 'center' }}>
-          {emoji === null ? (
-            <Label variant="footnote" tone="tertiary" align="center">
-              {onboardingCopy.useInitials}
-            </Label>
-          ) : null}
-        </View>
       </View>
 
-      <Gap size="xl" />
-
+      <Gap size="xxl" />
       <View
         style={{
           flexDirection: 'row',
           flexWrap: 'wrap',
+          gap: theme.spacing.md,
           justifyContent: 'center',
-          gap: theme.spacing.sm,
         }}
       >
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={onboardingCopy.useInitials}
-          accessibilityState={{ selected: emoji === null }}
-          onPress={() => choose(null)}
-          style={({ pressed }) => [tileStyle(emoji === null), pressed ? { opacity: 0.7 } : null]}
-        >
-          <Label variant="headline" tone={emoji === null ? 'onAccent' : 'secondary'}>
-            {initialsFor(name)}
-          </Label>
-        </Pressable>
-
-        {AVATAR_EMOJI.map((option) => {
-          const selected = option === emoji;
-          return (
-            <Pressable
-              key={option}
-              accessibilityRole="button"
-              accessibilityLabel={option}
-              accessibilityState={{ selected }}
-              onPress={() => choose(option)}
-              style={({ pressed }) => [tileStyle(selected), pressed ? { opacity: 0.7 } : null]}
-            >
-              {/* An emoji is drawn as type, so it takes a type size rather than
-                  a spacing value. `title` is the largest that still leaves the
-                  tile reading as a target rather than a sticker. */}
-              <Text style={{ fontSize: theme.typography.title.fontSize }}>{option}</Text>
-            </Pressable>
-          );
-        })}
+        {swatch(null)}
+        {AVATAR_COLORS.map((value) => swatch(value))}
       </View>
     </ScrollView>
   );

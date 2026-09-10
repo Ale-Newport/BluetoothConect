@@ -22,7 +22,7 @@ export type AppPhase = (typeof AppPhase)[keyof typeof AppPhase];
 export interface LocalProfile {
   readonly peerId: string;
   readonly displayName: string;
-  readonly avatarEmoji: string | null;
+  readonly avatarColor: string | null;
   readonly deviceId: string;
 }
 
@@ -31,7 +31,7 @@ export interface PeerView {
   readonly key: string;
   readonly peerId: string | null;
   readonly displayName: string;
-  readonly avatarEmoji: string | null;
+  readonly avatarColor: string | null;
   readonly isFriend: boolean;
   readonly nearby: boolean;
   readonly connection: ConnectionState;

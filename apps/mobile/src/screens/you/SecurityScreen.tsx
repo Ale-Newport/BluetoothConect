@@ -76,7 +76,7 @@ export function SecurityScreen({ route }: NativeStackScreenProps<RootStackParams
     return (
       <Screen safeTop={false}>
         <EmptyState
-          icon="🔒"
+          icon="lock"
           title={local.security.unknownFriendTitle}
           body={local.security.unknownFriendBody}
         />
@@ -160,7 +160,7 @@ export function SecurityOverviewPanel({
 
       {friends.length === 0 ? (
         <EmptyState
-          icon="🔒"
+          icon="lock"
           title={local.security.noFriendsTitle}
           body={local.security.noFriendsBody}
           action={

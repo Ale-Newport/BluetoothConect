@@ -174,7 +174,7 @@ export const local = {
 
   settings: {
     profileSection: 'YOUR PROFILE',
-    avatarSection: 'YOUR LOOK',
+    avatarSection: 'YOUR COLOUR',
     historySection: 'HISTORY',
     aboutSection: 'ABOUT',
     nameLabel: 'Your name',
@@ -184,7 +184,7 @@ export const local = {
     nameSaveFailed: 'That name could not be saved.',
     nameSaveFailedBody: 'Your old name is still in place. Try again.',
     nameHint: 'This is what friends nearby see. It is only ever sent to the phone next to you.',
-    avatarNone: 'Initials',
+    avatarNone: 'Automatic',
     clearConversation: 'Clear a conversation',
     clearConversationPick: 'Which conversation?',
     clearConversationTitle: (name: string): string => `Clear the chat with ${name}?`,
@@ -215,6 +215,9 @@ export const local = {
     transportSection: 'TRANSPORTS',
     sessionSection: 'SESSIONS',
     logSection: 'ACTIVITY',
+    artworkSection: 'ARTWORK',
+    artworkHint:
+      'Every drawn mark in the app. Icons used to be characters, and a character with no glyph in the loaded font draws as an empty box with nothing in any log - so they are all paths now, and this is where to see that they still look like what they are called.',
     rawSection: 'RAW SNAPSHOT',
     deviceId: 'Device id',
     peerId: 'Peer id',
@@ -227,7 +230,6 @@ export const local = {
     advertisingToken: 'Advertising token',
     registered: 'Registered',
     available: 'Available',
-    unavailable: 'Unavailable',
     score: 'Score',
     throughput: 'Throughput',
     highBandwidth: 'High bandwidth',

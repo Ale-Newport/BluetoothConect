@@ -48,7 +48,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
               key: peer.key,
               peerId: peer.peerId,
               displayName: peer.displayName || 'Unknown device',
-              avatarEmoji: null,
+              avatarColor: null,
               isFriend: peer.peerId !== null,
               nearby: true,
               connection: handle?.session.state ?? ConnectionState.DISCOVERED,

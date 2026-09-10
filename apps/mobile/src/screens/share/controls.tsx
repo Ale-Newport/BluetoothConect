@@ -1,7 +1,7 @@
 import React from 'react';
-import { Image, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
-import { Label, haptic, useTheme } from '../../ui/index.js';
-import { KIND_GLYPH, type FileKind } from './presentation.js';
+import { Image, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Icon, Label, haptic, useTheme } from '../../ui/index.js';
+import { KIND_ICON, type FileKind } from './presentation.js';
 
 /**
  * The few controls the Share screens need that the design system does not have.
@@ -122,7 +122,7 @@ export function FileTile({
 
   return (
     <View style={base} accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-      <Text style={{ fontSize: size * 0.4, color: theme.colors.textSecondary }}>{KIND_GLYPH[kind]}</Text>
+      <Icon name={KIND_ICON[kind]} size={size * 0.44} color={theme.colors.textSecondary} />
     </View>
   );
 }

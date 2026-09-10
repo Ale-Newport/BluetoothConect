@@ -25,8 +25,6 @@ const anyGame = (definition: unknown): AnyGame => definition as AnyGame;
 
 export interface GameCatalogueEntry {
   readonly definition: GameDefinition<never, never>;
-  /** Emoji used as the tile icon until real artwork exists. */
-  readonly icon: string;
   /** One line shown under the name in the picker. */
   readonly blurb: string;
   /** Roughly how long a game takes, for the picker. */
@@ -40,73 +38,61 @@ export interface GameCatalogueEntry {
 const ENTRIES: GameCatalogueEntry[] = [
   {
     definition: anyGame(ticTacToe),
-    icon: '⭕️',
     blurb: 'Three in a row. One minute, one winner.',
     typicalMinutes: 1,
   },
   {
     definition: anyGame(connectFour),
-    icon: '🔴',
     blurb: 'Drop, stack, and line up four.',
     typicalMinutes: 3,
   },
   {
     definition: anyGame(reaction),
-    icon: '⚡️',
     blurb: 'Wait for green. Do not blink.',
     typicalMinutes: 2,
   },
   {
     definition: anyGame(pong),
-    icon: '🏓',
     blurb: 'The original. First to seven.',
     typicalMinutes: 4,
   },
   {
     definition: anyGame(airHockey),
-    icon: '🥅',
     blurb: 'Fast, loud, and over quickly.',
     typicalMinutes: 4,
   },
   {
     definition: anyGame(drawAndGuess),
-    icon: '✏️',
     blurb: 'Draw it. Watch them fail to get it.',
     typicalMinutes: 8,
   },
   {
     definition: anyGame(trivia),
-    icon: '💡',
     blurb: 'Ten questions. No looking anything up.',
     typicalMinutes: 6,
   },
   {
     definition: anyGame(darts),
-    icon: '🎯',
     blurb: '501, and you must finish on a double.',
     typicalMinutes: 8,
   },
   {
     definition: anyGame(battleship),
-    icon: '🚢',
     blurb: 'Hide a fleet. Find theirs first.',
     typicalMinutes: 10,
   },
   {
     definition: anyGame(pool),
-    icon: '🎱',
     blurb: 'Solids, stripes, and the black.',
     typicalMinutes: 10,
   },
   {
     definition: anyGame(wordDuel),
-    icon: '🔤',
     blurb: 'Sixteen letters. Find what they missed.',
     typicalMinutes: 5,
   },
   {
     definition: anyGame(chess),
-    icon: '♟️',
     blurb: 'The long flight game.',
     typicalMinutes: 25,
   },

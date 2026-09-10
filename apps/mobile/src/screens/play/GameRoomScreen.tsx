@@ -248,7 +248,7 @@ function Body({
       // the window, the room says so and offers the way out.
       return preparingTooLong ? (
         <EmptyState
-          icon="⌛"
+          icon="hourglass"
           title={playText.room.slowStartTitle}
           body={playText.room.slowStartBody}
           action={<Button title={strings.play.leaveGame} variant="secondary" onPress={onLeave} />}
@@ -265,7 +265,7 @@ function Body({
     case RoomPhase.UNAVAILABLE:
       return (
         <EmptyState
-          icon="🚫"
+          icon="blocked"
           title={strings.play.unavailableTitle}
           body={room.blockedReason ?? strings.common.error}
           action={<Button title={strings.common.back} variant="secondary" onPress={onLeave} />}
@@ -292,7 +292,7 @@ function Body({
     case RoomPhase.UNANSWERED:
       return (
         <EmptyState
-          icon="📭"
+          icon="inbox"
           title={playText.room.noAnswerTitle}
           body={playText.room.noAnswerBody(room.opponentName)}
           action={
@@ -307,7 +307,7 @@ function Body({
     case RoomPhase.DECLINED:
       return (
         <EmptyState
-          icon="🙂"
+          icon="smile"
           title={playText.room.declinedTitle(room.opponentName)}
           body={playText.room.declinedBody}
           action={<Button title={strings.common.back} variant="secondary" onPress={onLeave} />}
@@ -317,7 +317,7 @@ function Body({
     case RoomPhase.LEFT:
       return (
         <EmptyState
-          icon="👋"
+          icon="wave"
           title={playText.room.leftTitle(room.opponentName)}
           body={playText.room.declinedBody}
           action={
@@ -357,7 +357,7 @@ function Board({ room, width }: { room: GameRoomView; width: number }): React.JS
   const Renderer = room.entry ? rendererFor(room.entry.definition.id) : null;
 
   if (!Renderer || room.state === null) {
-    return <EmptyState icon="🧩" title={strings.play.unavailableTitle} body={playText.tabs.noRenderer} />;
+    return <EmptyState icon="puzzle" title={strings.play.unavailableTitle} body={playText.tabs.noRenderer} />;
   }
 
   return (

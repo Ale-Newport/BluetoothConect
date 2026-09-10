@@ -18,7 +18,6 @@ describe('game catalogue', () => {
       expect(d.protocolVersion).toBeGreaterThanOrEqual(1);
       expect(d.minPlayers).toBeGreaterThanOrEqual(2);
       expect(d.maxPlayers).toBeGreaterThanOrEqual(d.minPlayers);
-      expect(entry.icon.length).toBeGreaterThan(0);
       expect(entry.blurb.length).toBeGreaterThan(0);
       expect(entry.typicalMinutes).toBeGreaterThan(0);
       // Every entry must be a real, callable game - this is the check that

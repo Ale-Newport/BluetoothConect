@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
-import { haptic, useTheme, type StatusTone } from '../../ui/index.js';
+import { Icon, haptic, useTheme, type IconName, type StatusTone } from '../../ui/index.js';
 import { Scrubber } from './Scrubber.js';
 import { cinema, formatClock, formatSpeed } from './playerTheme.js';
 import { syncStrings, shared } from './syncStrings.js';
@@ -146,8 +146,7 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
             }}
           >
             <GlyphButton
-              glyph="‹"
-              glyphVariant="title"
+              icon="chevronLeft"
               label={shared.sync.leaveSession}
               enabled
               onPress={props.onLeave}
@@ -191,16 +190,14 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
             style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.xxl }}
           >
             <GlyphButton
-              glyph="⟲"
-              glyphVariant="title2"
+              icon="skipBack"
               label={syncStrings.back10}
               hint={disabledReason}
               enabled={controlsEnabled}
               onPress={() => props.onSkip(-SKIP_MS)}
             />
             <GlyphButton
-              glyph={atEnd ? '↺' : playing ? '❚❚' : '▶'}
-              glyphVariant="title2"
+              icon={atEnd ? 'replay' : playing ? 'pause' : 'start'}
               label={atEnd ? syncStrings.watchFromStart : playing ? syncStrings.pause : syncStrings.play}
               hint={disabledReason}
               enabled={controlsEnabled}
@@ -209,8 +206,7 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
               onPress={atEnd ? props.onRestart : props.onTogglePlay}
             />
             <GlyphButton
-              glyph="⟳"
-              glyphVariant="title2"
+              icon="skipForward"
               label={syncStrings.forward10}
               hint={disabledReason}
               enabled={controlsEnabled}
@@ -237,8 +233,7 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
                 {formatClock(durationMs)}
               </PlayerText>
               <GlyphButton
-                glyph={formatSpeed(speed)}
-                glyphVariant="footnote"
+                text={formatSpeed(speed)}
                 label={syncStrings.speed}
                 value={formatSpeed(speed)}
                 hint={disabledReason}
@@ -246,8 +241,7 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
                 onPress={props.onCycleSpeed}
               />
               <GlyphButton
-                glyph="CC"
-                glyphVariant="footnote"
+                text="CC"
                 label={syncStrings.subtitles}
                 value={subtitleLabel}
                 hint={subtitles.length === 0 ? syncStrings.noSubtitles : undefined}
@@ -328,8 +322,9 @@ function PlayerDot({ tone }: { tone: StatusTone }): React.JSX.Element {
  * does nothing.
  */
 function GlyphButton({
-  glyph,
-  glyphVariant,
+  icon,
+  text,
+  textVariant = 'footnote',
   label,
   value,
   hint,
@@ -339,8 +334,11 @@ function GlyphButton({
   size = TOUCH_MIN,
   onPress,
 }: {
-  glyph: string;
-  glyphVariant: keyof typeof import('@airlink/config').typography;
+  /** A drawn mark. Exactly one of `icon` or `text` is given. */
+  icon?: IconName;
+  /** For the controls whose content is a number, like the speed. */
+  text?: string;
+  textVariant?: keyof typeof import('@airlink/config').typography;
   label: string;
   value?: string;
   hint?: string | undefined;
@@ -377,9 +375,13 @@ function GlyphButton({
         pressed ? { opacity: 0.6 } : null,
       ]}
     >
-      <PlayerText variant={glyphVariant} tone={active ? 'accent' : 'primary'}>
-        {glyph}
-      </PlayerText>
+      {icon !== undefined ? (
+        <Icon name={icon} size={26} color={active ? theme.colors.accent : cinema.text} />
+      ) : (
+        <PlayerText variant={textVariant} tone={active ? 'accent' : 'primary'}>
+          {text}
+        </PlayerText>
+      )}
     </Pressable>
   );
 }

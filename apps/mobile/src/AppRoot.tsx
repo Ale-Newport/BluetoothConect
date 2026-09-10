@@ -45,7 +45,7 @@ function Shell(): React.JSX.Element {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: theme.colors.background }}>
         <EmptyState
-          icon="⚠️"
+          icon="warning"
           title="Something went wrong"
           body={failure ?? 'AirLink could not start.'}
         />

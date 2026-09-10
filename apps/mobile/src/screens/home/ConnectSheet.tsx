@@ -211,7 +211,7 @@ export function ConnectSheet(): React.JSX.Element {
     return (
       <Screen scroll style={{ flexGrow: 1, justifyContent: 'center' }}>
         <EmptyState
-          icon="◎"
+          icon="radar"
           title={homeCopy.goneTitle}
           body={homeCopy.goneBody}
           action={<Button title={strings.common.close} variant="secondary" onPress={close} />}
@@ -228,7 +228,7 @@ export function ConnectSheet(): React.JSX.Element {
       <View>
         <Gap size="xxl" />
         <View style={{ alignItems: 'center' }}>
-          <Avatar name={view.displayName} peerId={view.peerId} emoji={view.avatarEmoji} size={AVATAR_SIZE} />
+          <Avatar name={view.displayName} peerId={view.peerId} color={view.avatarColor} size={AVATAR_SIZE} />
           <Gap size="lg" />
           <Label variant="title2" align="center" numberOfLines={2}>
             {view.displayName}

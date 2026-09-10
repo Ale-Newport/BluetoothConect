@@ -225,7 +225,7 @@ export function ShareScreen(): React.JSX.Element {
       ) : null}
 
       {nothingAtAll ? (
-        <EmptyState icon="↑" title={shareStrings.emptyTitle} body={shareStrings.emptyBody} action={sendButton} />
+        <EmptyState icon="upload" title={shareStrings.emptyTitle} body={shareStrings.emptyBody} action={sendButton} />
       ) : null}
 
       <Gap size="lg" />

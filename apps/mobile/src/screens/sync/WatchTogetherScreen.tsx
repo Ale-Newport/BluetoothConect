@@ -656,7 +656,7 @@ export function WatchTogetherScreen(): React.JSX.Element {
               stage={stage}
               peerName={peerName}
               peerId={peer?.peerId ?? null}
-              peerAvatar={peer?.avatarEmoji ?? null}
+              peerAvatar={peer?.avatarColor ?? null}
               videoTitle={video?.title ?? ''}
               durationMs={durationMs}
               picking={picking}

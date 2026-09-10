@@ -118,7 +118,7 @@ export function ChatListScreen(): React.JSX.Element {
           <ConversationRow
             name={firstNamed(item.peer.displayName)}
             peerId={item.peer.peerId}
-            avatarEmoji={item.peer.avatarEmoji}
+            avatarColor={item.peer.avatarColor}
             preview={chatCopy.sayHello}
             timestamp={null}
             unreadCount={0}
@@ -132,7 +132,7 @@ export function ChatListScreen(): React.JSX.Element {
         <ConversationRow
           name={firstNamed(summary.displayName)}
           peerId={summary.peerId}
-          avatarEmoji={summary.avatarEmoji}
+          avatarColor={summary.avatarColor}
           preview={previewOf(summary)}
           timestamp={summary.lastMessage ? summary.lastActivityAt : null}
           unreadCount={summary.unreadCount}
@@ -171,7 +171,7 @@ export function ChatListScreen(): React.JSX.Element {
         ListEmptyComponent={
           centre ? (
             <EmptyState
-              icon="✉"
+              icon="chat"
               title={chatCopy.listEmptyTitle}
               body={chatCopy.listEmptyBody}
               action={
@@ -217,7 +217,7 @@ function previewOf(summary: ConversationSummary): string {
 function ConversationRow({
   name,
   peerId,
-  avatarEmoji,
+  avatarColor,
   preview,
   timestamp,
   unreadCount,
@@ -226,7 +226,7 @@ function ConversationRow({
 }: {
   name: string;
   peerId: string | null;
-  avatarEmoji: string | null;
+  avatarColor: string | null;
   preview: string;
   timestamp: number | null;
   unreadCount: number;
@@ -264,7 +264,7 @@ function ConversationRow({
       ]}
     >
       <View>
-        <Avatar name={name} peerId={peerId} emoji={avatarEmoji} size={AVATAR_SIZE} />
+        <Avatar name={name} peerId={peerId} color={avatarColor} size={AVATAR_SIZE} />
         {connected ? (
           // A presence dot on the face rather than a word in the row: the list
           // is scanned, not read.

@@ -173,7 +173,7 @@ export function PairingConfirmScreen(): React.JSX.Element {
     return (
       <Screen scroll style={{ flexGrow: 1, justifyContent: 'center' }}>
         <EmptyState
-          icon="◎"
+          icon="radar"
           title={homeCopy.pairingRefusedTitle}
           body={homeCopy.pairingRefusedBody}
           action={<Button title={strings.common.close} variant="secondary" onPress={close} />}
@@ -188,7 +188,7 @@ export function PairingConfirmScreen(): React.JSX.Element {
     return (
       <Screen scroll style={{ flexGrow: 1, justifyContent: 'center' }}>
         <EmptyState
-          icon="◎"
+          icon="radar"
           title={strings.connection.failed}
           body={homeCopy.connectFailedBody}
           action={<Button title={strings.common.close} variant="secondary" onPress={close} />}
@@ -201,7 +201,7 @@ export function PairingConfirmScreen(): React.JSX.Element {
     return (
       <Screen scroll style={{ flexGrow: 1, justifyContent: 'center' }}>
         <EmptyState
-          icon="◎"
+          icon="radar"
           title={homeCopy.pairingGoneTitle}
           body={homeCopy.pairingGoneBody}
           action={<Button title={strings.common.close} variant="secondary" onPress={close} />}

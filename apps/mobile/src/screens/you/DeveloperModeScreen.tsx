@@ -4,9 +4,12 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { strings } from '@airlink/config';
 import {
+  ALL_ICON_NAMES,
   Button,
   Card,
+  Divider,
   Gap,
+  Icon,
   Label,
   Row,
   Screen,
@@ -14,6 +17,7 @@ import {
   haptic,
   useTheme,
 } from '../../ui/index.js';
+import { DRAWN_GAME_IDS, GameArt } from '../play/gameArt.js';
 import { useClient } from '../../client/ClientProvider.js';
 import { useAppStore } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
@@ -291,6 +295,15 @@ export function DeveloperModeScreen(): React.JSX.Element {
         )}
       </Row>
 
+      {/* -- artwork ------------------------------------------------------ */}
+      <Gap size="xl" />
+      <SectionHeading>{local.developer.artworkSection}</SectionHeading>
+      <Label variant="caption" tone="tertiary">
+        {local.developer.artworkHint}
+      </Label>
+      <Gap size="sm" />
+      <IconSheet />
+
       {/* -- raw ---------------------------------------------------------- */}
       <Gap size="xl" />
       <SectionHeading>{local.developer.rawSection}</SectionHeading>
@@ -315,6 +328,55 @@ export function DeveloperModeScreen(): React.JSX.Element {
 // ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
+
+/**
+ * Every drawn mark in the app, on one screen.
+ *
+ * This is here because of a defect that took two attempts to see. The interface
+ * originally used characters as icons, and a character with no glyph in the
+ * font actually loaded draws as an empty box - silently, with nothing in any
+ * log. The set is drawn now (ui/Icon.tsx), which removes that failure mode, but
+ * a path can still be wrong in a way only an eye catches: cropped by its box,
+ * unreadable at size, or plainly not a picture of the thing it names.
+ *
+ * A test asserts every name produces shapes. This asserts nothing; it just puts
+ * all of them where they can be looked at, which is the only check that catches
+ * "it draws, but it is not a hand".
+ */
+function IconSheet(): React.JSX.Element {
+  const theme = useTheme();
+  // Wide enough for the longest name at caption size, so the labels below
+  // the marks do not run into each other.
+  const cell = { alignItems: 'center' as const, width: 78, gap: 2 };
+
+  return (
+    <Card>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: theme.spacing.md, justifyContent: 'flex-start' }}>
+        {ALL_ICON_NAMES.map((name) => (
+          <View key={name} style={cell}>
+            <Icon name={name} size={28} />
+            <Label variant="caption" tone="tertiary" align="center" numberOfLines={1}>
+              {name}
+            </Label>
+          </View>
+        ))}
+      </View>
+      <Gap size="md" />
+      <Divider />
+      <Gap size="md" />
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: theme.spacing.md, justifyContent: 'flex-start' }}>
+        {DRAWN_GAME_IDS.map((gameId) => (
+          <View key={gameId} style={cell}>
+            <GameArt gameId={gameId} size={28} />
+            <Label variant="caption" tone="tertiary" align="center" numberOfLines={1}>
+              {gameId}
+            </Label>
+          </View>
+        ))}
+      </View>
+    </Card>
+  );
+}
 
 /**
  * One line of the activity log.
@@ -373,16 +435,18 @@ function TransportList({ transports }: { transports: Record<string, unknown> | n
       {rows.map((row, index) => {
         const entry = asRecord(row);
         if (entry === null) return null;
-        const isAvailable = asBoolean(entry.available) === true;
         return (
           <React.Fragment key={index}>
             <Gap size="sm" />
             <Card>
               <Label variant="headline">{describeValue(entry.kind)}</Label>
-              <KeyValue
-                label={isAvailable ? local.developer.available : local.developer.unavailable}
-                value={formatFlag(asBoolean(entry.available))}
-              />
+              {/*
+                The label does not change with the value. Flipping it to
+                "Unavailable" for an unavailable transport produced the line
+                "Unavailable  no", which states the opposite of the truth - and
+                this is the one screen whose entire job is to be read literally.
+              */}
+              <KeyValue label={local.developer.available} value={formatFlag(asBoolean(entry.available))} />
               <KeyValue label={local.developer.score} value={formatCount(asNumber(entry.score))} />
               <KeyValue label={local.developer.highBandwidth} value={formatFlag(asBoolean(entry.highBandwidth))} />
               <KeyValue

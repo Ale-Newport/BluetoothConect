@@ -126,9 +126,18 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
 
   const [step, setStep] = useState<Step>(Step.WELCOME);
   const [rawName, setRawName] = useState('');
-  const [emoji, setEmoji] = useState<string | null>(null);
+  const [color, setColor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [trouble, setTrouble] = useState<OnboardingTrouble | null>(null);
+  /**
+   * The peer id, resolved before it is needed rather than when it is written.
+   *
+   * The automatic avatar colour is derived from the peer id, so the avatar step
+   * cannot honestly preview it without one. Null until the keystore answers,
+   * which the avatar step handles by falling back to the name - a colour that
+   * may change once, rather than a spinner on a decorative screen.
+   */
+  const [peerId, setPeerId] = useState<string | null>(null);
 
   const name = normaliseName(rawName);
   const nameReady = isUsableName(rawName);
@@ -148,6 +157,25 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
       mounted.current = false;
     };
   }, []);
+
+  // Runs once, on the way in, and deliberately not gated on a step: the keys
+  // exist long before the avatar step is reached, and a failure here is not
+  // something to interrupt a first run for - `createProfile` creates the
+  // identity itself if this never lands.
+  useEffect(() => {
+    let live = true;
+    client
+      .ensureIdentityPeerId()
+      .then((id) => {
+        if (live) setPeerId(id);
+      })
+      .catch(() => {
+        // Left null. The avatar step seeds from the name instead.
+      });
+    return () => {
+      live = false;
+    };
+  }, [client]);
 
   const scrollToStep = useCallback(
     (target: Step) => {
@@ -220,7 +248,7 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
 
     if (!profileCreated.current) {
       try {
-        await client.createProfile(name, emoji);
+        await client.createProfile(name, color);
         profileCreated.current = true;
       } catch {
         // The identity lives in the keychain; if that write fails there is
@@ -257,7 +285,7 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
     // reported in, the honest gesture is the quieter one.
     haptic(radiosUp ? 'success' : 'impactLight');
     enter(radiosUp);
-  }, [busy, nameReady, name, emoji, client, enter, goTo]);
+  }, [busy, nameReady, name, color, client, enter, goTo]);
 
   const continueAnyway = useCallback(() => {
     // Declining a permission is not a reason to be held on this screen. The
@@ -294,7 +322,7 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
                 title={strings.onboarding.skip}
                 variant="ghost"
                 onPress={() => {
-                  setEmoji(null);
+                  setColor(null);
                   goTo(Step.PERMISSIONS);
                 }}
                 disabled={!nameReady}
@@ -385,7 +413,7 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
             />
           ) : null}
           {unlocked >= Step.AVATAR ? (
-            <AvatarStep width={width} name={name} emoji={emoji} onSelect={setEmoji} />
+            <AvatarStep width={width} name={name} peerId={peerId} color={color} onSelect={setColor} />
           ) : null}
           {unlocked >= Step.PERMISSIONS ? (
             <PermissionsStep width={width} trouble={trouble} />

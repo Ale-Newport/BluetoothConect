@@ -61,7 +61,7 @@ export interface ConversationSummary {
   readonly conversationId: string;
   readonly peerId: string;
   readonly displayName: string;
-  readonly avatarEmoji: string | null;
+  readonly avatarColor: string | null;
   /** The newest message that has not been deleted, for the row preview. */
   readonly lastMessage: Message | null;
   readonly lastActivityAt: number;
@@ -201,7 +201,7 @@ export class ChatCenter {
         conversationId: row.id,
         peerId,
         displayName: peer?.displayName ?? row.title ?? '',
-        avatarEmoji: peer?.avatarEmoji ?? null,
+        avatarColor: peer?.avatarColor ?? null,
         lastMessage,
         lastActivityAt: lastMessage?.receivedAt ?? row.lastMessageAt ?? row.createdAt,
         unreadCount: row.unreadCount,
@@ -245,10 +245,10 @@ export class ChatCenter {
    * phone switched off: the name and the face come from the peer table, not
    * from a radio.
    */
-  peerRow(peerId: string): { peerId: string; displayName: string; avatarEmoji: string | null } | null {
+  peerRow(peerId: string): { peerId: string; displayName: string; avatarColor: string | null } | null {
     const row = this.safe(() => this.client.db.peers.get(peerId));
     if (!row) return null;
-    return { peerId: row.peerId, displayName: row.displayName, avatarEmoji: row.avatarEmoji };
+    return { peerId: row.peerId, displayName: row.displayName, avatarColor: row.avatarColor };
   }
 
   isPeerTyping(peerId: string | null): boolean {

@@ -45,7 +45,7 @@ export function MyCodeScreen(): React.JSX.Element {
 
   const displayName = profile?.displayName ?? client.profile?.displayName ?? '';
   const peerId = profile?.peerId ?? client.profile?.peerId ?? null;
-  const avatarEmoji = profile?.avatarEmoji ?? client.profile?.avatarEmoji ?? null;
+  const avatarColor = profile?.avatarColor ?? client.profile?.avatarColor ?? null;
 
   const [issuedAt, setIssuedAt] = useState(() => Date.now());
 
@@ -89,7 +89,7 @@ export function MyCodeScreen(): React.JSX.Element {
     return (
       <Screen safeTop={false}>
         <EmptyState
-          icon="▣"
+          icon="qr"
           title={local.myCode.unavailableTitle}
           body={local.myCode.unavailableBody}
           action={<Button title={local.myCode.tryAgain} onPress={rebuild} />}
@@ -147,7 +147,7 @@ export function MyCodeScreen(): React.JSX.Element {
           </View>
 
           <Gap size="lg" />
-          <Avatar name={displayName} peerId={peerId} emoji={avatarEmoji} size={44} />
+          <Avatar name={displayName} peerId={peerId} color={avatarColor} size={44} />
           <Gap size="sm" />
           <Label variant="headline" align="center" numberOfLines={1}>
             {displayName}

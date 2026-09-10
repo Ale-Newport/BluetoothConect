@@ -7,7 +7,7 @@ import {
   type TransferProgress,
 } from '@airlink/core';
 import { strings } from '@airlink/config';
-import type { StatusTone } from '../../ui/index.js';
+import type { IconName, StatusTone } from '../../ui/index.js';
 import type { TransferRecord } from './transferCenter.js';
 import { shareStrings } from './strings.js';
 
@@ -253,15 +253,17 @@ export function kindOf(mimeType: string, filename: string): FileKind {
 }
 
 /**
- * Typographic marks rather than emoji.
+ * A drawn mark per kind, from the app's one icon set.
  *
- * The tab bar already sets this vocabulary (◎ ✉ ◆ ↑ ●) and it is the difference
- * between an app and a toy. They are also the one thing on the row that carries
- * no meaning a blind user needs, so they are hidden from the screen reader.
+ * Names rather than characters, for the reason recorded in ui/Icon.tsx: the
+ * marks these replaced (U+25A3, U+25A4) had no glyph in the font actually in
+ * use and drew as empty boxes. They carry no meaning a blind user needs - the
+ * filename and size are right beside them - so they stay hidden from the screen
+ * reader either way.
  */
-export const KIND_GLYPH: Record<FileKind, string> = {
-  [FileKind.IMAGE]: '▣',
-  [FileKind.VIDEO]: '▶',
-  [FileKind.AUDIO]: '♪',
-  [FileKind.DOCUMENT]: '▤',
+export const KIND_ICON: Record<FileKind, IconName> = {
+  [FileKind.IMAGE]: 'image',
+  [FileKind.VIDEO]: 'video',
+  [FileKind.AUDIO]: 'audio',
+  [FileKind.DOCUMENT]: 'document',
 };

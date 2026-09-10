@@ -77,7 +77,7 @@ export function SetupPanel({
   if (stage.kind === 'empty') {
     return (
       <EmptyState
-        icon="▶"
+        icon="start"
         title={syncStrings.nothingChosenTitle}
         body={syncStrings.nothingChosenBody}
         action={
@@ -278,7 +278,7 @@ function InviteHeader({
 }): React.JSX.Element {
   return (
     <Row gap="md">
-      <Avatar name={peerName} peerId={peerId} emoji={peerAvatar} size={44} />
+      <Avatar name={peerName} peerId={peerId} color={peerAvatar} size={44} />
       <View style={{ flex: 1 }}>
         <Label variant="headline" numberOfLines={2}>
           {syncStrings.invitedTitle(peerName)}
