@@ -266,8 +266,20 @@ xcrun devicectl device install app --device "$UDID" "$APP" || fail "Install fail
 
 BID="${BUNDLE_ID:-com.airlink.app}"
 say "Launching $BID"
-xcrun devicectl device process launch --device "$UDID" "$BID" || \
-  echo "  Could not launch it remotely. Just tap the AirLink icon on the phone."
+if ! xcrun devicectl device process launch --device "$UDID" "$BID" 2>/dev/null; then
+  cat <<'TRUST'
+
+  The app is INSTALLED but iOS will not run it yet, and tapping the icon
+  will fail the same way. A development build has to be trusted once, by
+  hand, on the phone:
+
+    Settings -> General -> VPN & Device Management
+      -> Apple Development: <your Apple ID> -> Trust
+
+  Then tap AirLink on the home screen. This is a one-time step per
+  certificate, not per build.
+TRUST
+fi
 
 cat <<'NOTE'
 
