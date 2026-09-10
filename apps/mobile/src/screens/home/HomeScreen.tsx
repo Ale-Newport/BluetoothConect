@@ -143,9 +143,13 @@ export function HomeScreen(): React.JSX.Element {
   return (
     <Screen scroll>
       <Gap size="xxl" />
-      <Label variant="wordmark" tone="secondary" accessibilityRole="header">
-        {brand.wordmark}
-      </Label>
+      {/* `Label` forwards no accessibility props, so the header role lives on a
+          wrapper rather than being dropped silently. */}
+      <View accessible accessibilityRole="header" accessibilityLabel={brand.wordmark}>
+        <Label variant="wordmark" tone="secondary">
+          {brand.wordmark}
+        </Label>
+      </View>
       <Gap size="md" />
 
       {bluetoothBlocked ? (

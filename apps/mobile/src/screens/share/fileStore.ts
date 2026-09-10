@@ -137,6 +137,19 @@ export class SourceFileStore implements FileStore {
     }
   }
 
+  /**
+   * Never called, and loud if it ever is.
+   *
+   * `FileStore` carries both halves because the RECEIVING side needs both: it
+   * writes chunks and then reads them back to verify the whole-file hash. A file
+   * being sent is only ever read, so a write here would mean the protocol had
+   * confused the two directions - which would corrupt the user's own file rather
+   * than merely fail a transfer, and is worth throwing over.
+   */
+  async writeChunk(): Promise<void> {
+    throw new Error('file store: a file being sent is never written to');
+  }
+
   /** Drop the cached block. The source file itself is never touched. */
   async dispose(): Promise<void> {
     if (this.disposed) return;

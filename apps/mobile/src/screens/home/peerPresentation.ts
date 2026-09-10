@@ -37,6 +37,20 @@ export const homeCopy = {
   pairingWaiting: 'Waiting for your friend to confirm too…',
   pairingGoneTitle: 'Nothing to confirm',
   pairingGoneBody: 'This request is no longer waiting. You can start it again from Home.',
+  /**
+   * Why "They match" cannot be tapped for the first moment.
+   *
+   * The confirm button is the one control in the app that can hand a stranger a
+   * trusted place on this phone, so it refuses the tap that was already on its
+   * way when the screen appeared.
+   */
+  compareFirst: 'Take a moment to compare the numbers.',
+  /** Screen-reader label for the six digits: read one at a time, not as a number. */
+  spellCode: (code: string): string => [...code].join(' '),
+  connectTitle: (name: string): string => `Connect to ${name}?`,
+  /** The sheet is waiting on a radio that is not up yet. */
+  notReadyToConnect: 'Still getting ready.',
+  cancelAttempt: 'Stop trying',
 } as const;
 
 /**

@@ -129,7 +129,17 @@ export function decodeFrame(data: Uint8Array): Frame {
     case FrameType.SECURE: {
       if (data.length < SECURE_HEADER_LENGTH + AEAD_TAG_LENGTH) throw new DecodeError('frame: secure frame too short');
       const sessionId = data.subarray(2, 2 + SESSION_ID_LENGTH);
-      const counter = readUint64BE(new DataView(data.buffer, data.byteOffset, data.byteLength), 10);
+      // The counter is eight peer-controlled bytes, so a forged or corrupted
+      // frame routinely carries a value beyond the safe integer range. That is
+      // malformed INPUT, not an internal fault, and it must be classified as
+      // such - otherwise every junk packet logs as an unexpected error and the
+      // real ones become impossible to find.
+      let counter: number;
+      try {
+        counter = readUint64BE(new DataView(data.buffer, data.byteOffset, data.byteLength), 10);
+      } catch {
+        throw new DecodeError('frame: counter is outside the representable range');
+      }
       return {
         kind: FrameType.SECURE,
         version,

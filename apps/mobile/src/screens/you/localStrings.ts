@@ -55,6 +55,9 @@ export const local = {
     refreshes: 'This code refreshes on its own, so an old screenshot cannot be used.',
     unavailableTitle: 'Code not ready',
     unavailableBody: 'Your code could not be built. Reopening this screen usually fixes it.',
+    tryAgain: 'Build it again',
+    /** Read out by a screen reader in place of the bitmap itself. */
+    accessibilityLabel: (name: string): string => `${name}'s pairing code, as a QR code for a friend to scan.`,
   },
 
   scan: {

@@ -39,8 +39,14 @@ export const shareStrings = {
   change: 'Change',
   preparing: 'Getting the file ready…',
   couldNotReadFile: "That file couldn't be opened.",
+  couldNotSend: "That couldn't be sent. Try again.",
   nothingChosen: 'Choose a photo or a file first.',
   tooLarge: 'That file is too big to send.',
+  tooManyAtOnce: 'Finish one of the other transfers first.',
+  choosePhotoLabel: 'Choose a photo or video from your library',
+  chooseFileLabel: 'Choose a file on this device',
+  previewLabel: (filename: string): string => `Preview of ${filename}`,
+  recipientLabel: (name: string): string => `Send to ${name}`,
 
   /** The honest warning before a long transfer. */
   aboutHowLong: (duration: string): string => `About ${duration} at the current speed.`,
@@ -49,10 +55,15 @@ export const shareStrings = {
   /** Progress lines. `formatTransferProgress` from core supplies the first one. */
   rateAndEta: (rate: string, duration: string): string => `${rate} · ${duration} left`,
   rateOnly: (rate: string): string => rate,
+  perSecond: (size: string): string => `${size}/s`,
   startingUp: 'Starting…',
   verifying: 'Checking the file…',
   waitingForThem: (name: string): string => `Waiting for ${name} to accept…`,
   offerExpired: 'They never answered.',
+
+  /** Who a file is going to or came from, under its name. */
+  toPerson: (name: string): string => `To ${name}`,
+  fromPerson: (name: string): string => `From ${name}`,
 
   /** Paused is a state, not a failure. */
   pausedDetail: "This will continue by itself when you're back in range.",
@@ -60,10 +71,21 @@ export const shareStrings = {
   /** Row and detail actions. */
   stop: 'Stop',
   open: 'Open',
+  tryAgain: 'Try again',
   removeFromList: 'Remove from list',
-  couldNotOpen: "This device has nothing that can open that file.",
+  clearFinished: 'Clear',
+  clearFinishedLabel: 'Clear the list of finished transfers',
+  couldNotOpen: 'This device has nothing that can open that file.',
   savedToPhotos: 'Saved to Photos',
   couldNotSave: "That couldn't be saved to Photos.",
+
+  /** Accessibility. Every control says what it does to what. */
+  reviewLabel: (name: string, filename: string): string => `${name} is offering ${filename}. Open to answer.`,
+  stopLabel: (filename: string): string => `Stop transferring ${filename}`,
+  openLabel: (filename: string): string => `Open ${filename}`,
+  saveLabel: (filename: string): string => `Save ${filename} to Photos`,
+  tryAgainLabel: (filename: string): string => `Send ${filename} again`,
+  progressLabel: (filename: string, status: string): string => `${filename}, ${status}`,
 
   /** Terminal states, as a person would say them. */
   stopped: 'Stopped',

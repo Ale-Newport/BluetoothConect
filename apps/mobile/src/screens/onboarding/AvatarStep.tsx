@@ -109,7 +109,10 @@ export function AvatarStep({
               onPress={() => choose(option)}
               style={({ pressed }) => [tileStyle(selected), pressed ? { opacity: 0.7 } : null]}
             >
-              <Text style={{ fontSize: theme.spacing.xl }}>{option}</Text>
+              {/* An emoji is drawn as type, so it takes a type size rather than
+                  a spacing value. `title` is the largest that still leaves the
+                  tile reading as a target rather than a sticker. */}
+              <Text style={{ fontSize: theme.typography.title.fontSize }}>{option}</Text>
             </Pressable>
           );
         })}

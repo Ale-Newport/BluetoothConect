@@ -8,11 +8,12 @@ import {
   useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollViewInstance,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { strings } from '@airlink/config';
-import { Button, Gap, Row, Screen, haptic, useTheme } from '../../ui/index.js';
+import { Button, Gap, Label, Row, Screen, haptic, useTheme } from '../../ui/index.js';
 import { useClient } from '../../client/ClientProvider.js';
 import { AppPhase, useAppStore } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
@@ -103,7 +104,9 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
   const { width } = useWindowDimensions();
   const client = useClient();
 
-  const pager = useRef<ScrollView>(null);
+  // `ScrollView` is a function component under the New Architecture, so the ref
+  // holds the host instance rather than the component itself.
+  const pager = useRef<ScrollViewInstance>(null);
   const mounted = useRef(true);
   // A retry must not mint a second identity: `createProfile` writes a keypair
   // and a row, and doing it twice would orphan the first one.
@@ -130,10 +133,30 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
     [],
   );
 
+  const scrollToStep = useCallback(
+    (target: Step) => {
+      pager.current?.scrollTo({ x: target * width, animated: true });
+    },
+    [width],
+  );
+
   useEffect(() => {
-    pager.current?.scrollTo({ x: step * width, animated: true });
+    scrollToStep(step);
     if (step !== Step.NAME) Keyboard.dismiss();
-  }, [step, width]);
+  }, [step, scrollToStep]);
+
+  /**
+   * Advancing a step can also *create* the page we are scrolling to, and a
+   * native scroll view clamps to the content width it currently knows about.
+   * Re-issuing the scroll once the content has actually grown is what stops the
+   * pager from silently staying on the page it was already showing.
+   */
+  const onContentResized = useCallback(
+    (contentWidth: number) => {
+      if (width > 0 && contentWidth >= (step + 1) * width) scrollToStep(step);
+    },
+    [step, width, scrollToStep],
+  );
 
   const goTo = useCallback((next: Step) => {
     setStep(next);
@@ -153,12 +176,14 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
   const enter = useCallback(
     (radiosUp: boolean) => {
       const store = useAppStore.getState();
-      // Home reads these to decide whether to show its calm banner. Both are
-      // live, so a permission granted a moment later clears it on its own.
-      store.setRadios({
-        permissionsGranted: radiosUp,
-        detail: radiosUp ? null : strings.permissions.deniedBody,
-      });
+      // Only a *positive* answer is written back. Nothing downstream ever
+      // clears `permissionsGranted`, so recording a refusal we have not
+      // actually seen - an iOS prompt can still be on screen when this runs -
+      // would be a lie that sticks. What Home shows is driven by `bluetoothOn`,
+      // which the transport keeps live: it puts up a calm banner with Open
+      // Settings while Bluetooth is off, and takes it down by itself the moment
+      // the user says yes.
+      if (radiosUp) store.setRadios({ permissionsGranted: true, detail: null });
       store.setProfile(client.profile);
       store.setPhase(AppPhase.READY);
       // Reset rather than navigate: there is no going back to a first run.
@@ -233,23 +258,38 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
         );
 
       case Step.AVATAR:
+        // Someone can reach this step and then swipe back and empty the field.
+        // Both buttons would lead somewhere they cannot act, so both say so
+        // rather than looking live.
         return (
-          <Row gap="sm">
-            <Button
-              title={strings.onboarding.skip}
-              variant="ghost"
-              onPress={() => {
-                setEmoji(null);
-                goTo(Step.PERMISSIONS);
-              }}
-              style={{ flex: 1 }}
-            />
-            <Button
-              title={strings.onboarding.nameContinue}
-              onPress={() => goTo(Step.PERMISSIONS)}
-              style={{ flex: 2 }}
-            />
-          </Row>
+          <>
+            <Row gap="sm">
+              <Button
+                title={strings.onboarding.skip}
+                variant="ghost"
+                onPress={() => {
+                  setEmoji(null);
+                  goTo(Step.PERMISSIONS);
+                }}
+                disabled={!nameReady}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title={strings.onboarding.nameContinue}
+                onPress={() => goTo(Step.PERMISSIONS)}
+                disabled={!nameReady}
+                style={{ flex: 2 }}
+              />
+            </Row>
+            {nameReady ? null : (
+              <>
+                <Gap size="xs" />
+                <Label variant="footnote" tone="tertiary" align="center">
+                  {onboardingCopy.nameRequired}
+                </Label>
+              </>
+            )}
+          </>
         );
 
       case Step.PERMISSIONS:
@@ -297,6 +337,7 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           onMomentumScrollEnd={onSettled}
+          onContentSizeChange={onContentResized}
           style={{ flex: 1 }}
         >
           <WelcomeStep width={width} />
