@@ -28,6 +28,7 @@ import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
@@ -108,6 +109,21 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
          */
         const val RESOLVE_TIMEOUT_MS = 10_000L
 
+        /**
+         * How often to re-announce peers this browse can still see.
+         *
+         * NSD is LEVEL-triggered: `onServiceFound` fires once when a service
+         * appears and never again while it stays there. The presence layer
+         * above is EDGE-triggered - it forgets a peer that stops being
+         * announced, because no radio has a dependable "gone" signal - so a
+         * transport that only reports changes loses a peer who is standing
+         * right there. Bridging the two is this transport's job.
+         *
+         * The same number is `TIMING.presenceRefreshMs` in packages/core, and
+         * `TransportEvents.peerDiscovered` records what went wrong without it.
+         */
+        const val PRESENCE_REFRESH_MS = 5_000L
+
         const val TXT_VERSION = "v"
         const val TXT_TOKEN = "t"
         const val TXT_NAME = "n"
@@ -165,6 +181,8 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
      * and the layer above then holds an endpoint it will never be told is gone.
      */
     private var discovering = false
+    /** Drives the presence heartbeat while a browse is live. */
+    private var presenceTask: ScheduledFuture<*>? = null
 
     /** The name the system actually registered - it renames us on a collision. */
     private var registeredServiceName: String? = null
@@ -525,6 +543,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             try {
                 manager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
                 discoveryListener = listener
+                startPresenceHeartbeat()
             } catch (e: RuntimeException) {
                 // Nothing is discovering, so nothing may publish a peer.
                 discovering = false
@@ -590,8 +609,35 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         onControl { stopDiscoveryInternal() }
     }
 
+    /**
+     * Tell the layer above that everyone we can see is still there.
+     *
+     * See [PRESENCE_REFRESH_MS]. Announcing a peer that has actually gone is
+     * the cheaper error: the row is untrusted, a dial to it fails gracefully,
+     * and `onServiceLost` corrects it.
+     */
+    private fun startPresenceHeartbeat() {
+        presenceTask?.cancel(false)
+        presenceTask = control.scheduleWithFixedDelay(
+            // Explicitly a Runnable for the same reason the resolve timeout is:
+            // ScheduledExecutorService swallows a throw into the future, and a
+            // repeating task that throws is silently cancelled for ever.
+            Runnable {
+                if (!discovering) return@Runnable
+                for (endpoint in endpoints.values.toList()) {
+                    events?.peerDiscovered(endpointOf(endpoint))
+                }
+            },
+            PRESENCE_REFRESH_MS,
+            PRESENCE_REFRESH_MS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
     private fun stopDiscoveryInternal() {
         discovering = false
+        presenceTask?.cancel(false)
+        presenceTask = null
         val manager = nsdManager ?: return
         discoveryListener?.let { listener ->
             discoveryListener = null

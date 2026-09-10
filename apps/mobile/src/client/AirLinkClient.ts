@@ -68,6 +68,16 @@ export interface AirLinkClientEvents {
   message: { readonly peerKey: string; readonly messageId: string };
   radioChanged: { readonly transport: TransportKind; readonly available: boolean; readonly detail: string };
   error: { readonly message: string; readonly fatal: boolean };
+  /**
+   * A line from the radios themselves.
+   *
+   * The native layer has always produced these - every Swift and Kotlin
+   * transport calls `log(level:message:)` - and until now nothing subscribed to
+   * them, so they were emitted across the bridge and dropped. That is the half
+   * of the story you most want when a connection fails on a phone with no
+   * laptop attached, which is precisely what Developer Mode is for.
+   */
+  nativeLog: { readonly level: string; readonly scope: string; readonly message: string };
 }
 
 export interface AirLinkClientOptions {
@@ -290,6 +300,13 @@ export class AirLinkClient {
       this.registry.events.on('changed', ({ peers }) => {
         this.events.emit('peersChanged', { count: peers.length });
       }),
+      // Radio lines go both into this client's own buffer, so a bug report
+      // carries them, and out as an event, so Developer Mode can show them
+      // live. They were being emitted to nobody before.
+      this.host.logs.on('log', ({ level, scope, message }) => {
+        this.log.info(`[${scope}] ${message}`, { level });
+        this.events.emit('nativeLog', { level, scope, message });
+      }),
     );
 
     await this.startAdvertising();
@@ -354,7 +371,17 @@ export class AirLinkClient {
     this.unsubscribers.push(
       transport.events.on('peerDiscovered', ({ peer }) => {
         // Never list ourselves. See `ownTokens`.
-        if (peer.advertisementToken && this.ownTokens.has(toHex(peer.advertisementToken))) return;
+        const token = peer.advertisementToken ? toHex(peer.advertisementToken) : '';
+        if (token && this.ownTokens.has(token)) {
+          this.log.debug('discovery: ignored own advertisement', { transport: transport.kind, token });
+          return;
+        }
+        this.log.debug('discovery: peer seen', {
+          transport: transport.kind,
+          endpoint: peer.endpointId,
+          name: peer.advertisedName ?? '',
+          token,
+        });
         this.registry.observe(peer);
       }),
       transport.events.on('peerLost', ({ endpointId }) => {
@@ -564,8 +591,30 @@ export class AirLinkClient {
     this.peers.get(peerKey)?.pairing.decline();
   }
 
+  /**
+   * The live session for a peer, by whichever name the caller has.
+   *
+   * A handle is keyed by whatever identified the peer when the session STARTED:
+   * the discovery row for a dial we made, and a synthetic `inbound-...` id for
+   * one we accepted, because an incoming link arrives before anybody knows who
+   * is on it. The presence layer keys a recognised friend by their peer id. So
+   * for the accepting side the two names never matched, and Home asked a live,
+   * connected friend to connect - offering a button over an open session.
+   *
+   * Resolving by peer id as well is the read-side half of the answer. The
+   * write-side half - giving a handle its peer id as its key once the handshake
+   * reveals it - is deliberately NOT done here: it collides with the case where
+   * both phones dial each other at the same instant and each ends up holding
+   * two sessions for one person, and that deserves its own change rather than
+   * being smuggled into a display fix.
+   */
   peer(peerKey: string): PeerHandle | undefined {
-    return this.peers.get(peerKey);
+    const direct = this.peers.get(peerKey);
+    if (direct) return direct;
+    for (const handle of this.peers.values()) {
+      if (handle.session.peerId === peerKey) return handle;
+    }
+    return undefined;
   }
 
   connectedPeers(): PeerHandle[] {
@@ -615,6 +664,32 @@ export class AirLinkClient {
       nearby: this.nearby().length,
       friends: this.trust?.list().length ?? 0,
     };
+  }
+
+  /**
+   * Everything the client has logged, oldest first.
+   *
+   * The buffer has always existed and nothing ever read it, so Developer Mode
+   * could only show what happened after somebody opened Developer Mode - which
+   * is never when the interesting thing happened. This is what makes a failed
+   * connection legible after the fact, on a phone, with no laptop attached.
+   */
+  recentLog(): { at: number; level: string; scope: string; message: string }[] {
+    return this.log.buffer.snapshot().map((entry) => ({
+      at: entry.at,
+      level: entry.level,
+      scope: entry.scope,
+      // The data bag is flattened rather than nested: this ends up in a text
+      // report that somebody reads on a phone screen.
+      message:
+        entry.message +
+        (entry.data
+          ? ' ' +
+            Object.entries(entry.data)
+              .map(([key, value]) => `${key}=${String(value)}`)
+              .join(' ')
+          : ''),
+    }));
   }
 
   /** Token this device is currently broadcasting, for Developer Mode. */

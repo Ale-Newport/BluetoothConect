@@ -252,4 +252,18 @@ export const TIMING = {
   /** Clock-sync probes per round. */
   clockSyncSamples: 7,
   clockSyncIntervalMs: 30_000,
+  /**
+   * How often a transport must re-announce a peer it can still see.
+   *
+   * `NearbyRegistry` decays a row `staleAfterMs` after its last sighting,
+   * because most radios have no reliable "gone" signal - a phone in a pocket
+   * simply stops advertising. That decay only works if presence keeps arriving,
+   * so `peerDiscovered` is a HEARTBEAT, not an edge. See `TransportEvents`.
+   *
+   * This must stay comfortably under the registry's staleness window: three
+   * missed beats should not evict a peer who is still in the room.
+   */
+  presenceRefreshMs: 5_000,
+  /** How long a peer stays listed after its last sighting. */
+  nearbyStaleAfterMs: 15_000,
 } as const;

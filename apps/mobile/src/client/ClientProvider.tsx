@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { ConnectionState } from '@airlink/core';
+import { ConnectionState, Logger } from '@airlink/core';
 import { AppPhase, useAppStore } from '../state/index.js';
 import { AirLinkClient } from './AirLinkClient.js';
 import { chatCenterFor } from '../screens/chat/chatCenter.js';
@@ -31,6 +31,22 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
       appVersion: (pkg as { version?: string }).version ?? '0.1.0',
       platform: Platform.OS === 'ios' ? 'ios' : 'android',
       deviceModel: Platform.OS,
+      /**
+       * A development build talks; a release build only remembers.
+       *
+       * The buffer was always being written and never read, so a debug build
+       * was silent in the Metro console while the interesting thing happened -
+       * which is a strange way to build a debug build. Release keeps `info`
+       * and no console: the lines still go to the buffer, which is what
+       * Developer Mode and the bug report read.
+       *
+       * `typeof jest` keeps the test output readable. It is a real condition,
+       * not superstition: every screen test mounts this provider.
+       */
+      logger: new Logger('airlink', {
+        minLevel: __DEV__ ? 'debug' : 'info',
+        console: __DEV__ && typeof jest === 'undefined',
+      }),
     });
   }
 

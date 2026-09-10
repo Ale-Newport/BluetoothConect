@@ -128,6 +128,11 @@ export function DeveloperModeScreen(): React.JSX.Element {
         append(local.developer.eventRadio(transport, available, detail), !available),
       ),
       client.events.on('error', ({ message, fatal }) => append(local.developer.eventError(message, fatal), true)),
+      // The radios, in their own words. `warn` and `error` are marked bad so a
+      // failing connection stands out from the ordinary chatter.
+      client.events.on('nativeLog', ({ level, scope, message }) =>
+        append(local.developer.eventNative(scope, message), level === 'warn' || level === 'error'),
+      ),
     ];
     return () => {
       for (const off of offs) off();
@@ -167,10 +172,21 @@ export function DeveloperModeScreen(): React.JSX.Element {
    * the button.
    */
   const copyAll = useCallback(() => {
-    const ok = copyText(buildBugReport(rawSnapshot, token, log));
+    // The client's own buffer goes in too, because it holds what happened
+    // BEFORE this screen was opened - which is when the interesting thing
+    // almost always happened.
+    const history = client
+      .recentLog()
+      .map((entry, index) => ({
+        id: -1 - index,
+        at: entry.at,
+        text: `${entry.scope} · ${entry.message}`,
+        bad: entry.level === 'warn' || entry.level === 'error',
+      }));
+    const ok = copyText(buildBugReport(rawSnapshot, token, [...log, ...history.reverse()]));
     setCopied(ok ? 'ok' : 'failed');
     haptic(ok ? 'success' : 'error');
-  }, [log, rawSnapshot, token]);
+  }, [client, log, rawSnapshot, token]);
 
   const turnOff = useCallback(() => {
     useAppStore.getState().setDeveloperMode(false);

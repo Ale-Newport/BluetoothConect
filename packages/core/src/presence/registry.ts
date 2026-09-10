@@ -32,6 +32,7 @@
 import type { TransportKind } from '../protocol/capabilities.js';
 import type { DiscoveredPeer } from '../transport/types.js';
 import { toHex } from '../util/bytes.js';
+import { TIMING } from '../protocol/constants.js';
 import { TypedEmitter } from '../util/emitter.js';
 import type { Clock, TimerHandle } from '../util/time.js';
 import { NearbyKind, Proximity, proximityFromRssi, type NearbyPeer } from './types.js';
@@ -84,7 +85,15 @@ export interface NearbyRegistryOptions {
   readonly sweepIntervalMs?: number;
 }
 
-const DEFAULT_STALE_AFTER_MS = 15_000;
+/**
+ * Tied to the transport contract rather than chosen here.
+ *
+ * `TIMING.presenceRefreshMs` is how often a transport promises to re-announce a
+ * peer it can still see; this is how long we wait before believing the silence.
+ * Three missed beats, so a dropped packet or a busy radio does not evict
+ * somebody standing in the room. See `TransportEvents.peerDiscovered`.
+ */
+const DEFAULT_STALE_AFTER_MS = TIMING.nearbyStaleAfterMs;
 const DEFAULT_SWEEP_MS = 2_000;
 
 export class NearbyRegistry {
@@ -156,6 +165,18 @@ export class NearbyRegistry {
       if (previous && previousKey) {
         this.entries.delete(previousKey);
         entry = { ...previous, key, peerId: resolvedPeerId };
+        // Re-point EVERY index that named the old row, not just the endpoint
+        // this event arrived on. A peer is usually visible on more than one
+        // transport at once, and an index left pointing at a deleted row is
+        // worse than no index: `forgetEndpoint` for it finds nothing and gives
+        // up silently, and a later sighting on it resolves to a dead entry and
+        // opens a duplicate row for somebody already listed.
+        for (const sighting of previous.sightings.values()) {
+          this.endpointIndex.set(`${sighting.transport}:${sighting.endpointId}`, key);
+        }
+        if (previous.tokenHex !== null && this.tokenIndex.get(previous.tokenHex) === previousKey) {
+          this.tokenIndex.set(previous.tokenHex, key);
+        }
       } else {
         entry = {
           key,
@@ -213,6 +234,16 @@ export class NearbyRegistry {
     const entry = this.entries.get(key);
     if (!entry) return;
 
+    // Only if the slot still holds THIS endpoint. One device publishes several
+    // services on the same transport - two Bonjour records, seen by one browser
+    // - and the per-transport slot holds whichever was seen last. Deleting on
+    // the name of the transport alone threw away a sighting that had just been
+    // refreshed by the peer's other record, and took the whole row with it.
+    const sighting = entry.sightings.get(transport);
+    if (!sighting || sighting.endpointId !== endpointId) {
+      this.emitChanged();
+      return;
+    }
     entry.sightings.delete(transport);
     // Still reachable another way: the person has not left, one radio has.
     if (entry.sightings.size > 0) {

@@ -11,6 +11,7 @@
  *   limits, MTU limits, abrupt disconnection and reconnection.
  */
 import { TransportKind } from '../protocol/capabilities.js';
+import { TIMING } from '../protocol/constants.js';
 import { TypedEmitter } from '../util/emitter.js';
 import { toHex } from '../util/bytes.js';
 import type { Clock, TimerHandle } from '../util/time.js';
@@ -430,6 +431,9 @@ export class MockTransport implements Transport {
     for (const link of this.links.values()) link.setConditions(next);
   }
 
+  /** Drives the presence heartbeat while discovering. */
+  private presenceTimer: TimerHandle | undefined;
+
   async startAdvertising(record: AdvertisementRecord): Promise<void> {
     this.advertising = record;
     for (const other of this.network.allTransports()) {
@@ -447,10 +451,22 @@ export class MockTransport implements Transport {
   async startDiscovery(): Promise<void> {
     this.discovering = true;
     this.rescan();
+    // The heartbeat the contract requires. Without it this mock models an
+    // edge-triggered radio, which is exactly the shape of transport that broke
+    // in production - so a mock that skipped it could never have caught the
+    // bug. See `TransportEvents.peerDiscovered`.
+    this.presenceTimer ??= this.network.clock.setInterval(
+      () => this.rescan(),
+      TIMING.presenceRefreshMs,
+    );
   }
 
   async stopDiscovery(): Promise<void> {
     this.discovering = false;
+    if (this.presenceTimer !== undefined) {
+      this.network.clock.clearInterval(this.presenceTimer);
+      this.presenceTimer = undefined;
+    }
   }
 
   /** @internal Re-emit peerDiscovered for everything currently advertising. */

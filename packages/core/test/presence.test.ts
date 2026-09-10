@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { NearbyKind, NearbyRegistry, Proximity, proximityFromRssi } from '../src/presence/index.js';
+import { MockNetwork } from '../src/transport/mock.js';
 import { TransportKind } from '../src/protocol/capabilities.js';
 import { VirtualClock } from '../src/util/time.js';
 import type { DiscoveredPeer } from '../src/transport/types.js';
@@ -54,6 +55,46 @@ describe('NearbyRegistry', () => {
    * the identical token at any instant, because the client advertises one token
    * across every transport in a single pass.
    */
+  it('does not drop a sighting when the OTHER endpoint on that transport is lost', () => {
+    const { registry } = setup();
+    const token = new Uint8Array([5, 5, 5, 5, 5, 5]);
+
+    // One device, two Bonjour records, one browser. The per-transport sighting
+    // slot ends up holding whichever arrived last.
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'their-a', advertisementToken: token }));
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'their-b', advertisementToken: token }));
+    expect(registry.size).toBe(1);
+
+    // The record that is NOT in the slot goes away. The person has not left.
+    registry.forgetEndpoint(TransportKind.LOCAL_NETWORK, 'their-a');
+    expect(registry.size).toBe(1);
+
+    // The one that is in the slot goes away, and now they have.
+    registry.forgetEndpoint(TransportKind.LOCAL_NETWORK, 'their-b');
+    expect(registry.size).toBe(0);
+  });
+
+  it('carries every index across when a stranger turns out to be a friend', () => {
+    const { registry } = setup();
+
+    // Seen on two transports while still a stranger: the token does not resolve
+    // yet, so the row is keyed by a transport handle.
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'lan', advertisementToken: OTHER_TOKEN }));
+    registry.observe(sighting({ transport: TransportKind.BLE, endpointId: 'ble', advertisementToken: OTHER_TOKEN }));
+    expect(registry.size).toBe(1);
+
+    // Now the friend list loads and the token resolves. The row is re-keyed to
+    // the peer id, and every index that named the old key must follow it.
+    registry.observe(sighting({ transport: TransportKind.BLE, endpointId: 'ble', advertisementToken: FRIEND_TOKEN }));
+    expect(registry.size).toBe(1);
+
+    // The endpoint that was NOT in this event still has to resolve to the row -
+    // an index pointing at a deleted key is worse than none: this would have
+    // opened a second row for somebody already listed.
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'lan', advertisementToken: OTHER_TOKEN }));
+    expect(registry.size).toBe(1);
+  });
+
   it('collapses one stranger seen on two transports into one row', () => {
     const { registry } = setup();
     const token = new Uint8Array([7, 7, 7, 7, 7, 7]);
@@ -246,5 +287,64 @@ describe('NearbyRegistry', () => {
     registry.dispose();
     expect(registry.size).toBe(0);
     expect(clock.pendingTimers).toBe(0);
+  });
+});
+
+/**
+ * The contract, executed.
+ *
+ * These live here rather than in transport.test.ts because the defect they pin
+ * is the JOIN between two components: a transport that stops announcing and a
+ * registry that decays. Either alone is correct; together, with the wrong
+ * assumption between them, a paired friend standing in the room disappears
+ * after fifteen seconds and cannot be dialled again.
+ *
+ * That is not hypothetical. It shipped. An unpaired device advertised a random
+ * token that changed every four seconds, so the Bonjour transport - which only
+ * reports CHANGES - re-announced constantly and everything looked perfect. The
+ * moment two devices paired, the token became a five-minute-stable derivation,
+ * the changes stopped, and so did discovery.
+ */
+describe('presence is a heartbeat, not an edge', () => {
+  it('keeps a peer listed for as long as the transport keeps announcing it', async () => {
+    const clock = new VirtualClock();
+    const network = new MockNetwork(clock);
+    const registry = new NearbyRegistry({ clock, resolveToken: () => null });
+    registry.start();
+
+    const us = network.createTransport('us');
+    const them = network.createTransport('them');
+    us.events.on('peerDiscovered', ({ peer }) => registry.observe(peer));
+
+    // A STABLE token, which is what a paired friend advertises. The random one
+    // an unpaired device uses would mask this entirely.
+    await them.startAdvertising({ protocolVersion: 1, token: FRIEND_TOKEN, displayName: 'Maria' });
+    await us.startDiscovery();
+    expect(registry.size).toBe(1);
+
+    // Well past the staleness window, with nothing changing about the peer.
+    await clock.advanceAsync(60_000);
+    expect(registry.size).toBe(1);
+  });
+
+  it('still lets go of a peer that actually leaves', async () => {
+    const clock = new VirtualClock();
+    const network = new MockNetwork(clock);
+    const registry = new NearbyRegistry({ clock, resolveToken: () => null });
+    registry.start();
+
+    const us = network.createTransport('us');
+    const them = network.createTransport('them');
+    us.events.on('peerDiscovered', ({ peer }) => registry.observe(peer));
+
+    await them.startAdvertising({ protocolVersion: 1, token: FRIEND_TOKEN, displayName: 'Maria' });
+    await us.startDiscovery();
+    expect(registry.size).toBe(1);
+
+    // Out of range: no `peerLost` for a radio that simply stops being heard,
+    // which is the case the decay exists for.
+    network.partition('us', 'them');
+    await clock.advanceAsync(60_000);
+    expect(registry.size).toBe(0);
   });
 });

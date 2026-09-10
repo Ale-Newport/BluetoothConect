@@ -276,9 +276,10 @@ export const local = {
      * so this is every line the interface can actually see. Said plainly rather
      * than dressed up as more than it is.
      */
-    logHint: 'Client events, newest first, since this screen opened.',
+    logHint: 'Client events and radio lines, newest first, since this screen opened.',
     logEmpty: 'Nothing has happened yet.',
-    logNativeNote: 'The native log buffer is not exposed to the interface in this build.',
+    logNativeNote: 'Lines prefixed with a transport name come from the native radios.',
+    eventNative: (scope: string, message: string): string => `${scope} · ${message}`,
     clearLog: 'Clear',
     entries: (n: number): string => (n === 1 ? '1 entry' : `${n} entries`),
     eventPeers: (count: number): string => `discovery · ${count} nearby`,

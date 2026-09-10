@@ -121,6 +121,27 @@ export interface Link {
 }
 
 export interface TransportEvents {
+  /**
+   * A peer is visible. Emitted repeatedly, not once.
+   *
+   * THIS IS A HEARTBEAT, AND THE WORD IS LOAD-BEARING. A transport must re-emit
+   * this at least every `TIMING.presenceRefreshMs` for as long as the peer can
+   * be seen, because `NearbyRegistry` expires a row that stops being fed. The
+   * registry works that way on purpose: Bluetooth has no reliable "gone" event,
+   * so absence of presence is the only signal that somebody left the room.
+   *
+   * A transport whose underlying discovery is LEVEL-triggered - Bonjour, where
+   * the record simply exists until it is withdrawn - must therefore add its own
+   * timer. Getting this wrong is not a subtle degradation: it worked perfectly
+   * for unpaired devices, whose advertisement token was random and changed
+   * every four seconds, and then a peer became a friend, its token went stable
+   * for five minutes, the change-driven events stopped, and the friend vanished
+   * from the list fifteen seconds later and could not be dialled again.
+   *
+   * Re-emitting for a peer that is genuinely gone is the lesser error: the row
+   * is untrusted, the dial fails gracefully, and the next `peerLost` corrects
+   * it. Not re-emitting loses people who are standing right there.
+   */
   peerDiscovered: { readonly peer: DiscoveredPeer };
   peerLost: { readonly endpointId: string };
   /** A peer initiated a connection to us. */

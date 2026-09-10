@@ -1365,7 +1365,12 @@ describe('pairing over two real sessions', () => {
     expect(refused[0]?.peerId).toBe(ctx.maria.identity.peerId);
     expect(paired).toEqual([]);
     expect(ctx.alejandro.trust.list()).toHaveLength(0);
-    // And nothing is left ticking.
+
+    // And the ceremony left nothing ticking. Discovery is stopped first because
+    // a discovering transport is SUPPOSED to have a timer running - presence is
+    // a heartbeat, see `TransportEvents.peerDiscovered` - and this assertion is
+    // about the pairing, not about the radio.
+    await ctx.transportA.stopDiscovery();
     expect(ctx.clock.pendingTimers).toBe(0);
   });
 

@@ -154,6 +154,40 @@ reordering, 10% duplication).
 
 ---
 
+## 3b. Presence is a heartbeat, not an edge
+
+The one rule a new transport is most likely to get wrong, so it is written here
+as well as on the type.
+
+`peerDiscovered` must be re-emitted **at least every `TIMING.presenceRefreshMs`
+(5 s)** for as long as the peer can be seen. `NearbyRegistry` expires a row
+`TIMING.nearbyStaleAfterMs` (15 s) after its last sighting, and it has to: no
+radio has a dependable "gone" signal — a phone in a pocket simply stops
+advertising, and Bluetooth will never tell you it left.
+
+That is free for a radio whose discovery is naturally **edge-triggered**: BLE
+advertisements repeat every few hundred milliseconds, so every scan callback is
+a fresh sighting. It is **not** free for one that is **level-triggered** —
+Bonjour, where a record simply exists until it is withdrawn and the browser
+reports it once. Those transports own a timer. Both local-network transports
+have one (`NetworkTiming.presenceRefreshSeconds` on iOS,
+`PRESENCE_REFRESH_MS` on Android).
+
+This was a real defect and an instructive one, because it hid behind something
+accidental. An **unpaired** device advertises a random token that changes every
+four seconds, so its Bonjour TXT record changed constantly, the browser reported
+a change every time, and presence looked perfect. The moment two devices
+**paired**, the token became a five-minute-stable derivation, the TXT record
+stopped changing, the events stopped — and a friend standing in the room
+vanished from the list after fifteen seconds and could not be dialled. First
+connection always worked; every one after it failed.
+
+Re-announcing a peer that has actually gone is the cheaper error: the row is
+untrusted, a dial to it fails gracefully, and the browser's own removal event
+corrects it. Not re-announcing loses people who are standing right there.
+
+---
+
 ## 4. Negotiation and upgrade
 
 Both peers exchange their supported transports inside the encrypted handshake.

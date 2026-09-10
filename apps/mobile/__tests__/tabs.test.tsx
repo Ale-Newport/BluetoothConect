@@ -159,3 +159,19 @@ test('with Bluetooth off but Wi-Fi working, the banner does not claim nobody can
   // people - and a friend would be sitting in the list right below it.
   expect(screen.queryByText(strings.status.bluetoothOffDetail)).toBeNull();
 }, 30000);
+
+test('a session accepted rather than dialled is still found by the peer it belongs to', async () => {
+  // Covered directly against the client rather than through the screen: the
+  // defect is that a handle created for an INBOUND link is keyed by a synthetic
+  // id, so looking it up by the peer id the presence layer uses found nothing -
+  // and Home offered "Connect" over an already-open session.
+  const solo = new AirLinkClient({ appVersion: '0', platform: 'ios', deviceModel: 'test' });
+  await solo.load();
+
+  const peers = (solo as unknown as { peers: Map<string, unknown> }).peers;
+  peers.set('inbound-abc123', { session: { peerId: 'PEERGRACE' } });
+
+  expect(solo.peer('inbound-abc123')).toBeDefined();
+  expect(solo.peer('PEERGRACE')).toBeDefined();
+  expect(solo.peer('SOMEONE-ELSE')).toBeUndefined();
+});

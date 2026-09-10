@@ -113,6 +113,16 @@ private enum NetworkTiming {
     /// one has no caller waiting on it, so without this a peer that opens TCP
     /// and then stalls holds a slot of `maxConcurrentLinks` for ever.
     static let inboundReadyTimeoutSeconds = 10.0
+    /// How often to re-announce peers this browser can still see.
+    ///
+    /// Bonjour is LEVEL-triggered - a record exists until it is withdrawn, and
+    /// NWBrowser reports it once - while the presence layer above is
+    /// EDGE-triggered: it decays a peer that stops being announced, because no
+    /// radio has a reliable "gone" signal. Bridging the two is this transport's
+    /// job, and it is not optional. Must stay well under the registry's
+    /// staleness window; `TIMING.presenceRefreshMs` in packages/core is the
+    /// same number, and `TransportEvents.peerDiscovered` explains why.
+    static let presenceRefreshSeconds = 5.0
 }
 
 /**
@@ -243,6 +253,9 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
 
     private var listener: NWListener?
     private var browser: NWBrowser?
+    /// Re-announces everything the browser can still see. See
+    /// `NetworkTiming.presenceRefreshSeconds`.
+    private var presenceTimer: DispatchSourceTimer?
 
     /// Bonjour instance name we publish. Generated once per start() and then
     /// held constant.
@@ -414,6 +427,8 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
     /// Cancels everything and reports every open link closed. Must be called on
     /// `queue`.
     private func teardown(reason: String) {
+        presenceTimer?.cancel()
+        presenceTimer = nil
         listener?.cancel()
         listener = nil
         browser?.cancel()
@@ -621,6 +636,8 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
 
     func stopDiscovery() {
         queue.sync {
+            presenceTimer?.cancel()
+            presenceTimer = nil
             browser?.cancel()
             browser = nil
             browserRestartAttempt = 0
@@ -684,6 +701,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         }
 
         created.start(queue: queue)
+        startPresenceHeartbeat()
         browser = created
     }
 
@@ -733,6 +751,49 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         events?.peerDiscovered(DiscoveredEndpoint(
             transport: kind, endpointId: id, name: displayName, token: token, rssi: 0
         ))
+    }
+
+    /**
+     * Tell the layer above that everyone we can see is still there.
+     *
+     * `handleDiscovered` deliberately stays quiet when nothing about a peer has
+     * changed, and Bonjour only reports changes in the first place - so without
+     * this, a peer whose TXT record is stable is announced exactly once and
+     * then never again. That is fine for a transport whose consumer remembers
+     * for ever, and wrong for ours, which forgets after fifteen seconds.
+     *
+     * The bug this fixes was invisible for as long as devices were strangers:
+     * an unpaired device advertises a random token that changes every four
+     * seconds, so the TXT record kept changing and the re-announcements were an
+     * accident of the token being random. The moment two devices paired, the
+     * token became a stable five-minute derivation, the accident stopped, and
+     * the friend vanished from the list and could not be dialled.
+     *
+     * Announcing a peer that has actually gone is the cheaper error: the row is
+     * untrusted, a dial to it fails gracefully, and the browser's own `.removed`
+     * corrects it.
+     */
+    private func startPresenceHeartbeat() {
+        presenceTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(
+            deadline: .now() + NetworkTiming.presenceRefreshSeconds,
+            repeating: NetworkTiming.presenceRefreshSeconds
+        )
+        timer.setEventHandler { [weak self] in
+            guard let self, self.browser != nil else { return }
+            for entry in self.endpoints.values {
+                self.events?.peerDiscovered(DiscoveredEndpoint(
+                    transport: self.kind,
+                    endpointId: entry.id,
+                    name: entry.name,
+                    token: entry.token,
+                    rssi: 0
+                ))
+            }
+        }
+        timer.resume()
+        presenceTimer = timer
     }
 
     private func handleLost(_ result: NWBrowser.Result) {

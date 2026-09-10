@@ -193,7 +193,7 @@ These are written down so the product never promises them.
 | 8 | Chat, file transfer, watch-together, groups, pairing protocols | **done** |
 | 9 | Design system, navigation, store, client, native adapter | **done** |
 | 10 | The app screens | **done** — 51 files, no placeholders, mounted by tests |
-| 11 | Integration tests, network harness, offline acceptance test | **done** — 1140 tests |
+| 11 | Integration tests, network harness, offline acceptance test | **done** — 1150 tests |
 | 12 | Store readiness: identifiers, versions, placeholder artwork, checklists | **done** |
 
 ### Verified by running it
@@ -236,6 +236,21 @@ And then, on the screens themselves:
 - **Developer Mode said "Unavailable  no"** for an unavailable transport, which
   states the opposite of the truth, on the one screen whose whole job is to be
   read literally.
+
+And then, once two simulators could be made into two real peers, the thing the
+whole product is for:
+
+- **A paired friend could never be connected to twice.** Discovery, the
+  handshake, the six digits and trust all worked; the second connection always
+  failed. The cause was a mismatch nobody had written down: `peerDiscovered` is
+  a heartbeat that `NearbyRegistry` decays without, and the Bonjour transport
+  only emitted it on *change*. An unpaired device's advertisement token is
+  random and changes every four seconds, so the TXT record kept changing and
+  presence worked by accident. Pairing made the token stable for five minutes,
+  the changes stopped, and the friend vanished from the list fifteen seconds
+  later. The contract is now stated on the type, in TRANSPORTS.md, and enforced
+  by `MockTransport` actually implementing it — which is what makes the
+  regression test possible at all.
 
 `apps/mobile` now has a test suite of its own — 52 tests that mount the real
 tree, walk a first run to Home, open all five tabs and push a peer in through
