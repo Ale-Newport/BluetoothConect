@@ -178,12 +178,76 @@ the user is not shown an alert by an app they did not open.
 
 ---
 
-## 7. Testing on real devices
+## 7. Running it on your own iPhone
 
-The simulator has no Bluetooth radio, so discovery and connection can only be
-tested on hardware. Everything above the transport — protocol, crypto,
-reliability, games, file transfer, sync — is covered by the mock transport and
-runs in Node. See [TESTING.md](TESTING.md).
+```bash
+./scripts/run-device.sh                 # Release: builds, installs, launches
+./scripts/run-device.sh --debug         # tethered to Metro on this Mac
+./scripts/run-device.sh --device "Alejandro's iPhone"
+./scripts/run-device.sh --bundle-id com.yourname.airlink
+```
+
+**Release, not Debug, and the distinction matters more here than anywhere.** A
+Debug build fetches its JavaScript from Metro over the network, so the phone
+stays tethered to the Mac — a strange way to test an app whose whole premise is
+working with no network. A Release build embeds the bundle in the `.app`
+(verified: `main.jsbundle`, ~6 MB of Hermes bytecode), so the phone can go into
+airplane mode, or onto a plane, with the app complete on its own.
+
+What you need, and nothing more:
+
+| | |
+|---|---|
+| iOS version | **16.0 or newer** (`IPHONEOS_DEPLOYMENT_TARGET`) |
+| Apple account | A **free** Apple ID is enough |
+| Entitlements | **None.** No `.entitlements` file exists and none is needed |
+
+The free account is worth spelling out, because it is usually the thing people
+assume they need to pay for. AirLink's capabilities are Bluetooth with the
+`bluetooth-central` / `bluetooth-peripheral` background modes, Bonjour over the
+local network, and Apple peer-to-peer Wi-Fi via `includePeerToPeer` — all of
+which are Info.plist keys, not paid entitlements. The one entitlement-gated API
+in the tree is `NEHotspotConfiguration` in `HotspotJoiner.swift`, which requires
+the Hotspot Configuration capability (ADP/ADEP only) — and nothing in the app
+calls it. It is a dead capability, not a missing one.
+
+What a free Apple ID does cost you: the provisioning profile **expires after
+seven days**, you may install 3 development-signed apps per device, and register
+3 devices and 10 App IDs per 7 days. On day eight iOS refuses to launch the app
+until you re-run the script. The Apple Developer Program ($99/yr) makes it a
+year and unlocks TestFlight.
+
+### Testing without a second phone
+
+The simulator has no Bluetooth radio, so nothing in `BleTransport.swift` can be
+exercised there. But BLE is not the only way peers find each other, and the docs
+here used to imply it was.
+
+`LocalNetworkTransport` is Bonjour plus TCP with no BLE dependency, preference
+90 against BLE's 10, and no simulator guard anywhere in the native layer. A
+simulator on a Mac with Wi-Fi therefore reports `localNetwork` available,
+advertises `_airlink._tcp`, browses for it, dials, and runs the real SIGMA-I
+handshake. **A simulator is a genuine second peer.** Verified by running two of
+them side by side: they discover each other and offer to connect.
+
+So with one iPhone and one simulator on the same Wi-Fi you can cover discovery,
+pairing and the six digits, chat, all 12 games, file transfer and Watch
+Together. What still needs a second physical device:
+
+- anything BLE — discovery, GATT, L2CAP, MTU negotiation, state restoration;
+- Apple peer-to-peer Wi-Fi (AWDL), which has no simulator implementation;
+- the BLE→Wi-Fi upgrade path;
+- **airplane mode**, the product's headline claim — a simulator's connectivity
+  *is* the Mac's Wi-Fi, so putting the iPhone into airplane mode simply
+  disconnects the two.
+
+Do not read `peerToPeerWifi` reporting *available* in a simulator's Developer
+Mode as evidence AWDL works; that check only tests that a Wi-Fi interface
+exists.
+
+Everything above the transport — protocol, crypto, reliability, games, file
+transfer, sync — is covered by the mock transport and runs in Node. See
+[TESTING.md](TESTING.md).
 
 ---
 

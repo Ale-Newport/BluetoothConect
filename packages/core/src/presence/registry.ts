@@ -12,11 +12,26 @@
  * Two things make the collapsing possible:
  *  - a recognised friend's rotating advertisement token resolves to a real peer
  *    id, so every sighting of them merges regardless of transport or handle;
- *  - an unknown device cannot be merged - there is nothing to merge on - so it
- *    is keyed by its transport handle and simply expires.
+ *  - a stranger has no identity to merge on, but it does have a token, and one
+ *    device advertises ONE token across every transport it has at any instant.
+ *    Two sightings carrying the same token are therefore the same device.
+ *
+ * That second rule is not a nicety. A phone publishes the same Bonjour service
+ * type from both of its local-network transports - `localNetwork` and
+ * `peerToPeerWifi` differ only by `includePeerToPeer` - and browses with both,
+ * so without it every device sees every other device FOUR times: two services,
+ * two browsers. That is what it did, and it looked like four strangers each
+ * with their own Connect button.
+ *
+ * Merging strangers on a token confers no trust. Identity is established by the
+ * handshake and the six digits, never by what a row was keyed on; a friend
+ * resolves by peer id and never reaches this path at all. The worst an attacker
+ * can do by cloning a stranger's token is make two unknown devices share one
+ * unknown row.
  */
 import type { TransportKind } from '../protocol/capabilities.js';
 import type { DiscoveredPeer } from '../transport/types.js';
+import { toHex } from '../util/bytes.js';
 import { TypedEmitter } from '../util/emitter.js';
 import type { Clock, TimerHandle } from '../util/time.js';
 import { NearbyKind, Proximity, proximityFromRssi, type NearbyPeer } from './types.js';
@@ -34,6 +49,8 @@ interface Sighting {
 interface Entry {
   key: string;
   peerId: string | null;
+  /** The token this row was last seen advertising, so a rotation can re-index. */
+  tokenHex: string | null;
   displayName: string;
   firstSeenAt: number;
   lastSeenAt: number;
@@ -76,6 +93,15 @@ export class NearbyRegistry {
   private readonly entries = new Map<string, Entry>();
   /** endpointId -> entry key, so a peerLost can find what it belongs to. */
   private readonly endpointIndex = new Map<string, string>();
+  /**
+   * Current advertisement token -> entry key.
+   *
+   * Only ever holds the token a row is advertising *now*: a rotation moves the
+   * entry from the old token to the new one. A device that turns up later
+   * carrying a token somebody else has since rotated away from is a different
+   * device, and gets its own row.
+   */
+  private readonly tokenIndex = new Map<string, string>();
   private sweepTimer: TimerHandle | undefined;
   private readonly staleAfterMs: number;
 
@@ -102,27 +128,39 @@ export class NearbyRegistry {
   observe(peer: DiscoveredPeer): void {
     const now = this.options.clock.now();
     const resolvedPeerId = peer.advertisementToken ? this.options.resolveToken(peer.advertisementToken) : null;
+    const tokenHex = peer.advertisementToken ? toHex(peer.advertisementToken) : null;
+    const endpointKey = `${peer.transport}:${peer.endpointId}`;
 
-    // A recognised friend keys on their real identity, so Bluetooth and Wi-Fi
-    // sightings of the same person collapse into one row. A stranger has no
-    // identity to key on, so their transport handle has to do.
-    const key = resolvedPeerId ?? `${peer.transport}:${peer.endpointId}`;
+    // Which row does this sighting belong to? In order of how much the answer
+    // can be trusted: a recognised friend's identity; the row this endpoint is
+    // already in, which is what carries a stranger across a token rotation; a
+    // row already advertising this exact token; and failing all of those, a new
+    // row keyed by the only handle we have.
+    const key =
+      resolvedPeerId ??
+      this.endpointIndex.get(endpointKey) ??
+      (tokenHex ? this.tokenIndex.get(tokenHex) : undefined) ??
+      endpointKey;
 
     let entry = this.entries.get(key);
     const isNew = entry === undefined;
 
     if (!entry) {
       // A peer may have been listed as a stranger and only now been recognised -
-      // for instance because the friend list finished loading. Fold the old row in.
-      const strangerKey = `${peer.transport}:${peer.endpointId}`;
-      const previous = resolvedPeerId ? this.entries.get(strangerKey) : undefined;
-      if (previous) {
-        this.entries.delete(strangerKey);
+      // for instance because the friend list finished loading. Fold the old row
+      // in, wherever it happens to be keyed.
+      const previousKey = resolvedPeerId
+        ? this.endpointIndex.get(endpointKey) ?? (tokenHex ? this.tokenIndex.get(tokenHex) : undefined)
+        : undefined;
+      const previous = previousKey ? this.entries.get(previousKey) : undefined;
+      if (previous && previousKey) {
+        this.entries.delete(previousKey);
         entry = { ...previous, key, peerId: resolvedPeerId };
       } else {
         entry = {
           key,
           peerId: resolvedPeerId,
+          tokenHex: null,
           displayName: '',
           firstSeenAt: now,
           lastSeenAt: now,
@@ -140,6 +178,17 @@ export class NearbyRegistry {
     const storedName = entry.peerId ? this.options.friendName?.(entry.peerId) : undefined;
     entry.displayName = storedName ?? peer.advertisedName ?? entry.displayName;
 
+    // Re-index the token: a rotation must move this row rather than leave a
+    // stale entry pointing at it, or a later stranger that happens to advertise
+    // the abandoned token would be folded into somebody else's row.
+    if (tokenHex !== entry.tokenHex) {
+      if (entry.tokenHex !== null && this.tokenIndex.get(entry.tokenHex) === key) {
+        this.tokenIndex.delete(entry.tokenHex);
+      }
+      entry.tokenHex = tokenHex;
+    }
+    if (tokenHex !== null) this.tokenIndex.set(tokenHex, key);
+
     entry.lastSeenAt = now;
     entry.sightings.set(peer.transport, {
       transport: peer.transport,
@@ -147,7 +196,7 @@ export class NearbyRegistry {
       rssi: peer.rssi,
       lastSeenAt: now,
     });
-    this.endpointIndex.set(`${peer.transport}:${peer.endpointId}`, key);
+    this.endpointIndex.set(endpointKey, key);
 
     this.emitChanged();
     if (isNew && entry.peerId) {
@@ -222,6 +271,7 @@ export class NearbyRegistry {
   clear(): void {
     this.entries.clear();
     this.endpointIndex.clear();
+    this.tokenIndex.clear();
     this.emitChanged();
   }
 
@@ -229,6 +279,7 @@ export class NearbyRegistry {
     this.stop();
     this.entries.clear();
     this.endpointIndex.clear();
+    this.tokenIndex.clear();
     this.events.removeAllListeners();
   }
 
@@ -259,6 +310,9 @@ export class NearbyRegistry {
     this.entries.delete(key);
     for (const sighting of entry.sightings.values()) {
       this.endpointIndex.delete(`${sighting.transport}:${sighting.endpointId}`);
+    }
+    if (entry.tokenHex !== null && this.tokenIndex.get(entry.tokenHex) === key) {
+      this.tokenIndex.delete(entry.tokenHex);
     }
     if (entry.peerId) this.events.emit('friendLeft', { peerId: entry.peerId });
     if (emit) this.emitChanged();

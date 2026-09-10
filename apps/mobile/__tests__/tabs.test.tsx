@@ -124,3 +124,38 @@ test('the radio state the app starts with reaches the interface', async () => {
   for (const word of FAILURE_WORDS) expect(screen.queryByText(word)).toBeNull();
   expect(screen.queryByText(/bluetooth is off/i)).toBeNull();
 });
+
+test('a Wi-Fi transport reaches the interface as well as Bluetooth', async () => {
+  await bootToHome();
+
+  // `wifiOn` stands for several transports, so it has to be an OR rather than
+  // whichever one reported last - which is what it was, and both report at
+  // startup, so the flag landed on whichever finished second.
+  await waitFor(() => expect(useAppStore.getState().radios.wifiOn).toBe(true));
+});
+
+test('with Bluetooth off but Wi-Fi working, the banner does not claim nobody can be found', async () => {
+  await bootToHome();
+  await waitFor(() => expect(useAppStore.getState().radios.bluetoothOn).toBe(true));
+
+  // Bluetooth switched off at the radio, exactly as the native layer reports it.
+  await act(async () => {
+    globalThis.__airlinkNativeTest?.emit('onAvailabilityChanged', {
+      transport: 'ble',
+      available: false,
+      reason: 'poweredOff',
+    });
+  });
+  await waitFor(() => expect(useAppStore.getState().radios.bluetoothOn).toBe(false));
+
+  // Home deliberately waits before drawing any conclusion about the radios -
+  // "not knowing yet" must not look like a problem - so this waits past that
+  // window rather than asserting into it.
+  await waitFor(() => expect(screen.getByText(strings.status.bluetoothOffWifiWorksDetail)).toBeTruthy(), {
+    timeout: 6000,
+  });
+
+  // The blunt line would be a lie while the local network is still finding
+  // people - and a friend would be sitting in the list right below it.
+  expect(screen.queryByText(strings.status.bluetoothOffDetail)).toBeNull();
+}, 30000);

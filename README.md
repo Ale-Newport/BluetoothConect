@@ -86,8 +86,23 @@ pnpm --filter @airlink/mobile android
 > **never compiled**. [`docs/ANDROID.md`](docs/ANDROID.md) has the exact setup
 > and the one command that verifies it.
 
-The simulator has no Bluetooth radio. Discovery and connection need two physical
-devices; everything above the transport is covered by the simulated network.
+### On your own iPhone
+
+```bash
+./scripts/run-device.sh      # Release build, installed and launched
+```
+
+A **free** Apple ID is enough — AirLink needs no entitlements at all — and the
+build is standalone, so the phone does not stay tethered to the Mac. The profile
+expires after seven days on a free account. See
+[docs/IOS.md §7](docs/IOS.md) for the whole story, including what to do when
+your certificate has expired.
+
+The simulator has no Bluetooth radio, so BLE needs two physical devices. It does
+have the local network, though: a simulator advertises and browses `_airlink._tcp`
+like any peer, so **one iPhone plus one simulator on the same Wi-Fi** covers
+pairing, chat, the games, file transfer and Watch Together. Airplane mode and
+the BLE paths are what genuinely need a second phone.
 
 ---
 

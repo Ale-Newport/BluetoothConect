@@ -155,14 +155,27 @@ RCT_EXPORT_MODULE(NativeAirLinkTransport)
 
 #pragma mark - Links
 
+/**
+ * `timeoutMs` is NSInteger, and the type is load-bearing.
+ *
+ * The spec declares it `Int32`, so codegen puts `NSInteger` in the protocol.
+ * This was written as `double`, which compiles - a selector matches on its name
+ * - but does not work: on arm64 integers are passed in x registers and doubles
+ * in v registers, so the argument after the mismatch is read from the wrong
+ * place. `resolve` and `reject` arrived as garbage pointers and retaining one
+ * segfaulted the app the instant anybody pressed Connect.
+ *
+ * Clang does warn about this ("conflicting parameter types in implementation").
+ * The build script used to drop every warning on the floor; it no longer does.
+ */
 - (void)connect:(NSString *)transport
      endpointId:(NSString *)endpointId
-      timeoutMs:(double)timeoutMs
+      timeoutMs:(NSInteger)timeoutMs
         resolve:(RCTPromiseResolveBlock)resolve
          reject:(RCTPromiseRejectBlock)reject {
   [_bridge connect:transport
         endpointId:endpointId
-         timeoutMs:(NSInteger)timeoutMs
+         timeoutMs:timeoutMs
            resolve:^(NSString *linkId) { resolve(linkId); }
             reject:^(NSString *code, NSString *message) { reject(code, message, nil); }];
 }

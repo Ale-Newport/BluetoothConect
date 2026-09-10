@@ -145,7 +145,17 @@ export function HomeScreen(): React.JSX.Element {
     [navigation],
   );
 
-  const bluetoothBlocked = radiosSettled && !radios.bluetoothOn;
+  const bluetoothOff = radiosSettled && !radios.bluetoothOn;
+  /**
+   * Bluetooth being off is only an obstacle when nothing else can find anyone.
+   *
+   * With a Wi-Fi network available the local-network transport discovers and
+   * connects perfectly well - it is the higher-bandwidth path, not the fallback
+   * - so the flat "AirLink can't find friends nearby" was contradicted by the
+   * friend sitting in the list directly beneath it. Same fact, honest weight.
+   */
+  const bluetoothBlocked = bluetoothOff && !radios.wifiOn;
+  const bluetoothReduced = bluetoothOff && radios.wifiOn;
   /**
    * Grey, not amber, before the radios have answered.
    *
@@ -174,6 +184,15 @@ export function HomeScreen(): React.JSX.Element {
           // Deliberately not `radios.detail`: that line comes from the
           // transport layer and can carry engineering wording.
           detail={strings.status.bluetoothOffDetail}
+          action={<InlineAction title={strings.permissions.openSettings} onPress={openSettings} />}
+        />
+      ) : bluetoothReduced ? (
+        // Not a warning. Nothing is broken; one of two ways of finding people
+        // is switched off, and the other is working.
+        <StatusBanner
+          tone="disconnected"
+          title={strings.status.bluetoothOffWifiWorks}
+          detail={strings.status.bluetoothOffWifiWorksDetail}
           action={<InlineAction title={strings.permissions.openSettings} onPress={openSettings} />}
         />
       ) : (

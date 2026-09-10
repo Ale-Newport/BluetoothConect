@@ -73,8 +73,17 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
       }),
 
       instance.events.on('radioChanged', ({ transport, available, detail }) => {
-        if (transport === 'ble') store.getState().setRadios({ bluetoothOn: available, detail: detail || null });
-        else store.getState().setRadios({ wifiOn: available });
+        if (transport === 'ble') {
+          store.getState().setRadios({ bluetoothOn: available, detail: detail || null });
+          return;
+        }
+        // `wifiOn` covers SEVERAL transports - the local network and Apple
+        // peer-to-peer Wi-Fi - so it cannot simply take the value of whichever
+        // one spoke last. Both report at startup, and the flag was landing on
+        // whichever finished second. Ask the client, which knows all of them.
+        void instance.wifiDiscoveryAvailable().then((on) => {
+          if (!cancelled) store.getState().setRadios({ wifiOn: on });
+        });
       }),
 
       instance.events.on('error', ({ message, fatal }) => {

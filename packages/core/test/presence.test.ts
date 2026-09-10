@@ -40,6 +40,63 @@ describe('proximity bucketing', () => {
 });
 
 describe('NearbyRegistry', () => {
+  /**
+   * The defect this exists for was found by running two devices, not by reading.
+   *
+   * A phone advertises the same Bonjour service type from BOTH of its local
+   * network transports - `localNetwork` and `peerToPeerWifi` differ only by
+   * `includePeerToPeer` - and browses with both. Every device therefore sees
+   * every other device four times: two of its services, seen by two browsers.
+   * On screen that was one phone listed four times, each with its own Connect
+   * button.
+   *
+   * The advertisement token is what collapses them. All four sightings carry
+   * the identical token at any instant, because the client advertises one token
+   * across every transport in a single pass.
+   */
+  it('collapses one stranger seen on two transports into one row', () => {
+    const { registry } = setup();
+    const token = new Uint8Array([7, 7, 7, 7, 7, 7]);
+
+    // The 2x2: our two browsers, each seeing both of their services.
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'their-lan', advertisementToken: token }));
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'their-p2p', advertisementToken: token }));
+    registry.observe(sighting({ transport: TransportKind.PEER_TO_PEER_WIFI, endpointId: 'their-lan', advertisementToken: token }));
+    registry.observe(sighting({ transport: TransportKind.PEER_TO_PEER_WIFI, endpointId: 'their-p2p', advertisementToken: token }));
+
+    expect(registry.size).toBe(1);
+    expect(registry.list()).toHaveLength(1);
+  });
+
+  it('keeps genuinely different strangers apart', () => {
+    const { registry } = setup();
+    registry.observe(sighting({ endpointId: 'a', advertisementToken: new Uint8Array([1, 1, 1, 1, 1, 1]) }));
+    registry.observe(sighting({ endpointId: 'b', advertisementToken: new Uint8Array([2, 2, 2, 2, 2, 2]) }));
+    expect(registry.size).toBe(2);
+  });
+
+  it('follows a stranger through a token rotation without duplicating them', () => {
+    const { registry } = setup();
+    const first = new Uint8Array([3, 3, 3, 3, 3, 3]);
+    const second = new Uint8Array([4, 4, 4, 4, 4, 4]);
+
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'lan', advertisementToken: first }));
+    registry.observe(sighting({ transport: TransportKind.PEER_TO_PEER_WIFI, endpointId: 'lan', advertisementToken: first }));
+    expect(registry.size).toBe(1);
+
+    // Four seconds later the peer rotates its token. The Bonjour service name
+    // does not change, so the endpoint is the anchor that carries the row
+    // across the rotation - and the new token must not open a second row.
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'lan', advertisementToken: second }));
+    registry.observe(sighting({ transport: TransportKind.PEER_TO_PEER_WIFI, endpointId: 'lan', advertisementToken: second }));
+    expect(registry.size).toBe(1);
+
+    // And a device that only NOW appears carrying the old token is somebody
+    // else, not a resurrection of the row that has moved on.
+    registry.observe(sighting({ transport: TransportKind.LOCAL_NETWORK, endpointId: 'other', advertisementToken: first }));
+    expect(registry.size).toBe(2);
+  });
+
   it('recognises a paired friend from their rotating token', () => {
     const { registry } = setup();
     registry.observe(sighting({ advertisementToken: FRIEND_TOKEN, rssi: -50 }));

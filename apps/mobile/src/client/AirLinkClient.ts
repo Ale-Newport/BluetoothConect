@@ -323,6 +323,22 @@ export class AirLinkClient {
    * Same event the listeners use, so there is one path into the interface
    * rather than a separate "initial" one that could disagree with it.
    */
+  /**
+   * Is anything other than Bluetooth able to find people right now?
+   *
+   * A single flag over several transports has to be an OR, not "whichever
+   * reported last". Both local-network transports emit at startup, so the
+   * last-wins version genuinely landed on whichever finished second.
+   */
+  async wifiDiscoveryAvailable(): Promise<boolean> {
+    if (!this.host) return false;
+    for (const transport of this.host.all()) {
+      if (transport.kind === TransportKind.BLE) continue;
+      if ((await transport.availability()).available) return true;
+    }
+    return false;
+  }
+
   private async publishRadioState(): Promise<void> {
     for (const transport of this.host.all()) {
       const availability = await transport.availability();

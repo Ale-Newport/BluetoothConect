@@ -189,6 +189,15 @@ export const strings = {
     offlineDetail: 'Local connections available',
     bluetoothOff: 'Bluetooth is off',
     bluetoothOffDetail: `Turn Bluetooth on so ${brand.name} can find friends nearby.`,
+    /**
+     * The same fact, when it is not the whole story.
+     *
+     * With Bluetooth off but a Wi-Fi network available, friends on that network
+     * are still found - so telling someone AirLink cannot find anyone, while a
+     * friend sits in the list below the banner, is simply untrue.
+     */
+    bluetoothOffWifiWorks: 'Bluetooth is off',
+    bluetoothOffWifiWorksDetail: `${brand.name} can still find friends on this Wi-Fi. Bluetooth reaches further, and works with no network at all.`,
     wifiOffDetail: 'Turn Wi-Fi on for faster transfers.',
     permissionNeeded: 'Permission needed',
     excellent: 'Excellent',

@@ -148,13 +148,11 @@ jest.mock('@airlink/native-transport', () => {
     },
   };
 
-  const bluetooth = {
-    kind: 'ble',
-    supported: true,
-    available: true,
-    reason: '',
-    detail: '',
-  };
+  // Two transports, because one was hiding a bug. `wifiOn` in the store covers
+  // several non-Bluetooth transports at once, and with only `ble` in the double
+  // nothing ever exercised how they combine.
+  const bluetooth = { kind: 'ble', supported: true, available: true, reason: '', detail: '' };
+  const localNetwork = { kind: 'localNetwork', supported: true, available: true, reason: '', detail: '' };
 
   return {
     __esModule: true,
@@ -166,7 +164,7 @@ jest.mock('@airlink/native-transport', () => {
         platform: 'ios',
         osVersion: '26.3',
         deviceModel: 'test',
-        transports: [bluetooth],
+        transports: [bluetooth, localNetwork],
         canAdvertiseBle: true,
         supportsL2cap: true,
         canCreateHotspot: false,
