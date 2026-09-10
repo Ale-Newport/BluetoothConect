@@ -160,11 +160,6 @@ export function SetupPanel({
           <StatusBanner tone="connected" title={shared.sync.friendHasFile(peerName)} detail={shared.sync.readyToSync} />
           <Gap size="lg" />
           <Button title={shared.sync.startSession} onPress={handlers.onStart} />
-          {actionFailed ? (
-            <Label variant="footnote" tone="danger" align="center" style={{ marginTop: theme.spacing.xs }}>
-              {shared.common.error}
-            </Label>
-          ) : null}
           <Gap size="sm" />
           <Button title={syncStrings.chooseAnother} variant="ghost" onPress={handlers.onChoose} loading={picking} />
         </>
@@ -236,6 +231,18 @@ export function SetupPanel({
           <Gap size="sm" />
           <Button title={shared.common.done} variant="ghost" onPress={handlers.onDone} />
         </>
+      ) : null}
+
+      {/*
+        The one red line on this screen, and it earns it: a command that should
+        have reached the other phone did not, and the button above it is still
+        there to try again. Everything else here - no file, no answer, no link -
+        is a normal thing that happens on a plane.
+      */}
+      {actionFailed ? (
+        <Label variant="footnote" tone="danger" align="center" style={{ marginTop: theme.spacing.md }}>
+          {shared.common.error}
+        </Label>
       ) : null}
     </Card>
   );

@@ -34,6 +34,7 @@ import {
 import type { RootStackParams } from '../../navigation/routes.js';
 import { ConnectedPeerCard } from './ConnectedPeerCard.js';
 import { ConnectChip, InlineAction, PulsingDot, RowSeparator } from './controls.js';
+import { forgetResolvedPairings, isPairingAnswered } from './pairingRouting.js';
 import { homeCopy, isWorking, statusLine, statusTone } from './peerPresentation.js';
 
 /**
@@ -78,7 +79,6 @@ export function HomeScreen(): React.JSX.Element {
   const connected = useAppStore(useShallow(selectConnected));
   const pendingPairings = useAppStore(selectPendingPairings);
   const radios = useAppStore(selectRadios);
-  const offline = useAppStore((state) => state.offline);
 
   const [radiosSettled, setRadiosSettled] = useState(false);
   const [searchHintVisible, setSearchHintVisible] = useState(false);
@@ -88,9 +88,12 @@ export function HomeScreen(): React.JSX.Element {
     return () => clearTimeout(timer);
   }, []);
 
-  const sortedFriends = useMemo(() => [...friends].sort(byPresence), [friends]);
-  const sortedStrangers = useMemo(() => [...strangers].sort(byPresence), [strangers]);
-  const nobodyNearby = sortedFriends.length === 0 && sortedStrangers.length === 0;
+  // A connected peer has its own card below, which says everything a row says
+  // and more; listing them twice on one screen makes the same person look like
+  // two.
+  const sortedFriends = useMemo(() => friends.filter(notConnected).sort(byPresence), [friends]);
+  const sortedStrangers = useMemo(() => strangers.filter(notConnected).sort(byPresence), [strangers]);
+  const nobodyNearby = sortedFriends.length === 0 && sortedStrangers.length === 0 && connected.length === 0;
 
   useEffect(() => {
     if (!nobodyNearby) {
@@ -107,10 +110,16 @@ export function HomeScreen(): React.JSX.Element {
    * Only while Home is the screen in front: when the connect sheet is open it
    * routes to the same place itself, and two navigations would stack two copies
    * of the most security-critical screen in the app.
+   *
+   * And only a question the user has not already answered. A confirmed pairing
+   * stays pending until the other phone answers too, so without this a user who
+   * closed the waiting screen would be sent straight back into a question whose
+   * answer has already been sent - where the confirm button is inert.
    */
   const routedPairing = useRef<string | null>(null);
   useEffect(() => {
-    const next = pendingPairings[0];
+    forgetResolvedPairings(pendingPairings.map((p) => p.peerKey));
+    const next = pendingPairings.find((p) => !isPairingAnswered(p.peerKey));
     if (!next) {
       routedPairing.current = null;
       return;
@@ -138,7 +147,14 @@ export function HomeScreen(): React.JSX.Element {
   );
 
   const bluetoothBlocked = radiosSettled && !radios.bluetoothOn;
-  const bannerTone: StatusTone = bluetoothBlocked ? 'warning' : radios.bluetoothOn ? 'connected' : 'connecting';
+  /**
+   * Grey, not amber, before the radios have answered.
+   *
+   * `connecting` and `warning` are the same colour, so the old tone opened the
+   * app on a caution-coloured dot every single launch. Not knowing yet is not a
+   * problem, and it should not look like one.
+   */
+  const bannerTone: StatusTone = radios.bluetoothOn ? 'connected' : 'disconnected';
 
   return (
     <Screen scroll>
@@ -162,14 +178,34 @@ export function HomeScreen(): React.JSX.Element {
           action={<InlineAction title={strings.permissions.openSettings} onPress={openSettings} />}
         />
       ) : (
+        // Deliberately not `state.offline`: nothing in the app ever writes it,
+        // so rendering it would tell a user on full signal that they are
+        // offline - a hard-coded value wearing the clothes of a fact. What we
+        // do know is the radio, which is event-driven and true, and being
+        // offline is the point of this product rather than news anyway.
         <StatusBanner
           tone={bannerTone}
-          title={offline ? strings.status.offline : strings.status.offlineDetail}
-          {...(offline ? { detail: strings.status.offlineDetail } : {})}
+          title={radios.bluetoothOn ? strings.status.offlineDetail : strings.home.searching}
         />
       )}
 
       <Gap size="xl" />
+
+      {/* The person you are already talking to comes first. Below the two
+          lists, on a phone in a room with a few devices in it, the card you
+          need most was the one you had to scroll for. */}
+      {connected.length > 0 ? (
+        <>
+          <SectionHeading>{strings.home.connected}</SectionHeading>
+          {connected.map((peer, index) => (
+            <View key={peer.key}>
+              {index > 0 ? <Gap size="md" /> : null}
+              <ConnectedPeerCard peer={peer} />
+            </View>
+          ))}
+          <Gap size="xl" />
+        </>
+      ) : null}
 
       {sortedFriends.length > 0 ? (
         <>
@@ -216,13 +252,6 @@ export function HomeScreen(): React.JSX.Element {
         </View>
       ) : null}
 
-      {connected.map((peer) => (
-        <View key={peer.key}>
-          <ConnectedPeerCard peer={peer} />
-          <Gap size="lg" />
-        </View>
-      ))}
-
       <Gap size="lg" />
       {/* A backgrounded phone is invisible to the other side. Better said once,
           quietly, than discovered as a mystery disconnection. */}
@@ -234,10 +263,13 @@ export function HomeScreen(): React.JSX.Element {
   );
 }
 
-/** Connected first, then whatever is in progress, then alphabetical. */
+function notConnected(peer: PeerView): boolean {
+  return peer.connection !== ConnectionState.CONNECTED;
+}
+
+/** Whatever is in progress first, then alphabetical. */
 function byPresence(a: PeerView, b: PeerView): number {
-  const rank = (peer: PeerView): number =>
-    peer.connection === ConnectionState.CONNECTED ? 0 : isWorking(peer.connection) ? 1 : 2;
+  const rank = (peer: PeerView): number => (isWorking(peer.connection) ? 0 : 1);
   const difference = rank(a) - rank(b);
   return difference !== 0 ? difference : a.displayName.localeCompare(b.displayName);
 }
@@ -267,9 +299,11 @@ function PeerRow({ peer, onOpen }: { peer: PeerView; onOpen: (peer: PeerView) =>
   const connected = peer.connection === ConnectionState.CONNECTED;
   const working = isWorking(peer.connection);
 
-  // A friend is tapped; a device nobody has met yet gets an explicit Connect,
-  // so the row that starts a first meeting always looks like a decision.
-  const rowIsControl = peer.isFriend && !working;
+  // A device nobody has met yet, sitting idle, gets an explicit Connect: the
+  // row that starts a first meeting should look like a decision. Every other
+  // row opens - including one mid-attempt, which is the only way back into the
+  // sheet for a user who dismissed it while it was still working.
+  const rowIsControl = connected || working || peer.isFriend;
 
   const right = connected ? (
     <StatusDot tone={statusTone(peer.connection)} />

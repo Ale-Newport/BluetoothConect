@@ -111,6 +111,15 @@ export interface GameRoomView {
   readonly opponentName: string;
   /** Why we cannot start, already phrased for a person. */
   readonly blockedReason: string | null;
+  /**
+   * This game's own id, passed through to the renderer.
+   *
+   * Only Battleship needs it: a commitment game keeps its fleet OFF the shared
+   * state by definition, so that renderer files a private secret under this key
+   * and finds it again after a restart - and, because the key changes with the
+   * game, a rematch never reuses a layout the opponent has already seen.
+   */
+  readonly sessionKey: string;
   /** A rematch the other side has offered, waiting on an answer. */
   readonly incomingRematch: GameInvite | null;
   leave(): void;
@@ -627,6 +636,7 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
       nameFor,
       opponentName,
       blockedReason,
+      sessionKey: gameSessionId,
       incomingRematch,
       leave,
       retryInvite,
@@ -644,6 +654,7 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
     entry,
     frames,
     game,
+    gameSessionId,
     incomingRematch,
     isHost,
     leave,

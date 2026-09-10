@@ -25,6 +25,13 @@ export const homeCopy = {
   openChatWith: (name: string): string => `Open your chat with ${name}`,
   /** The radios are not up yet, so nothing can be started. */
   startingUp: `${brand.name} is still starting up.`,
+  /**
+   * Why a tile on a connected peer's card is greyed out.
+   *
+   * Each one names the peer and says what that phone cannot do - never
+   * "Not connected", which would contradict the status line right above it.
+   */
+  noChat: (name: string): string => `${name} can't receive messages.`,
   noGames: (name: string): string => `${name} doesn't have any games yet.`,
   noFiles: (name: string): string => `${name} can't receive files.`,
   noWatchTogether: (name: string): string => `${name} can't watch together.`,
@@ -37,6 +44,15 @@ export const homeCopy = {
   pairingWaiting: 'Waiting for your friend to confirm too…',
   pairingGoneTitle: 'Nothing to confirm',
   pairingGoneBody: 'This request is no longer waiting. You can start it again from Home.',
+  /**
+   * The other phone did not confirm.
+   *
+   * Said out loud rather than closing the screen: the user answered a security
+   * question and is owed the outcome, and "nothing was saved" is the fact they
+   * actually care about.
+   */
+  pairingRefusedTitle: 'Not connected',
+  pairingRefusedBody: "The numbers weren't confirmed on both phones, so nothing was saved.",
   /**
    * Why "They match" cannot be tapped for the first moment.
    *

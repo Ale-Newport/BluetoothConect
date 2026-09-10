@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Linking, Platform, View } from 'react-native';
+import { AppState, Linking, View } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCameraDevice, useCameraPermission } from 'react-native-vision-camera';

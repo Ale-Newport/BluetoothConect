@@ -264,6 +264,18 @@ export function WatchTogetherScreen(): React.JSX.Element {
     if (api.peerJoined) haptic('success');
   }, [api.peerJoined]);
 
+  /**
+   * A decoder that gives up in the middle of the film.
+   *
+   * Rare, but it has to end the session rather than leave the peer following a
+   * line this device is no longer able to play. Nothing else in the app would
+   * notice: the protocol only ever hears about the player through the
+   * controller, and a controller whose picture has stopped still answers.
+   */
+  useEffect(() => {
+    if (readFailed && inPlayer) session?.end('playback failed');
+  }, [readFailed, inPlayer, session]);
+
   // ---------------------------------------------------------------------------
   // Where the film is
   // ---------------------------------------------------------------------------
@@ -319,10 +331,10 @@ export function WatchTogetherScreen(): React.JSX.Element {
     try {
       run(session);
     } catch {
-      // Guests request and hosts publish; both are swallowed by the session's
-      // own send path when the link is busy, so reaching here means the session
-      // ended underneath us. The state change is already on its way.
-      setActionFailed(true);
+      // A busy or reconnecting link does NOT come out here - the session
+      // swallows send failures and the reliability layer keeps the message. The
+      // only way to reach this is a session that ended between the render and
+      // the tap, and the state change that says so is already on its way.
     }
   };
 
@@ -633,7 +645,9 @@ function currentStage(input: {
   linkUp: boolean;
   watchState: WatchState;
 }): SetupStage {
-  if (input.finished) return { kind: 'ended' };
+  // Order is priority. Somebody asking you a question comes first, then
+  // anything broken, then anything over - and only after all three does the
+  // ordinary "where are we in the flow" question get asked.
   if (input.invite) {
     return {
       kind: 'invited',
@@ -644,6 +658,7 @@ function currentStage(input: {
     };
   }
   if (input.readFailed) return { kind: 'unreadable' };
+  if (input.finished) return { kind: 'ended' };
   if (!input.video) return { kind: 'empty' };
   if (!input.descriptor) return { kind: 'preparing' };
   if (input.outcome === SetupOutcome.PEER_MISSING) return { kind: 'peerMissing' };

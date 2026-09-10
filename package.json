@@ -3,18 +3,28 @@
   "private": true,
   "version": "0.1.0",
   "packageManager": "pnpm@10.34.5",
-  "engines": { "node": ">=22.11.0" },
+  "engines": {
+    "node": ">=22.11.0"
+  },
   "scripts": {
     "build": "pnpm -r --filter './packages/**' build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "test:core": "pnpm --filter @airlink/core test",
-    "lint": "pnpm -r lint",
-    "harness": "node --experimental-strip-types scripts/harness.ts"
+    "test:games": "pnpm --filter @airlink/games test",
+    "test:acceptance": "pnpm --filter @airlink/acceptance test",
+    "harness": "tsx scripts/harness.ts",
+    "ios": "pnpm --filter @airlink/mobile ios",
+    "android": "pnpm --filter @airlink/mobile android",
+    "start": "pnpm --filter @airlink/mobile start",
+    "pods": "cd apps/mobile/ios && bundle exec pod install || pod install",
+    "build:ios": "./scripts/build-ios.sh",
+    "icons": "./scripts/make-icons.sh"
   },
   "devDependencies": {
     "typescript": "^5.9.2",
     "vitest": "^3.2.4",
-    "@types/node": "^24.3.0"
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.6"
   }
 }
