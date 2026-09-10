@@ -104,6 +104,13 @@ export interface GameRoomView {
   readonly isHost: boolean;
   /** The link is up and the game can be played right now. */
   readonly live: boolean;
+  /**
+   * Why the board cannot be played, in words, or null when it can.
+   *
+   * Two very different things stop a board: the link is down, or the game is
+   * over. They must never be reported as each other.
+   */
+  readonly disabledReason: string | null;
   readonly elapsedMs: number;
   readonly frames: FrameFeed<unknown> | null;
   readonly dispatch: GameDispatch;
@@ -147,6 +154,17 @@ const INVITE_WINDOW_MS = 45_000;
 const INVITE_REPEAT_MS = 3_000;
 /** Snapshots from the host of a realtime game: roughly fifteen a second. */
 const SNAPSHOT_INTERVAL_MS = 66;
+/**
+ * How often an UNCHANGED state is repeated anyway.
+ *
+ * A snapshot is only worth sending when the board has actually moved, and one
+ * realtime game - pool - resolves a shot to rest inside `applyAction`, so its
+ * table is byte-identical between shots and fifteen snapshots a second of it
+ * would be a kilobyte a second of Bluetooth spent on nothing. But snapshots are
+ * best-effort, and the last one of a rally is the one carrying the goal, so an
+ * unchanged state still goes out at a slow heartbeat rather than never.
+ */
+const SNAPSHOT_KEEPALIVE_MS = 1_000;
 /** Render this far behind the newest snapshot so there is always one to aim at. */
 const INTERPOLATION_DELAY_MS = 120;
 
@@ -322,10 +340,28 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
         remoteElapsedRef.current = snapshot.elapsedMs;
         const interpolator = interpolatorRef.current;
         if (interpolator) {
-          try {
-            interpolator.push(game.definition.decodeState(snapshot.state), message.receivedAt);
-          } catch {
-            // A snapshot we cannot decode is dropped; another is 66ms away.
+          /**
+           * A realtime guest FOLLOWS the host, in two senses.
+           *
+           * The interpolator smooths the picture between snapshots, and that is
+           * all it does. The session state has to follow as well, because it is
+           * what every non-drawing question is answered from: whether a local
+           * action is legal (`submitLocal` validates against it - a guest whose
+           * state stayed at the opening position can never serve again once the
+           * first point has been played), and whether the game has been won.
+           * Adopting the host's state is also the only resync a realtime guest
+           * has, so an action lost on the link repairs itself on the next
+           * snapshot instead of leaving the two devices permanently apart.
+           *
+           * A snapshot we cannot decode is dropped; another is along shortly.
+           */
+          if (!game.applySnapshot(snapshot.state)) return;
+          interpolator.push(game.currentState as unknown, message.receivedAt);
+          const settled = game.status;
+          if (settled.kind !== GameStatusKind.IN_PROGRESS) {
+            persistOutcome(settled);
+            setPhase(RoomPhase.ENDED);
+            bumpBoard();
           }
           return;
         }
@@ -472,6 +508,9 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
     let frame = 0;
     let last = Date.now();
     let lastSnapshotAt = 0;
+    let lastSentAt = 0;
+    /** The state object behind the last snapshot sent. Identity is the test. */
+    let lastSentState: unknown = null;
     let cancelled = false;
 
     const step = (): void => {
@@ -492,12 +531,19 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
           drawable = game.currentState;
           if (handle && now - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
             lastSnapshotAt = now;
-            trySendRealtime(
-              handle.session,
-              MessageType.GAME_STATE,
-              encodeSnapshot(gameSessionId, game.snapshot(), game.simulatedMs),
-              `game:${gameSessionId}`,
-            );
+            // A reducer returns the SAME object when a step changed nothing, so
+            // identity is an exact and free test for "the board has not moved".
+            const moved = drawable !== lastSentState;
+            if (moved || now - lastSentAt >= SNAPSHOT_KEEPALIVE_MS) {
+              lastSentState = drawable;
+              lastSentAt = now;
+              trySendRealtime(
+                handle.session,
+                MessageType.GAME_STATE,
+                encodeSnapshot(gameSessionId, game.snapshot(), game.simulatedMs),
+                `game:${gameSessionId}`,
+              );
+            }
           }
         } else {
           drawable = interpolatorRef.current?.sample(now) ?? game.currentState;

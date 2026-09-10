@@ -192,9 +192,31 @@ These are written down so the product never promises them.
 | 7 | Transport negotiation, upgrade and downgrade | **done** |
 | 8 | Chat, file transfer, watch-together, groups, pairing protocols | **done** |
 | 9 | Design system, navigation, store, client, native adapter | **done** |
-| 10 | The 20 app screens | in progress |
+| 10 | The app screens | **done** — 51 files, no placeholders |
 | 11 | Integration tests, network harness, offline acceptance test | **done** — 1070 tests |
 | 12 | Store readiness: identifiers, versions, placeholder artwork, checklists | **done** |
+
+### Verified by running it
+
+The app was built, installed and driven on an iPhone 17 Pro simulator: the whole
+onboarding flow, Home, and the profile. Doing so found **eleven defects that no
+test caught**, seven of them before a single screen rendered — see the commit
+history. Three were protocol bugs found by the network harness rather than by
+the unit tests, because each only appears at scale or under packet loss:
+
+- outbound frames interleaved, so nothing reassembled over a Bluetooth MTU;
+- the handshake had no retransmission, so connecting failed under real loss;
+- clock sync stalled for ever on one lost probe.
+
+The others were build and integration: ML Kit forcing an x86_64 build that
+cannot install on an Apple Silicon simulator, Metro not resolving `.ts` sibling
+imports, a missing Babel plugin leaving a blank screen, op-sqlite returning
+`ArrayBuffer` where the tests returned `Uint8Array`, the app discovering itself
+over Bonjour, a missing safe-area inset, unrenderable icon glyphs, and an
+identity surviving a database wipe with no profile to go with it.
+
+That is the argument for the acceptance test and the harness being part of the
+deliverable rather than an afterthought.
 
 ### Deferred, and why
 

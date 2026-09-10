@@ -222,11 +222,13 @@ internal class BleScanner(
         // the system Bluetooth name, which AirLink will not do. An Android
         // peer's opt-in name arrives later, from its identity characteristic,
         // through enrich().
-        val name = try {
-            record?.deviceName.orEmpty()
-        } catch (_: Throwable) {
-            ""
-        }.take(BleWire.MAX_NAME_BYTES)
+        val name = BleWire.boundName(
+            try {
+                record?.deviceName.orEmpty()
+            } catch (_: Throwable) {
+                ""
+            },
+        )
 
         val encodedToken = if (token.isEmpty()) "" else Base64.encodeToString(token, Base64.NO_WRAP)
 

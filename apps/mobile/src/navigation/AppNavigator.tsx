@@ -1,11 +1,11 @@
 import React from 'react';
-import { Text } from 'react-native';
 import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { strings } from '@airlink/config';
 import { useTheme } from '../ui/index.js';
 import type { RootStackParams, TabParams } from './routes.js';
+import { TabIcon, type TabIconName } from './TabIcons.js';
 
 import { HomeScreen } from '../screens/home/HomeScreen.js';
 import { ChatListScreen } from '../screens/chat/ChatListScreen.js';
@@ -31,20 +31,13 @@ import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen.js';
 const Stack = createNativeStackNavigator<RootStackParams>();
 const Tabs = createBottomTabNavigator<TabParams>();
 
-/**
- * Tab icons, until real artwork exists.
- *
- * Emoji rather than geometric glyphs: the first attempt used characters like
- * U+2709 ENVELOPE and U+25C6 BLACK DIAMOND, and two of the five rendered as
- * empty boxes because the system font does not carry them at that weight.
- * Emoji are guaranteed present on both platforms.
- */
-const TAB_ICON: Record<keyof TabParams, string> = {
-  Home: '\u{1F4E1}', // satellite antenna - finding people nearby
-  Chat: '\u{1F4AC}', // speech balloon
-  Play: '\u{1F3AE}', // video game
-  Share: '\u{1F4E4}', // outbox tray
-  You: '\u{1F464}', // bust in silhouette
+/** Which drawn icon each tab uses. See TabIcons.tsx for why they are drawn. */
+const TAB_ICON: Record<keyof TabParams, TabIconName> = {
+  Home: 'home',
+  Chat: 'chat',
+  Play: 'play',
+  Share: 'share',
+  You: 'you',
 };
 
 function TabNavigator(): React.JSX.Element {
@@ -60,13 +53,7 @@ function TabNavigator(): React.JSX.Element {
           borderTopColor: theme.colors.separator,
         },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
-        // Emoji carry their own colour, so the active/inactive distinction is
-        // opacity plus the label tint rather than a tint on the glyph.
-        tabBarIcon: ({ focused }) => (
-          <Text style={{ fontSize: 20, lineHeight: 24, opacity: focused ? 1 : 0.45 }}>
-            {TAB_ICON[route.name]}
-          </Text>
-        ),
+        tabBarIcon: ({ color }) => <TabIcon name={TAB_ICON[route.name]} color={color} />,
       })}
     >
       <Tabs.Screen name="Home" component={HomeScreen} options={{ title: 'Home' }} />

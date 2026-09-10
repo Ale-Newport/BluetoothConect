@@ -52,6 +52,16 @@ export interface GameRendererProps<TState> {
    * must what the user is looking at.
    */
   readonly live: boolean;
+  /**
+   * Why the board cannot be played right now, already phrased for a person.
+   * Null exactly when `live` is true.
+   *
+   * A renderer must use THIS rather than assuming a dead board means a dead
+   * link: `live` is also false once the game is over, and a finished game that
+   * says "Waiting for the connection" under a perfectly good connection is the
+   * kind of small lie that makes a whole app feel untrustworthy.
+   */
+  readonly disabledReason: string | null;
   /** Realtime games only; null for turn-based ones. */
   readonly frames: FrameFeed<TState> | null;
   /** Simulated milliseconds since the game started. 0 for turn-based games. */

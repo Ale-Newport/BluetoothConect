@@ -204,6 +204,21 @@ internal object BleWire {
     const val MAX_NAME_BYTES: Int = 48
 
     /**
+     * Bounds an untrusted display name to [MAX_NAME_BYTES] UTF-8 bytes, cutting
+     * only at character boundaries.
+     *
+     * The one place to shorten a name, wherever it came from - an identity
+     * record or a BLE local name. `take(MAX_NAME_BYTES)` is NOT the same thing:
+     * it counts UTF-16 code units, so it lets a name of 48 emoji through as
+     * nearly two hundred bytes, and the whole point of the bound is that a peer
+     * cannot decide how much string we carry around.
+     */
+    fun boundName(text: String): String {
+        if (text.isEmpty()) return ""
+        return String(trimUtf8(text, MAX_NAME_BYTES), Charsets.UTF_8)
+    }
+
+    /**
      * The read-only identity characteristic: the token the advertisement
      * carries, plus the two things that will not fit in one - the opt-in
      * display name and the L2CAP PSM.
@@ -375,7 +390,6 @@ internal object BleWire {
         // Kotlin's decoder substitutes U+FFFD rather than throwing, which is
         // what we want: a name is untrusted display text, never a decision
         // input.
-        val whole = String(raw, from, to - from, Charsets.UTF_8)
-        return String(trimUtf8(whole, MAX_NAME_BYTES), Charsets.UTF_8)
+        return boundName(String(raw, from, to - from, Charsets.UTF_8))
     }
 }
