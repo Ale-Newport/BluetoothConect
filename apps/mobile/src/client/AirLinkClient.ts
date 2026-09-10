@@ -230,6 +230,40 @@ export class AirLinkClient {
       bonjourServiceType: nativeIdentity.bonjourServiceType,
     });
 
+    // Ask for the runtime permissions the radios need, BEFORE registering them.
+    //
+    // On iOS this is a no-op by design: there is no request API, and the system
+    // sheet appears the first time CoreBluetooth or the local network is
+    // actually touched, which the calls below do. Android is the reason this
+    // line exists. Nothing in `start()` raises an Android prompt on its own, so
+    // without this the transports come up reporting `permission_*`, discovery
+    // finds nobody, and the user lands on a home screen offering Settings for a
+    // permission Android has never asked about and therefore does not list. The
+    // permissions screen has just finished explaining why each one is needed,
+    // so this is the moment it is owed.
+    //
+    // Deliberately not fatal. A refusal is a smaller app, not a broken one, and
+    // what the interface shows is driven by transport availability - which the
+    // native side reports honestly either way.
+    //
+    // The list comes from the host rather than being written out here, so a
+    // transport that exists on one platform and not the other cannot be
+    // forgotten: `host.all()` is exactly what this build and this device
+    // support, including the ones currently blocked for want of a permission.
+    const kinds = this.host.all().map((transport) => transport.kind);
+    try {
+      if (kinds.length > 0) {
+        const outcome = await this.host.requestPermissions(kinds);
+        this.log.info('permissions', {
+          granted: outcome.grantedTransports.join(',') || 'none',
+          denied: outcome.deniedTransports.join(',') || 'none',
+          requiresSettings: outcome.requiresSettings,
+        });
+      }
+    } catch (err) {
+      this.log.debug('permission request failed', { err: String(err) });
+    }
+
     this.capabilities = new TransportCapabilityManager({ logger: this.log });
     this.registry = new NearbyRegistry({
       clock: systemClock,
@@ -242,6 +276,15 @@ export class AirLinkClient {
       this.capabilities.register(transport);
       this.wireTransport(transport);
     }
+
+    // Publish what the radios say right now.
+    //
+    // `availabilityChanged` fires on a *change*, which means it never fires for
+    // the state a transport starts in - so on a phone whose Bluetooth was
+    // already on and stays on, nothing would ever contradict the store's
+    // starting assumption that it is off, and Home would offer to open Settings
+    // for a radio that is working.
+    await this.publishRadioState();
 
     this.unsubscribers.push(
       this.registry.events.on('changed', ({ peers }) => {
@@ -273,6 +316,23 @@ export class AirLinkClient {
   }
 
   // -- discovery -------------------------------------------------------------
+
+  /**
+   * Emit `radioChanged` once per transport for its current state.
+   *
+   * Same event the listeners use, so there is one path into the interface
+   * rather than a separate "initial" one that could disagree with it.
+   */
+  private async publishRadioState(): Promise<void> {
+    for (const transport of this.host.all()) {
+      const availability = await transport.availability();
+      this.events.emit('radioChanged', {
+        transport: transport.kind,
+        available: availability.available,
+        detail: availability.available ? '' : availability.reason ?? '',
+      });
+    }
+  }
 
   private wireTransport(transport: Transport): void {
     this.unsubscribers.push(

@@ -11,6 +11,11 @@ import { onboardingCopy } from './copy.js';
  * promises a dialog that never arrives. The prompts themselves are raised by
  * `client.start()` when the button is pressed - never on a cold launch, where
  * they would appear with no explanation at all.
+ *
+ * That is true on both platforms, and it took a fix to make it so: iOS raises
+ * its sheets when CoreBluetooth and the local network are first touched, which
+ * `start()` does, but Android needs an explicit request and nothing was making
+ * it. See `AirLinkClient.start`.
  */
 export type OnboardingTrouble = 'profile' | 'radios';
 

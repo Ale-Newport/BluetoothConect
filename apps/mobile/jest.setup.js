@@ -134,11 +134,18 @@ jest.mock('@airlink/native-transport', () => {
     return { remove: () => set.delete(callback) };
   };
 
+  /** Calls the app made, so a test can assert one was made at all. */
+  const calls = [];
+
   globalThis.__airlinkNativeTest = {
     emit: (name, event) => {
       for (const callback of listeners.get(name) ?? []) callback(event);
     },
     listenerCount: (name) => (listeners.get(name) ?? new Set()).size,
+    calls: () => [...calls],
+    clearCalls: () => {
+      calls.length = 0;
+    },
   };
 
   const bluetooth = {
@@ -190,12 +197,15 @@ jest.mock('@airlink/native-transport', () => {
         bytesReceived: 0,
         throughput: 0,
       }),
-      requestPermissions: async () => ({
-        granted: true,
-        granted_transports: ['ble'],
-        denied_transports: [],
-        requiresSettings: false,
-      }),
+      requestPermissions: async (transports) => {
+        calls.push({ name: 'requestPermissions', transports: [...transports] });
+        return {
+          granted: true,
+          granted_transports: [...transports],
+          denied_transports: [],
+          requiresSettings: false,
+        };
+      },
       openSettings: () => undefined,
       createHotspot: async () => {
         throw new Error('not supported in this environment');

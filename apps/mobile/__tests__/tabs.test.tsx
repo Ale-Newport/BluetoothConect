@@ -44,6 +44,7 @@ async function bootToHome(): Promise<void> {
 
 afterEach(() => {
   useAppStore.getState().reset();
+  globalThis.__airlinkNativeTest?.clearCalls();
   globalThis.__airlinkSqliteTest?.clear();
   globalThis.__airlinkKeychainTest?.clear();
 });
@@ -94,4 +95,32 @@ test('a peer discovered by the radio reaches the home screen', async () => {
   await waitFor(() => expect(useAppStore.getState().peers.length).toBe(1));
   await act(async () => undefined);
   expect(screen.getByText('Grace')).toBeTruthy();
+});
+
+test('starting the radios asks for the permissions they need', async () => {
+  await bootToHome();
+
+  // The Android prompt is the point. iOS raises its own sheets when the radios
+  // are first touched, but Android raises nothing unless it is asked - and for
+  // a while nothing asked, so a first run on Android reached a home screen
+  // offering Settings for a permission the system had never mentioned.
+  const request = globalThis.__airlinkNativeTest
+    ?.calls()
+    .find((call) => call.name === 'requestPermissions');
+  expect(request).toBeDefined();
+  expect(request?.transports).toContain('ble');
+});
+
+test('the radio state the app starts with reaches the interface', async () => {
+  await bootToHome();
+
+  // `availabilityChanged` fires on a change, so it never fires for the state a
+  // transport is already in. Without an explicit publish, a phone whose
+  // Bluetooth was on the whole time never contradicts the store's starting
+  // assumption that it is off, and Home offers to open Settings for a working
+  // radio. The double reports Bluetooth as available and never changes it,
+  // which is exactly that case.
+  await waitFor(() => expect(useAppStore.getState().radios.bluetoothOn).toBe(true));
+  for (const word of FAILURE_WORDS) expect(screen.queryByText(word)).toBeNull();
+  expect(screen.queryByText(/bluetooth is off/i)).toBeNull();
 });

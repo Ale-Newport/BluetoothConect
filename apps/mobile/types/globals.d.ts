@@ -11,6 +11,8 @@ declare global {
     | {
         emit: (event: string, payload: unknown) => void;
         listenerCount: (event: string) => number;
+        calls: () => { name: string; transports?: string[] }[];
+        clearCalls: () => void;
       }
     | undefined;
   // eslint-disable-next-line no-var
