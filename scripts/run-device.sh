@@ -49,33 +49,46 @@ fail() { printf '\n\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 # xcodebuild runs for two minutes and then reports a signing error that reads
 # like a project problem rather than an account one.
 
+# The ONLY certificate state that genuinely blocks a build is an expired one.
+#
+# Having no certificate at all does not: `xcodebuild -allowProvisioningUpdates`
+# creates it, and for a free Personal Team that is the ONLY way it can be
+# created - there is no button for it in Xcode, which is exactly where people
+# get stuck looking for one. An earlier version of this script refused to
+# continue without a certificate and so blocked the very build that would have
+# minted it.
+#
+# An EXPIRED one is different, and worse than none: codesign keeps matching it
+# by name and fails, so it has to be deleted by hand first.
+if security find-identity -p codesigning 2>/dev/null | grep -q "CSSMERR_TP_CERT_EXPIRED"; then
+  fail "Your Apple Development certificate has EXPIRED, so nothing can be signed.
+
+  Free Apple ID certificates last one year, and an expired one has to be
+  removed by hand - leaving it there makes codesign keep matching it by name.
+
+    1. Open Keychain Access (Cmd+Space, 'Keychain Access' - on macOS 15 it is
+       hidden from Applications). Sidebar: login -> My Certificates.
+    2. Delete the expired 'Apple Development: ...' entry.
+    3. Re-run this script. Xcode issues a fresh certificate while provisioning.
+
+  Nobody but you can do this: it needs your keychain."
+fi
+
 if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then
-  EXPIRED=$(security find-identity -p codesigning 2>/dev/null | grep -c "CSSMERR_TP_CERT_EXPIRED" || true)
-  if [ "${EXPIRED:-0}" -gt 0 ]; then
-    fail "Your Apple Development certificate has EXPIRED, so nothing can be signed.
-
-  Free Apple ID certificates last one year. To replace it:
-    1. Keychain Access -> login -> My Certificates -> delete the expired
-       'Apple Development: ...' entry. Leaving it there makes codesign keep
-       matching it by name and fail with CSSMERR_TP_CERT_EXPIRED.
-    2. Xcode -> Settings (Cmd+,) -> Accounts -> select your Apple ID ->
-       remove it and add it again. Xcode issues a fresh certificate.
-    3. Re-run this script.
-
-  Nobody but you can do this: it needs your Apple ID password."
-  fi
-  fail "No Apple Development certificate found on this Mac.
-
-  Xcode -> Settings (Cmd+,) -> Accounts -> '+' -> Apple ID, and sign in.
-  A free Apple ID is enough; it creates a 'Personal Team'.
-  Then re-run this script."
+  say "No signing certificate yet - Xcode will create one while provisioning."
+  echo "  This needs your Apple ID to be signed in (Xcode -> Settings -> Apple"
+  echo "  Accounts) and it may ask for your keychain password. Both are normal."
 fi
 
 # --- 2. A team -------------------------------------------------------------
 
 if [ -z "$TEAM" ]; then
+  # `defaults` prints teamID unquoted - `teamID = SM3MGV3PY8;` - and an earlier
+  # version of this looked for a quoted value, so it silently found nothing and
+  # sent people off to run the command by hand. Accept both shapes.
   TEAM=$(defaults read com.apple.dt.Xcode IDEProvisioningTeams 2>/dev/null \
-    | grep -o '"teamID" = "[A-Z0-9]*"' | head -1 | grep -o '[A-Z0-9]\{10\}' || true)
+    | sed -n 's/.*teamID[[:space:]]*=[[:space:]]*"\{0,1\}\([A-Z0-9]\{10\}\)"\{0,1\};.*/\1/p' \
+    | head -1 || true)
 fi
 [ -z "$TEAM" ] && fail "Could not work out your Team ID.
 
@@ -105,6 +118,9 @@ say "Building $CONFIG for device (team $TEAM)"
 [ "$CONFIG" = "Release" ] && echo "  The JS bundle is embedded, so the phone will not need this Mac."
 [ "$CONFIG" = "Debug" ] && echo "  Tethered build: keep 'pnpm start' running and stay on the same Wi-Fi."
 
+# macOS still ships bash 3.2, where expanding an EMPTY array under `set -u` is
+# an unbound-variable error rather than nothing. `${EXTRA[@]+...}` is the idiom
+# that survives it.
 EXTRA=()
 [ -n "$BUNDLE_ID" ] && EXTRA+=("PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID")
 
@@ -118,7 +134,7 @@ OUTPUT=$(cd "$IOS_DIR" && xcodebuild \
   -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$TEAM" \
   CODE_SIGN_STYLE=Automatic \
-  "${EXTRA[@]}" \
+  ${EXTRA[@]+"${EXTRA[@]}"} \
   build 2>&1)
 STATUS=$?
 
@@ -140,6 +156,15 @@ if [ $STATUS -ne 0 ]; then
     *"requires a development team"*)
       fail "xcodebuild did not accept the team id ($TEAM). Check it with:
     defaults read com.apple.dt.Xcode IDEProvisioningTeams" ;;
+    *"no devices from which to generate"*)
+      fail "Everything is ready except the phone.
+
+  Your certificate and your App ID are registered; Apple simply will not
+  issue a provisioning profile until it knows about a device. Connect the
+  iPhone with a cable, unlock it, tap Trust, and run this again - the
+  provisioning profile is created as part of that build.
+
+  This is expected on a first run, not a misconfiguration." ;;
     *"Unable to log in with account"*|*"session has expired"*)
       fail "Xcode could not talk to Apple with your account.
   Xcode -> Settings -> Accounts, sign in again, then re-run." ;;
