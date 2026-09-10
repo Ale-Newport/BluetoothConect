@@ -98,21 +98,78 @@ fi
 
 # --- 3. A phone ------------------------------------------------------------
 
+UDID=""
 if [ "$BUILD_ONLY" -eq 0 ]; then
-  DEVICES=$(xcrun devicectl list devices 2>/dev/null | grep -iE "iphone|ipad" || true)
-  [ -z "$DEVICES" ] && fail "No iPhone is connected.
+  # Parsed from JSON rather than by column position. The table's last column is
+  # the MODEL - an earlier version took that and handed xcodebuild "iPhone18,1"
+  # as if it were a device id.
+  DEVJSON=$(mktemp -t airlink-devices)
+  xcrun devicectl list devices --json-output "$DEVJSON" >/dev/null 2>&1
+  read -r UDID DEVNAME DEVMODE <<EOF
+$(python3 - "$DEVJSON" "$DEVICE" <<'PY'
+import json, sys
+try:
+    devices = json.load(open(sys.argv[1]))["result"]["devices"]
+except Exception:
+    sys.exit(0)
+wanted = sys.argv[2] if len(sys.argv) > 2 else ""
+for d in devices:
+    props = d.get("deviceProperties", {})
+    name = props.get("name", "")
+    udid = d.get("identifier", "")
+    if wanted and wanted not in (name, udid):
+        continue
+    print(udid, name.replace(" ", "_"), props.get("developerModeStatus") or "None")
+    break
+PY
+)
+EOF
+  rm -f "$DEVJSON"
+
+  [ -z "$UDID" ] && fail "No iPhone is connected.
 
   Plug it in with a cable, unlock it, and tap Trust on the phone.
-  Then check it appears:  xcrun devicectl list devices
-  (Wireless also works once the device has been paired in Xcode ->
-   Window -> Devices and Simulators.)"
-  if [ -z "$DEVICE" ]; then
-    DEVICE=$(printf '%s\n' "$DEVICES" | head -1 | awk '{print $NF}')
+  Then check it appears:  xcrun devicectl list devices"
+
+  say "Device: ${DEVNAME//_/ } ($UDID)"
+
+  # xcodebuild and devicectl use DIFFERENT IDENTIFIERS FOR THE SAME PHONE, and
+  # nothing warns you: devicectl reports a CoreDevice UUID
+  # (77043BBF-0DA1-55F3-...) while xcodebuild wants the hardware UDID
+  # (00008150-001C42A61E...). Passing one where the other is expected produces
+  # "Unable to find a device matching the provided destination specifier",
+  # which reads like the phone is not attached when it is sitting right there.
+  # So: ask xcodebuild what IT can see, and keep both ids.
+  XCID=$(cd "$IOS_DIR" && xcodebuild -workspace AirLink.xcworkspace -scheme AirLink \
+    -showdestinations 2>/dev/null \
+    | grep "platform:iOS," | grep -v "placeholder" \
+    | sed -n "s/.*id:\([0-9A-Fa-f-]*\).*name:\(.*\) }.*/\1|\2/p" \
+    | awk -F'|' -v want="${DEVNAME//_/ }" '$2 == want { print $1; exit } END { }' )
+  if [ -z "$XCID" ]; then
+    XCID=$(cd "$IOS_DIR" && xcodebuild -workspace AirLink.xcworkspace -scheme AirLink \
+      -showdestinations 2>/dev/null \
+      | grep "platform:iOS," | grep -v "placeholder" \
+      | sed -n 's/.*id:\([0-9A-Fa-f-]*\).*/\1/p' | head -1)
   fi
-  say "Device: $DEVICE"
+
+  # iOS 16 and later refuse to run a development build until Developer Mode is
+  # switched on, and the switch only APPEARS after a Mac has tried to install
+  # one - so the first failure here is part of the procedure, not a fault.
+  if [ "$DEVMODE" != "enabled" ]; then
+    say "Developer Mode is not enabled on this iPhone (reported: $DEVMODE)."
+    echo "  On the phone: Settings -> Privacy & Security -> Developer Mode -> on,"
+    echo "  then restart it. If that menu is not there yet, this build is what"
+    echo "  makes it appear - run this script again once you have switched it on."
+  fi
 fi
 
 # --- 4. Build --------------------------------------------------------------
+
+# A GENERIC destination is why Apple kept saying "your team has no devices":
+# with no specific device in the build, there is no UDID to register, so a free
+# Personal Team can never be issued a provisioning profile. Target the phone.
+DEST="generic/platform=iOS"
+[ -n "${XCID:-}" ] && DEST="id=$XCID"
 
 say "Building $CONFIG for device (team $TEAM)"
 [ "$CONFIG" = "Release" ] && echo "  The JS bundle is embedded, so the phone will not need this Mac."
@@ -129,7 +186,7 @@ OUTPUT=$(cd "$IOS_DIR" && xcodebuild \
   -workspace AirLink.xcworkspace \
   -scheme AirLink \
   -configuration "$CONFIG" \
-  -destination 'generic/platform=iOS' \
+  -destination "$DEST" \
   -derivedDataPath "$DERIVED" \
   -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$TEAM" \
@@ -156,6 +213,19 @@ if [ $STATUS -ne 0 ]; then
     *"requires a development team"*)
       fail "xcodebuild did not accept the team id ($TEAM). Check it with:
     defaults read com.apple.dt.Xcode IDEProvisioningTeams" ;;
+    *"Developer Mode disabled"*|*"Timed out waiting for all destinations"*)
+      fail "Developer Mode is switched off on the iPhone, and iOS will not run a
+  development build without it.
+
+  On the phone:
+    Settings -> Privacy & Security -> Developer Mode -> turn it on
+    The phone restarts, and asks you to confirm again after it boots.
+
+  If that menu is not in Settings, it appears once a Mac has tried to use
+  the phone for development - which this script has now done. Look again.
+
+  Then run this script once more. Nothing else is outstanding: the
+  certificate, the App ID and the account are all in place." ;;
     *"no devices from which to generate"*)
       fail "Everything is ready except the phone.
 
@@ -188,7 +258,7 @@ fi
 # --- 5. Install and launch -------------------------------------------------
 
 say "Installing"
-xcrun devicectl device install app --device "$DEVICE" "$APP" || fail "Install failed.
+xcrun devicectl device install app --device "$UDID" "$APP" || fail "Install failed.
 
   If the phone says the app cannot be installed, check on the device:
     Settings -> General -> VPN & Device Management -> trust your developer
@@ -196,7 +266,7 @@ xcrun devicectl device install app --device "$DEVICE" "$APP" || fail "Install fa
 
 BID="${BUNDLE_ID:-com.airlink.app}"
 say "Launching $BID"
-xcrun devicectl device process launch --device "$DEVICE" "$BID" || \
+xcrun devicectl device process launch --device "$UDID" "$BID" || \
   echo "  Could not launch it remotely. Just tap the AirLink icon on the phone."
 
 cat <<'NOTE'
