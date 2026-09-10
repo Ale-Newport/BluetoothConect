@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { ConnectionState } from '@airlink/core';
+import { strings } from '@airlink/config';
 import type { Message, Reaction } from '@airlink/db';
 import { useClient } from '../../client/ClientProvider.js';
 import type { AirLinkClient } from '../../client/AirLinkClient.js';
@@ -60,14 +62,50 @@ function dependsOn(_version: number): void {
   /* nothing to do: the value is the dependency */
 }
 
-/** Bumped whenever anything the database holds about chat has changed. */
-function useChatVersion(centre: ChatCenter | null): number {
-  const subscribe = useCallback(
+function useCentreSubscription(centre: ChatCenter | null): (listener: () => void) => () => void {
+  return useCallback(
     (listener: () => void) => (centre ? centre.subscribe(listener) : () => undefined),
     [centre],
   );
+}
+
+/** Bumped whenever anything the database holds about chat has changed. */
+function useChatVersion(centre: ChatCenter | null): number {
+  const subscribe = useCentreSubscription(centre);
   const snapshot = useCallback(() => centre?.getVersion() ?? 0, [centre]);
   return useSyncExternalStore(subscribe, snapshot);
+}
+
+/**
+ * Bumped when someone starts or stops typing, and by nothing else.
+ *
+ * Read separately from the data version so three bouncing dots re-render the
+ * indicator without re-reading a page of messages out of SQLite.
+ */
+function useChatPresence(centre: ChatCenter | null): number {
+  const subscribe = useCentreSubscription(centre);
+  const snapshot = useCallback(() => centre?.getPresenceVersion() ?? 0, [centre]);
+  return useSyncExternalStore(subscribe, snapshot);
+}
+
+/** The first of these that is a real name; a blank one is not a name. */
+function firstNamed(...candidates: readonly (string | null | undefined)[]): string {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate;
+  }
+  return strings.home.newDevice;
+}
+
+/**
+ * Whether the person is actually looking at the screen.
+ *
+ * A conversation left open in a pocket is still mounted, and marking its
+ * arrivals read there would send this device's friend a read receipt for a
+ * message nobody has seen. `unknown` and `inactive` are transitional states on
+ * iOS - the app is on screen during both - so only a genuine background counts.
+ */
+function isWatching(state: AppStateStatus | string | null | undefined): boolean {
+  return state !== 'background' && state !== 'extension';
 }
 
 /** Everyone with a conversation, newest first. */
@@ -126,6 +164,9 @@ const EMPTY_PAGE: ConversationPage = {
 export function useConversation(peerKey: string, fallbackName: string): ConversationBinding {
   const centre = useChatCenter();
   const version = useChatVersion(centre);
+  // Read so a typing signal re-renders this screen. Deliberately not a memo
+  // dependency anywhere: nothing it changes lives in the database.
+  useChatPresence(centre);
   const peers = useAppStore(useShallow(selectPeers));
 
   const live = useMemo(
@@ -139,7 +180,10 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
   }, [centre, peerKey, version]);
 
   const peerId = live?.peerId ?? (stored ? stored.peerId : null);
-  const displayName = live?.displayName ?? stored?.displayName ?? fallbackName;
+  // The stored name first: it was written from an authenticated handshake,
+  // where the nearby list's copy can be an unauthenticated advertisement - or
+  // a placeholder standing in for an advertisement that carried no name at all.
+  const displayName = firstNamed(stored?.displayName, live?.displayName, fallbackName);
   const avatarEmoji = live?.avatarEmoji ?? stored?.avatarEmoji ?? null;
 
   // Resolved during render rather than in an effect so the first paint already
@@ -177,8 +221,21 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
   /** Open and close, so arriving messages are read rather than unread. */
   useEffect(() => {
     if (!centre || !conversationId || !peerId) return;
-    centre.openConversation(conversationId, peerId);
-    return () => centre.closeConversation(conversationId);
+    const open = (): void => centre.openConversation(conversationId, peerId);
+    const close = (): void => centre.closeConversation(conversationId);
+    // Mounted is not the same as watched. The screen stays mounted when the
+    // phone goes into a pocket, and everything arriving there would otherwise
+    // be marked read - no unread badge on the way back, and a read receipt
+    // sent for a message nobody has seen.
+    if (isWatching(AppState.currentState)) open();
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (isWatching(next)) open();
+      else close();
+    });
+    return () => {
+      subscription.remove();
+      close();
+    };
   }, [centre, conversationId, peerId]);
 
   const send = useCallback(

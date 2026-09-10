@@ -80,13 +80,21 @@ const POSITION_TICK_MS = 250;
 /** How long the controls stay up after the last touch, while playing. */
 const CONTROLS_LINGER_MS = 3_500;
 /**
- * How long to wait for the decoder to say anything about a picked file.
+ * How long a picked file has to become something we can compare.
  *
- * A container the device cannot open sometimes produces neither `onLoad` nor
- * `onError` on either platform. Without this the "Reading the video…" state
- * would have no end, which is the one thing no state in this app may do.
+ * Covers the whole read: the decoder opening the container - which sometimes
+ * produces neither `onLoad` nor `onError` on either platform - and then the
+ * eight sampled windows. Without it the "Reading the video…" state would have
+ * no end, which is the one thing no state in this app may do.
  */
-const LOAD_TIMEOUT_MS = 20_000;
+const READ_TIMEOUT_MS = 20_000;
+/**
+ * How close to the duration counts as the last frame.
+ *
+ * The core parks the shared line exactly on `durationMs` when the film runs
+ * out, so this only has to absorb the projection's own rounding.
+ */
+const END_SLACK_MS = 500;
 
 export function WatchTogetherScreen(): React.JSX.Element {
   const theme = useTheme();
@@ -136,6 +144,25 @@ export function WatchTogetherScreen(): React.JSX.Element {
     setHold(linkHold);
   }, [linkHold, setHold]);
 
+  /**
+   * Nothing plays outside a session.
+   *
+   * `finish()` in the core deliberately leaves the player alone - leaving a
+   * watch party stops you being corrected, it does not stop your film - and
+   * that is right for a protocol and wrong for this screen, where the same
+   * player becomes a small preview above the setup panel. Without this, tapping
+   * [Leave] halfway through a film drops you onto a "Session over" card with
+   * the film still running, with its sound, in a thumbnail.
+   *
+   * It fires only on the way OUT. Entering a session, the protocol's own anchor
+   * is what starts the picture, and it has already been applied by the time
+   * this state change reaches React.
+   */
+  const pauseLocally = media.pauseLocally;
+  useEffect(() => {
+    if (!inPlayer) pauseLocally();
+  }, [inPlayer, pauseLocally]);
+
   const everPlayed = useRef(false);
   useEffect(() => {
     if (inPlayer) everPlayed.current = true;
@@ -166,7 +193,16 @@ export function WatchTogetherScreen(): React.JSX.Element {
         if (picked) {
           resetFile();
           setVideo(picked);
+          // Choosing a file is unambiguously "I want to watch this now", so
+          // every verdict about the LAST one is cleared - the last session
+          // included. Without clearing `finished`, a film whose decoder gave up
+          // mid-session (the one path that reaches this button with a session
+          // behind it) would put the "Session over" card back up over the file
+          // the user just picked, and [Watch something else] would then throw
+          // that file away and ask for it again.
           api.clearOutcome();
+          api.clearFinished();
+          everPlayed.current = false;
           setAskNonce((n) => n + 1);
         }
       } catch {
@@ -176,8 +212,8 @@ export function WatchTogetherScreen(): React.JSX.Element {
         setPicking(false);
       }
     })();
-    // `api` is rebuilt every render; only its clearOutcome is used here and it
-    // is a plain setter, so re-creating this callback would buy nothing.
+    // `api` is rebuilt every render; the only things used from it here are its
+    // plain setters, so re-creating this callback would buy nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [picking, resetFile]);
 
@@ -221,11 +257,20 @@ export function WatchTogetherScreen(): React.JSX.Element {
     };
   }, [video, durationMs, descriptor, readFailed]);
 
+  /**
+   * The watchdog on "Reading the video…", covering BOTH halves of it.
+   *
+   * It runs from the moment a file is chosen until there is a descriptor, not
+   * just until `onLoad` answers: the second half - eight window reads through
+   * the filesystem - is a provider's code as much as the first, and a stalled
+   * `content://` read would otherwise spin under the same label with no end.
+   * One budget for the whole read, and it is ten times what the work takes.
+   */
   useEffect(() => {
-    if (!video || durationMs > 0 || readFailed) return;
-    const timer = setTimeout(() => setReadFailed(true), LOAD_TIMEOUT_MS);
+    if (!video || descriptor || readFailed) return;
+    const timer = setTimeout(() => setReadFailed(true), READ_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [video, durationMs, readFailed]);
+  }, [video, descriptor, readFailed]);
 
   // ---------------------------------------------------------------------------
   // Talking to the peer
@@ -309,6 +354,28 @@ export function WatchTogetherScreen(): React.JSX.Element {
 
   const shownPositionMs = scrubMs ?? linePositionMs;
   const baseRate = session?.currentAnchor?.rate ?? 1;
+
+  /**
+   * The film is over.
+   *
+   * When the line runs past the end, the core's correction loop has the host
+   * publish a stop on the final frame, so both devices park there and agree
+   * about it. What neither can do from there is play: a play command publishes
+   * a line that starts where the decoder has nothing left, so the picture would
+   * not move and the loop would put the stop straight back - a play button that
+   * looks live for half a second and does nothing. So the transport swaps it
+   * for a restart, which is one command and works the same for host and guest.
+   *
+   * Read from the LINE, never from the finger, so dragging the scrubber into
+   * the last second does not change what the button underneath it means. And
+   * never at position zero, so a clip shorter than the slack does not open on a
+   * restart button.
+   */
+  const atEnd =
+    durationMs > 0 &&
+    linePositionMs > 0 &&
+    !api.anchorPlaying &&
+    linePositionMs >= durationMs - END_SLACK_MS;
 
   // ---------------------------------------------------------------------------
   // Controls
@@ -503,6 +570,7 @@ export function WatchTogetherScreen(): React.JSX.Element {
           durationMs={durationMs}
           controlsEnabled={controlsEnabled}
           disabledReason={controlsEnabled ? undefined : shared.connection.reconnecting}
+          atEnd={atEnd}
           speed={baseRate}
           subtitles={subtitles}
           selectedSubtitle={selectedSubtitle}
@@ -510,6 +578,11 @@ export function WatchTogetherScreen(): React.JSX.Element {
           insetBottom={insets.bottom}
           onToggleControls={() => (controlsVisible ? setControlsVisible(false) : keepControlsUp())}
           onTogglePlay={() => command((live) => (api.anchorPlaying ? live.pause() : live.play()))}
+          // One seek, not a seek and a play: a guest's commands are requests,
+          // and the host honours at most one every 250 ms - so a pair sent
+          // together would land as a rewind with the play silently dropped.
+          // This parks both devices on the first frame, where [Play] works.
+          onRestart={() => command((live) => live.seekTo(0))}
           onSkip={(delta) =>
             command((live) => live.seekTo(clamp(shownPositionMs + delta, durationMs)))
           }

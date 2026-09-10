@@ -301,7 +301,7 @@ internal class BleGattServer(
             null
         }
         try {
-            if (usingLegacyAdvertiser) {
+            if (usingLegacyAdvertiser || !ADVERTISING_SETS_AVAILABLE) {
                 advertiser?.stopAdvertising(legacyAdvertiseCallback)
             } else {
                 advertiser?.stopAdvertisingSet(advertisingSetCallback)
@@ -354,6 +354,17 @@ internal class BleGattServer(
         wantsAdvertising = true
 
         val (advertiseData, scanResponse) = buildAdvertiseData(ids)
+
+        // The whole advertising-set API - the parameters, the callback and
+        // `startAdvertisingSet` itself - is API 26. This module's minSdk is
+        // resolved from the host project, which sets 24, so the version has to
+        // be checked at runtime rather than assumed: on API 24 and 25 merely
+        // *constructing* the callback below would raise NoClassDefFoundError and
+        // take the whole GATT server down with it.
+        if (!ADVERTISING_SETS_AVAILABLE) {
+            startLegacyAdvertising(advertiseData, scanResponse)
+            return
+        }
 
         val parameters = AdvertisingSetParameters.Builder()
             // Legacy mode, deliberately. Extended advertising is invisible to
@@ -426,7 +437,20 @@ internal class BleGattServer(
         }
     }
 
-    private val advertisingSetCallback = object : AdvertisingSetCallback() {
+    /**
+     * LAZY, and that is load bearing on API 24 and 25.
+     *
+     * `AdvertisingSetCallback` does not exist before API 26. An anonymous
+     * subclass of it in a property *initializer* would be loaded - and fail to
+     * resolve its superclass - the moment a `BleGattServer` is constructed,
+     * which happens on every device the moment the transport starts. Deferring
+     * it means the class is only ever touched behind
+     * [ADVERTISING_SETS_AVAILABLE], and an old device quietly uses the legacy
+     * advertiser instead of losing Bluetooth altogether.
+     */
+    private val advertisingSetCallback: AdvertisingSetCallback by lazy { newAdvertisingSetCallback() }
+
+    private fun newAdvertisingSetCallback(): AdvertisingSetCallback = object : AdvertisingSetCallback() {
         override fun onAdvertisingSetStarted(set: AdvertisingSet?, txPower: Int, status: Int) {
             handler.post {
                 if (status == AdvertisingSetCallback.ADVERTISE_SUCCESS) {
@@ -511,6 +535,37 @@ internal class BleGattServer(
         /** Bounded reassembly buffer for a GATT long write. Almost always unused. */
         var prepared: ByteArray = ByteArray(0)
 
+        /**
+         * Datagrams this peer wrote to us before its link opened, in order.
+         *
+         * An iOS central starts writing the moment its subscription is
+         * confirmed, while we are still waiting for the L2CAP channel it is
+         * about to dial. See [BleTuning.MAX_PREOPEN_INBOUND_DATAGRAMS].
+         */
+        val held = ArrayDeque<ByteArray>()
+        var heldBytes: Int = 0
+
+        /**
+         * Notifications we gave up waiting for, whose `onNotificationSent` the
+         * stack still owes us.
+         *
+         * Exactly the hazard [GattOperationQueue.abandoned] exists for, on the
+         * peripheral's side of the radio: without this, a late acknowledgement
+         * completes the NEXT notification, so a datagram the stack never
+         * accepted is reported as sent. That is the one failure the datagram
+         * contract forbids outright - loss that is never signalled.
+         */
+        var abandonedNotifications: Int = 0
+
+        /** True when [payload] fits the pre-open hold and has been taken. */
+        fun hold(payload: ByteArray): Boolean {
+            if (held.size >= BleTuning.MAX_PREOPEN_INBOUND_DATAGRAMS) return false
+            if (heldBytes + payload.size > BleTuning.MAX_PREOPEN_INBOUND_BYTES) return false
+            held.addLast(payload)
+            heldBytes += payload.size
+            return true
+        }
+
         val subscribeTimeout = Runnable {
             if (!opened) {
                 host.log("info", "dropping $address: connected but never subscribed")
@@ -536,7 +591,13 @@ internal class BleGattServer(
         val notifyTimeout = Runnable {
             val done = notifyDone
             notifyDone = null
-            done?.invoke(BleErrors.failed("the notification was never acknowledged"))
+            if (done != null) {
+                // The stack still owes this notification an acknowledgement and
+                // may yet deliver it. Recorded so it cannot be mistaken for the
+                // next notification's. See [abandonedNotifications].
+                abandonedNotifications++
+                done.invoke(BleErrors.failed("the notification was never acknowledged"))
+            }
         }
     }
 
@@ -548,6 +609,10 @@ internal class BleGattServer(
         peers.remove(peer.address)
         L2cap.closeQuietly(peer.pendingSocket)
         peer.pendingSocket = null
+        // Anything still held never reached JavaScript and never will: the link
+        // is closing and no `onData` may follow a `closed` state.
+        peer.held.clear()
+        peer.heldBytes = 0
         peer.link.close(reason, failed)
         try {
             server?.cancelConnection(peer.device)
@@ -623,6 +688,7 @@ internal class BleGattServer(
                 "${peer.link.maxDatagramSize} byte datagrams",
         )
         onIncomingLink(peer.link)
+        flushHeld(peer)
     }
 
     private fun openOverL2cap(peer: ServerPeer, socket: BluetoothSocket) {
@@ -641,7 +707,6 @@ internal class BleGattServer(
             onBroken = { reason -> closePeer(peer, reason, failed = true) },
             log = { level, message -> host.log(level, "[${peer.link.id}] $message") },
         )
-        sender.start()
         peer.link.attach(sender)
         peer.link.markOpen()
         host.log(
@@ -650,6 +715,34 @@ internal class BleGattServer(
                 "${peer.link.maxDatagramSize} byte datagrams",
         )
         onIncomingLink(peer.link)
+        // The held GATT datagrams are delivered BEFORE the reader thread is
+        // started, so nothing that arrives on the channel can overtake a
+        // datagram the peer wrote earlier over ATT. The central drains its own
+        // ATT queue before adopting the channel, so this preserves the order the
+        // peer sent them in.
+        flushHeld(peer)
+        sender.start()
+    }
+
+    /**
+     * Delivers, in order, every datagram this peer wrote before its link opened.
+     *
+     * Called after `markOpen` on purpose: `onLinkOpened` has already reached
+     * JavaScript by then, so these arrive as data on a link it knows about
+     * rather than as events about nothing.
+     */
+    private fun flushHeld(peer: ServerPeer) {
+        if (peer.held.isEmpty()) return
+        host.log(
+            "debug",
+            "delivering ${peer.held.size} datagram(s) held from ${peer.address} before the link opened",
+        )
+        while (true) {
+            val next = peer.held.removeFirstOrNull() ?: break
+            peer.heldBytes -= next.size
+            peer.link.deliver(next)
+        }
+        peer.heldBytes = 0
     }
 
     private fun acceptL2cap(socket: BluetoothSocket) {
@@ -831,6 +924,15 @@ internal class BleGattServer(
             val address = device?.address ?: return
             handler.post {
                 val peer = peers[address] ?: return@post
+                // A ghost is claimed BEFORE anything in flight can be mistaken
+                // for its owner, and before the live timeout is cancelled: this
+                // acknowledgement belongs to a notification we already failed,
+                // not to the one waiting now.
+                if (peer.abandonedNotifications > 0) {
+                    peer.abandonedNotifications--
+                    host.log("debug", "late notification acknowledgement from $address; ignored")
+                    return@post
+                }
                 handler.removeCallbacks(peer.notifyTimeout)
                 val done = peer.notifyDone ?: return@post
                 peer.notifyDone = null
@@ -1078,13 +1180,36 @@ internal class BleGattServer(
                     respond(target, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                 }
                 if (!peer.opened) {
-                    // A datagram before the subscription that opens the link has
-                    // nowhere to go: JavaScript has never been told this link
-                    // exists, so an onData for it would be an event about
-                    // nothing. Acknowledged on the wire, dropped here, counted
-                    // nowhere - and no correct peer sends one.
-                    host.log("warn", "datagram from $address before the link opened; dropped")
-                    return@post
+                    // HELD, NOT DROPPED, and this is the whole of iPhone-to-
+                    // Android working at all.
+                    //
+                    // An iOS central opens its link the instant its subscription
+                    // is confirmed and writes its first datagram immediately;
+                    // the L2CAP upgrade is something it arranges afterwards. We
+                    // are still inside awaitFastPath at that moment, holding the
+                    // connection for the channel that iPhone is about to dial.
+                    // Discarding the write here - acknowledged on the wire, so
+                    // the iPhone is told it was sent - loses the datagram that
+                    // starts the session, every time, in one direction only.
+                    //
+                    // So it waits, in order, and flushHeld delivers it the
+                    // moment the path is settled.
+                    if (peer.hold(payload)) return@post
+
+                    // The hold is full: this peer is plainly mid-conversation,
+                    // so there is nothing left to gain by waiting for a channel
+                    // that has not arrived. Opening on GATT flushes everything
+                    // held, in order, ahead of this datagram.
+                    host.log(
+                        "warn",
+                        "$address filled the pre-open buffer; opening ${peer.link.id} on GATT now",
+                    )
+                    openOverGatt(peer)
+                    if (!peer.opened) {
+                        // openOverGatt could not open it - no registered service
+                        // - and has already closed the peer.
+                        return@post
+                    }
                 }
                 // One ATT write is one datagram. Nothing is parsed, joined or
                 // split - the boundary came from the protocol below us.
@@ -1104,8 +1229,14 @@ internal class BleGattServer(
                 val assembled = peer?.prepared ?: ByteArray(0)
                 peer?.prepared = ByteArray(0)
                 respond(target, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-                if (execute && assembled.isNotEmpty() && peer != null && peer.opened) {
+                if (!execute || assembled.isEmpty() || peer == null) return@post
+                if (peer.opened) {
                     peer.link.deliver(assembled)
+                } else if (!peer.hold(assembled)) {
+                    // Same reasoning as the ordinary write above; a long write
+                    // that arrives before the link opens is held, not dropped.
+                    openOverGatt(peer)
+                    if (peer.opened) peer.link.deliver(assembled)
                 }
             }
         }
@@ -1131,5 +1262,19 @@ internal class BleGattServer(
         val peer = peers.values.firstOrNull { it.link.id == linkId } ?: return false
         closePeer(peer, reason, failed = false)
         return true
+    }
+
+    private companion object {
+        /**
+         * Whether `BluetoothLeAdvertiser.startAdvertisingSet` and the
+         * `AdvertisingSet*` types exist on this device: they are all API 26.
+         *
+         * This module's `minSdk` is resolved from the host project rather than
+         * pinned here, and the app sets 24 - so "the library was written for 26"
+         * is not something the compiler enforces and cannot be relied on. Every
+         * use of the advertising-set API therefore sits behind this.
+         */
+        val ADVERTISING_SETS_AVAILABLE: Boolean =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
     }
 }

@@ -126,21 +126,31 @@ internal class CentralConnection(
         // whenever it next sees the peer, with no timeout and no feedback -
         // useful for a background reconnect policy, which is precisely the
         // decision this layer is not allowed to make.
-        val phy = if (availability.supports2MPhy) {
-            BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK
-        } else {
-            BluetoothDevice.PHY_LE_1M_MASK
-        }
-
+        //
+        // The PHY-and-Handler overload is API 26 and the transport-only one is
+        // API 23. minSdk is resolved from the host project (which sets 24), so
+        // the older overload is a real code path rather than dead defence:
+        // without it every outgoing connection on Android 7 would fail with a
+        // NoSuchMethodError swallowed by the catch below.
+        @Suppress("DEPRECATION")
         val opened = try {
-            device.connectGatt(
-                context,
-                false,
-                callback,
-                BluetoothDevice.TRANSPORT_LE,
-                phy,
-                handler,
-            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val phy = if (availability.supports2MPhy) {
+                    BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK
+                } else {
+                    BluetoothDevice.PHY_LE_1M_MASK
+                }
+                device.connectGatt(
+                    context,
+                    false,
+                    callback,
+                    BluetoothDevice.TRANSPORT_LE,
+                    phy,
+                    handler,
+                )
+            } else {
+                device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+            }
         } catch (t: Throwable) {
             null
         }

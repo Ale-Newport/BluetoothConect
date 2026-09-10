@@ -383,7 +383,7 @@ export class ChatCenter {
       const armed = this.safe(() => handle.chat.retry(wireId)) === true;
       this.safe(() => this.client.db.messages.setStatus(rowId, armed ? 'sent' : 'pending'));
     } else {
-      this.handToProtocol(handle, row);
+      this.handToProtocol(this.attachments.get(handle.key) ?? this.attach(handle), row);
     }
     this.publish();
   }
@@ -596,25 +596,48 @@ export class ChatCenter {
     for (const row of this.safe(() => this.client.db.messages.pendingFor(conversationId)) ?? []) {
       if (row.senderPeerId !== LOCAL_SENDER || row.deleted) continue;
       if (covered.has(row.id)) continue;
-      this.handToProtocol(attachment.handle, row);
+      this.handToProtocol(attachment, row);
     }
   }
 
-  private handToProtocol(handle: PeerHandle, row: Message): void {
+  private handToProtocol(attachment: Attachment, row: Message): void {
     const body = row.body ?? '';
     // A row with no text is an attachment the file module owns; there is
     // nothing for the chat protocol to carry.
     if (body.trim().length === 0) return;
     const replyToWireId = row.replyToId ? this.wireIdOf(row.replyToId) : null;
     const entry = this.safe(() =>
-      handle.chat.send({ text: body, ...(replyToWireId ? { replyToId: replyToWireId } : {}) }),
+      attachment.handle.chat.send({ text: body, ...(replyToWireId ? { replyToId: replyToWireId } : {}) }),
     );
     if (!entry) return;
     if (entry.message.id !== row.id) {
       this.aliases.set(entry.message.id, row.id);
       this.wireIds.set(row.id, entry.message.id);
+      // `send` persisted the queue on its way through - before this pair
+      // existed. Writing it again now is what stops a crash in the next
+      // moment from restoring a queue whose receipts have nowhere to land.
+      this.persistOutbox(attachment);
     }
     this.safe(() => this.client.db.messages.setStatus(row.id, statusName(entry.status)));
+  }
+
+  /**
+   * Whether a message the protocol could not send is beyond saving.
+   *
+   * Almost never: a transport failure means the other phone went into a bag
+   * mid-send, the entry is still queued, and the next link will carry it. Only
+   * three things are permanent - the queue has forgotten the message, it has
+   * run out of attempts, or the peer has told us its payload budget is smaller
+   * than the message is. Those, and only those, are worth red.
+   */
+  private isUndeliverable(attachment: Attachment, wireId: string): boolean {
+    const entry = (this.safe(() => attachment.handle.chat.outboxSnapshot()) ?? []).find(
+      (candidate) => candidate.message.id === wireId,
+    );
+    if (!entry) return true;
+    if (entry.attempts >= CHAT_LIMITS.maxSendAttempts) return true;
+    const size = this.safe(() => encodedMessageSize(entry.message));
+    return size !== undefined && size > attachment.handle.session.maxPayloadBytes;
   }
 
   // -- inbound ---------------------------------------------------------------

@@ -416,34 +416,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 }
             }
 
-            val registration = object : NsdManager.RegistrationListener {
-                override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-                    onControl {
-                        registeredServiceName = serviceInfo.serviceName
-                        log("info", "advertising as ${serviceInfo.serviceName} on port ${tcpServer.port}")
-                    }
-                }
-
-                override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                    onControl {
-                        registrationListener = null
-                        registeredServiceName = null
-                        log("error", "advertising failed: ${nsdError(errorCode)}")
-                        events?.availabilityChanged(kind, false, UnavailableReason.UNKNOWN)
-                    }
-                }
-
-                override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
-                    onControl { registeredServiceName = null }
-                }
-
-                override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                    onControl {
-                        registeredServiceName = null
-                        log("warn", "unregister failed: ${nsdError(errorCode)}")
-                    }
-                }
-            }
+            val registration = RegistrationSession(tcpServer.port)
 
             requestedServiceName = instanceName
             try {
@@ -452,9 +425,64 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             } catch (e: RuntimeException) {
                 // IllegalArgumentException for a malformed record, IllegalStateException
                 // when NSD itself is wedged. Neither is worth crashing an offline app.
+                requestedServiceName = null
                 log("error", "advertising rejected: ${e.javaClass.simpleName}")
             }
         }
+    }
+
+    /**
+     * One advertisement, for as long as it is the current one.
+     *
+     * A named class rather than an anonymous object for exactly the reason
+     * [ServiceTracker] is: every callback checks it is still the CURRENT
+     * registration before touching shared state. Rotating the token calls
+     * startAdvertising again, which unregisters this one and registers the next,
+     * and the platform then delivers this one's `onServiceUnregistered` - or a
+     * late `onRegistrationFailed` - AFTER the replacement is live. Without the
+     * check those callbacks null out the NEW registration's listener and name:
+     * the new advertisement is then never unregistered (a leaked NSD
+     * registration) and `handleServiceFound` stops recognising our own service,
+     * so we report ourselves to JavaScript as a peer.
+     */
+    private inner class RegistrationSession(private val port: Int) : NsdManager.RegistrationListener {
+
+        override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
+            onControl {
+                if (!isCurrent()) return@onControl
+                registeredServiceName = serviceInfo.serviceName
+                log("info", "advertising as ${serviceInfo.serviceName} on port $port")
+            }
+        }
+
+        override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+            onControl {
+                if (!isCurrent()) return@onControl
+                registrationListener = null
+                registeredServiceName = null
+                // Cleared here too: nothing is advertising this name any more, so
+                // keeping it would go on filtering a real peer that happened to
+                // pick it. See the note in stopAdvertisingInternal().
+                requestedServiceName = null
+                log("error", "advertising failed: ${nsdError(errorCode)}")
+                events?.availabilityChanged(kind, false, UnavailableReason.UNKNOWN)
+            }
+        }
+
+        override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
+            onControl { if (isCurrent()) registeredServiceName = null }
+        }
+
+        override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+            onControl {
+                if (!isCurrent()) return@onControl
+                registeredServiceName = null
+                log("warn", "unregister failed: ${nsdError(errorCode)}")
+            }
+        }
+
+        /** Must run on the control thread. */
+        private fun isCurrent(): Boolean = registrationListener === this
     }
 
     override fun stopAdvertising() {
@@ -493,48 +521,69 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             discovering = true
             if (discoveryListener != null) return@onControl
 
-            val listener = object : NsdManager.DiscoveryListener {
-                override fun onDiscoveryStarted(regType: String) {
-                    onControl { log("info", "discovering $regType") }
-                }
-
-                override fun onStartDiscoveryFailed(failedType: String, errorCode: Int) {
-                    onControl {
-                        discoveryListener = null
-                        // Nothing is discovering, so nothing may publish a peer.
-                        discovering = false
-                        log("error", "discovery failed to start: ${nsdError(errorCode)}")
-                        events?.availabilityChanged(kind, false, UnavailableReason.UNKNOWN)
-                    }
-                }
-
-                override fun onStopDiscoveryFailed(failedType: String, errorCode: Int) {
-                    onControl { log("warn", "discovery failed to stop: ${nsdError(errorCode)}") }
-                }
-
-                override fun onDiscoveryStopped(stoppedType: String) {
-                    onControl {
-                        discoveryListener = null
-                        discovering = false
-                    }
-                }
-
-                override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                    onControl { handleServiceFound(serviceInfo) }
-                }
-
-                override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                    onControl { handleServiceLost(serviceInfo.serviceName) }
-                }
-            }
-
+            val listener = DiscoverySession()
             try {
                 manager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
                 discoveryListener = listener
             } catch (e: RuntimeException) {
+                // Nothing is discovering, so nothing may publish a peer.
+                discovering = false
                 log("error", "discovery rejected: ${e.javaClass.simpleName}")
             }
         }
+    }
+
+    /**
+     * One browse, for as long as it is the current one.
+     *
+     * Named, and current-checked, for the same reason [ServiceTracker] and
+     * [RegistrationSession] are. `stopServiceDiscovery` is asynchronous: a
+     * stop() immediately followed by a start() - which is what a configuration
+     * change does - leaves the OLD browse's `onDiscoveryStopped` arriving after
+     * the NEW one is live. An unchecked callback would then null out the new
+     * listener, so `stopDiscoveryInternal` could never unregister it: a leaked
+     * NSD browse that keeps the radio awake and a second browse layered on top
+     * of it the next time discovery starts.
+     */
+    private inner class DiscoverySession : NsdManager.DiscoveryListener {
+
+        override fun onDiscoveryStarted(regType: String) {
+            onControl { log("info", "discovering $regType") }
+        }
+
+        override fun onStartDiscoveryFailed(failedType: String, errorCode: Int) {
+            onControl {
+                if (!isCurrent()) return@onControl
+                discoveryListener = null
+                // Nothing is discovering, so nothing may publish a peer.
+                discovering = false
+                log("error", "discovery failed to start: ${nsdError(errorCode)}")
+                events?.availabilityChanged(kind, false, UnavailableReason.UNKNOWN)
+            }
+        }
+
+        override fun onStopDiscoveryFailed(failedType: String, errorCode: Int) {
+            onControl { log("warn", "discovery failed to stop: ${nsdError(errorCode)}") }
+        }
+
+        override fun onDiscoveryStopped(stoppedType: String) {
+            onControl {
+                if (!isCurrent()) return@onControl
+                discoveryListener = null
+                discovering = false
+            }
+        }
+
+        override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+            onControl { if (isCurrent()) handleServiceFound(serviceInfo) }
+        }
+
+        override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+            onControl { if (isCurrent()) handleServiceLost(serviceInfo.serviceName) }
+        }
+
+        /** Must run on the control thread. */
+        private fun isCurrent(): Boolean = discoveryListener === this
     }
 
     override fun stopDiscovery() {

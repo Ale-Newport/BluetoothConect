@@ -301,6 +301,11 @@ internal class L2capSender(
         // the socket as one write; splitting the length word from its payload
         // across two writes is how stream framing gets subtly wrong.
         queue.put(Outbound(BleWire.frame(datagram), onDone))
+        // A close() that lands between the check above and this put would leave
+        // this datagram in a queue no thread will ever read again, and its
+        // completion - a JavaScript promise - would never settle. Re-checked
+        // here so the loser of that race is failed rather than forgotten.
+        if (closed.get()) drain(BleErrors.failed("the L2CAP channel closed"))
     }
 
     /**
@@ -317,6 +322,13 @@ internal class L2capSender(
 
     // -- internals ------------------------------------------------------------
 
+    /**
+     * Fails every datagram still waiting, exactly once each.
+     *
+     * The poison pill has no completion, so it is simply consumed - which is
+     * only ever correct because every caller either has not put it yet or has
+     * already seen the writer act on it.
+     */
     private fun drain(cause: Throwable) {
         while (true) {
             val item = queue.poll() ?: break
@@ -383,6 +395,11 @@ internal class L2capSender(
             Thread.currentThread().interrupt()
         } catch (t: Throwable) {
             broke("L2CAP writer failed: ${t.javaClass.simpleName}")
+        } finally {
+            // Nothing will read this queue again. A datagram enqueued by a send
+            // that raced close() - so it landed behind the poison pill - is
+            // failed here rather than left holding an unresolvable promise.
+            drain(BleErrors.failed("the L2CAP channel closed"))
         }
     }
 }

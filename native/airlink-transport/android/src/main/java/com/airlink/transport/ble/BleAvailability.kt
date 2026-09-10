@@ -82,25 +82,42 @@ internal class BleAvailability(context: Context) {
      * JavaScript rather than treated as a failure.
      */
     val canAdvertise: Boolean
-        get() = try {
-            val a = adapter ?: return false
-            a.isMultipleAdvertisementSupported && a.bluetoothLeAdvertiser != null
-        } catch (_: Throwable) {
-            false
+        // A BLOCK BODY, NOT `get() = try { ... }`. Kotlin forbids a `return`
+        // inside an expression body ("returns are not allowed for functions with
+        // expression body"); allowing it when the return type is written out
+        // only arrives in Kotlin 2.3, and this module builds on 2.2. The early
+        // exit below is what needs the block.
+        get() {
+            return try {
+                val a = adapter ?: return false
+                a.isMultipleAdvertisementSupported && a.bluetoothLeAdvertiser != null
+            } catch (_: Throwable) {
+                false
+            }
         }
 
     val supportsL2cap: Boolean get() = L2cap.isSupported
 
+    /**
+     * Both of the queries below are API 26, as is every use their answers gate
+     * (`setPreferredPhy`, the PHY-aware `connectGatt`, `ScanSettings.setPhy`).
+     * This module's `minSdk` is resolved from the host project, which sets 24,
+     * so the check is a runtime one rather than something the compiler has
+     * already guaranteed - and reporting `false` on an older device is exactly
+     * right: it means 1M PHY and a legacy scan, which is what those devices do.
+     */
+    private val hasApi26Radio: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+
     val supports2MPhy: Boolean
         get() = try {
-            adapter?.isLe2MPhySupported == true
+            hasApi26Radio && adapter?.isLe2MPhySupported == true
         } catch (_: Throwable) {
             false
         }
 
     val supportsExtendedAdvertising: Boolean
         get() = try {
-            adapter?.isLeExtendedAdvertisingSupported == true
+            hasApi26Radio && adapter?.isLeExtendedAdvertisingSupported == true
         } catch (_: Throwable) {
             false
         }

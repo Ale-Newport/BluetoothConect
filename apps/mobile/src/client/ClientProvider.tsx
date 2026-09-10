@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { ConnectionState } from '@airlink/core';
 import { AppPhase, useAppStore } from '../state/index.js';
 import { AirLinkClient } from './AirLinkClient.js';
+import { chatCenterFor } from '../screens/chat/chatCenter.js';
 import pkg from '../../package.json';
 
 /**
@@ -89,6 +90,13 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
           store.getState().setPhase(AppPhase.ONBOARDING);
         } else {
           store.getState().setProfile(instance.profile);
+          // Before the radios, and before any screen is on top: the chat centre
+          // is what listens to `ChatProtocol` and writes arriving messages to
+          // SQLite. Built lazily by the Chat tab it would not exist until that
+          // tab was first opened, and a message arriving before then would be
+          // acknowledged to the sender and then dropped - the protocol keeps
+          // ids, not bodies. It is cheap, and it has to be listening first.
+          chatCenterFor(instance);
           store.getState().setPhase(AppPhase.READY);
           // Radios come up only once there is an identity to advertise, so a
           // first launch never shows a permission prompt before the screen that

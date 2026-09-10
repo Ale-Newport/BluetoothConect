@@ -45,7 +45,17 @@ internal class BleScanner(
     private val sightings = LinkedHashMap<String, Sighting>()
     private var scanning = false
     private var serviceUuid: UUID? = null
-    private var restartScheduled = false
+
+    /**
+     * The one queued scan restart, held so [stop] can cancel it.
+     *
+     * A bare flag is not enough: a restart posted six seconds out and then
+     * forgotten fires long after `stopDiscovery()` and puts the radio back into
+     * a scan nobody asked for - which on this platform is a visible battery
+     * cost, and on Android 12+ a "Nearby devices" access the user did not
+     * initiate.
+     */
+    private var pendingRestart: Runnable? = null
 
     /**
      * How often the same peer may be re-announced while it sits there
@@ -112,6 +122,8 @@ internal class BleScanner(
 
     fun stop() {
         handler.removeCallbacks(sweep)
+        pendingRestart?.let { handler.removeCallbacks(it) }
+        pendingRestart = null
         if (scanning) {
             try {
                 availability.adapter?.bluetoothLeScanner?.stopScan(callback)
@@ -305,20 +317,21 @@ internal class BleScanner(
             errorCode == ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED ||
                 errorCode == ScanCallback.SCAN_FAILED_INTERNAL_ERROR
         val service = serviceUuid
-        if (!recoverable || service == null || restartScheduled) return
+        if (!recoverable || service == null || pendingRestart != null) return
 
         // Android throttles an app to five scan starts in thirty seconds and
         // answers the sixth with a registration failure. Retrying immediately
         // would spend what is left of the budget and guarantee another failure,
         // so there is exactly one retry and it waits.
-        restartScheduled = true
-        handler.postDelayed({
-            restartScheduled = false
+        val restart = Runnable {
+            pendingRestart = null
             try {
                 start(service)
             } catch (t: Throwable) {
                 log("warn", "scan restart failed: ${t.message ?: t.javaClass.simpleName}")
             }
-        }, BleTuning.SCAN_RESTART_DELAY_MS)
+        }
+        pendingRestart = restart
+        handler.postDelayed(restart, BleTuning.SCAN_RESTART_DELAY_MS)
     }
 }

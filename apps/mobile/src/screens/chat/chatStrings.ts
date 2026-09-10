@@ -56,14 +56,20 @@ export const chatCopy = {
   cancelReply: 'Stop replying',
 
   /** The long-press menu. */
-  actionsTitle: 'Message',
   actionsHint: 'Long press a message for reply, react, copy and delete',
   reactOffline: (name: string): string => `${name} has to be in range to see a reaction.`,
   copyNeedsText: 'There is no text to copy.',
   copied: 'Copied',
 
+  /**
+   * The one reason a composed message is not kept.
+   *
+   * Never shown for being out of range - that message is saved and queued.
+   * This is for a person this phone has no record of having met.
+   */
+  needsFirstConnection: (name: string): string => `Connect to ${name} once before writing to them.`,
+
   /** The header, and what the two of you are doing right now. */
-  backLabel: 'Back',
   typingBy: (name: string): string => `${name} is typing`,
   /** They are in range but there is no session yet. An offer, not a warning. */
   nearbyNow: (name: string): string => `${name} is nearby`,

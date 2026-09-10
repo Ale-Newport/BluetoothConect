@@ -30,7 +30,7 @@ import {
 import type { RootStackParams } from '../../navigation/routes.js';
 import { isOutgoing, isOwnReaction, type ConversationPage } from './chatCenter.js';
 import { useConversation } from './useChat.js';
-import { MessageBubble, type BubbleRow } from './MessageBubble.js';
+import { MessageBubble, type AttachmentView, type BubbleRow } from './MessageBubble.js';
 import { Composer } from './Composer.js';
 import { MessageActions } from './MessageActions.js';
 import { RUN_BREAK_MS, daySeparatorLabel, isSameDay } from './chatTime.js';
@@ -71,6 +71,7 @@ export function ConversationScreen(): React.JSX.Element {
 
   const conversation = useConversation(peerKey, title);
   const {
+    centre,
     peerId,
     displayName,
     avatarEmoji,
@@ -110,7 +111,10 @@ export function ConversationScreen(): React.JSX.Element {
     return () => clearTimeout(timer);
   }, [notice]);
 
-  const rows = useMemo(() => buildRows(page), [page]);
+  // Attachments are resolved here rather than inside the row so a bubble's
+  // props are stable between renders: `MessageBubble` is memoised, and an
+  // object minted in `renderItem` would defeat that on every receipt.
+  const rows = useMemo(() => buildRows(page, fileFor), [page, fileFor]);
 
   const onChangeDraft = useCallback(
     (text: string) => {
@@ -123,13 +127,20 @@ export function ConversationScreen(): React.JSX.Element {
   );
 
   const onSend = useCallback(() => {
-    if (!send(draft, replyTo?.id ?? null)) return;
+    if (!send(draft, replyTo?.id ?? null)) {
+      // Being out of range never lands here - that message is stored and
+      // queued. The only way a composed message is not kept is a person this
+      // device has never authenticated, and a tap that does nothing at all
+      // would leave the user retyping it.
+      if (draft.trim().length > 0) setNotice(chatCopy.needsFirstConnection(displayName));
+      return;
+    }
     setDraft('');
     setReplyTo(null);
     haptic('impactLight');
     // The list is inverted, so the newest message is at offset zero.
     listRef.current?.scrollToOffset({ offset: 0, animated: true });
-  }, [draft, replyTo, send]);
+  }, [draft, replyTo, send, displayName]);
 
   const onToggleReaction = useCallback(
     (messageId: string, emoji: string) => {
@@ -155,13 +166,12 @@ export function ConversationScreen(): React.JSX.Element {
       <MessageBubble
         row={item}
         peerName={displayName}
-        attachment={item.message.fileId ? fileFor(item.message.fileId) : null}
         onLongPress={setActionTarget}
         onRetry={retry}
         onToggleReaction={onToggleReaction}
       />
     ),
-    [displayName, fileFor, retry, onToggleReaction],
+    [displayName, retry, onToggleReaction],
   );
 
   const status = headerStatus(connection, isConnected);
@@ -206,19 +216,25 @@ export function ConversationScreen(): React.JSX.Element {
         ) : null}
 
         {peerId === null ? (
+          // With no centre yet this device has not looked in its own database,
+          // so it does not know whether it knows this person. Saying they are
+          // gone would be a guess, and the wrong one to make about someone's
+          // conversation - so the screen simply waits, for the moment it takes.
           <View style={{ flex: 1, justifyContent: 'center' }}>
-            <EmptyState
-              icon="✉"
-              title={chatCopy.unknownTitle}
-              body={chatCopy.unknownBody}
-              action={
-                <Button
-                  title={chatCopy.connectAction}
-                  variant="secondary"
-                  onPress={() => navigation.navigate('Connect', { peerKey })}
-                />
-              }
-            />
+            {centre ? (
+              <EmptyState
+                icon="✉"
+                title={chatCopy.unknownTitle}
+                body={chatCopy.unknownBody}
+                action={
+                  <Button
+                    title={chatCopy.connectAction}
+                    variant="secondary"
+                    onPress={() => navigation.navigate('Connect', { peerKey })}
+                  />
+                }
+              />
+            ) : null}
           </View>
         ) : rows.length === 0 ? (
           <View style={{ flex: 1, justifyContent: 'center' }}>
@@ -374,7 +390,10 @@ function useKeyboardVisible(): boolean {
  * The page arrives newest first, which is the order an inverted list wants, so
  * index + 1 is the message ABOVE and index - 1 is the one below.
  */
-function buildRows(page: ConversationPage): BubbleRow[] {
+function buildRows(
+  page: ConversationPage,
+  fileFor: (fileId: string) => AttachmentView | null,
+): BubbleRow[] {
   const now = Date.now();
   const messages = page.messages;
   const newestOutgoingId = messages.find((message) => isOutgoing(message))?.id ?? null;
@@ -397,6 +416,7 @@ function buildRows(page: ConversationPage): BubbleRow[] {
       reactions: page.reactions.get(message.id) ?? [],
       replyTo: page.replies.get(message.id) ?? null,
       isNewestOutgoing: message.id === newestOutgoingId,
+      attachment: message.fileId ? fileFor(message.fileId) : null,
     };
   });
 }
@@ -466,7 +486,7 @@ function Header({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={chatCopy.backLabel}
+          accessibilityLabel={strings.common.back}
           onPress={onBack}
           style={({ pressed }) => [
             { width: BACK_TARGET, height: BACK_TARGET, alignItems: 'center', justifyContent: 'center' },

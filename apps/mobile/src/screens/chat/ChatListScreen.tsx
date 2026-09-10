@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import { FlatList, Pressable, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
@@ -41,6 +41,9 @@ import { chatCopy } from './chatStrings.js';
 
 const AVATAR_SIZE = 48;
 const ROW_HEIGHT = 76;
+/** The presence dot on a face, and the ring that lifts it off the avatar. */
+const PRESENCE_DOT = 10;
+const UNREAD_BADGE = 22;
 
 type ChatListNavigation = CompositeNavigationProp<
   BottomTabNavigationProp<TabParams, 'Chat'>,
@@ -57,7 +60,7 @@ export function ChatListScreen(): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<ChatListNavigation>();
-  const { conversations } = useConversations();
+  const { centre, conversations } = useConversations();
   const peers = useAppStore(useShallow(selectPeers));
 
   const connectedPeerIds = useMemo(() => {
@@ -160,21 +163,28 @@ export function ChatListScreen(): React.JSX.Element {
           </View>
         }
         ItemSeparatorComponent={ListSeparator}
+        // Empty and "not read yet" are different things, and only one of them
+        // is worth saying out loud. Until the database has been opened this
+        // screen has no idea whether there are fifty conversations in it, so it
+        // says nothing for the moment that takes rather than claiming there are
+        // none.
         ListEmptyComponent={
-          <EmptyState
-            icon="✉"
-            title={chatCopy.listEmptyTitle}
-            body={chatCopy.listEmptyBody}
-            action={
-              <Button
-                title={chatCopy.listEmptyAction}
-                variant="secondary"
-                // The tab bar is right there, but an empty screen should still
-                // point at the thing that fills it.
-                onPress={() => navigation.navigate('Home')}
-              />
-            }
-          />
+          centre ? (
+            <EmptyState
+              icon="✉"
+              title={chatCopy.listEmptyTitle}
+              body={chatCopy.listEmptyBody}
+              action={
+                <Button
+                  title={chatCopy.listEmptyAction}
+                  variant="secondary"
+                  // The tab bar is right there, but an empty screen should still
+                  // point at the thing that fills it.
+                  onPress={() => navigation.navigate('Home')}
+                />
+              }
+            />
+          ) : undefined
         }
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
@@ -261,14 +271,14 @@ function ConversationRow({
           <View
             style={{
               position: 'absolute',
-              right: -1,
-              bottom: -1,
-              padding: 2,
+              right: -StyleSheet.hairlineWidth,
+              bottom: -StyleSheet.hairlineWidth,
+              padding: theme.spacing.xs / 2,
               borderRadius: theme.radius.pill,
               backgroundColor: theme.colors.background,
             }}
           >
-            <StatusDot tone="connected" size={10} />
+            <StatusDot tone="connected" size={PRESENCE_DOT} />
           </View>
         ) : null}
       </View>
@@ -282,7 +292,7 @@ function ConversationRow({
         </Label>
       </View>
 
-      <View style={{ alignItems: 'flex-end', gap: theme.spacing.xs, minWidth: 44 }}>
+      <View style={{ alignItems: 'flex-end', gap: theme.spacing.xs, minWidth: theme.spacing.xxl + theme.spacing.md }}>
         {timestamp !== null ? (
           <Label variant="caption" tone="tertiary">
             {listTimestamp(timestamp, now)}
@@ -299,8 +309,8 @@ function UnreadBadge({ count }: { count: number }): React.JSX.Element {
   return (
     <View
       style={{
-        minWidth: 22,
-        height: 22,
+        minWidth: UNREAD_BADGE,
+        height: UNREAD_BADGE,
         paddingHorizontal: theme.spacing.xs + 2,
         borderRadius: theme.radius.pill,
         backgroundColor: theme.colors.accent,

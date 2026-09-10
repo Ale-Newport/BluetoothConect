@@ -144,6 +144,27 @@ internal object BleTuning {
      */
     const val MAX_PREPARED_WRITE_BYTES: Int = 8 * 1024
 
+    /**
+     * Datagrams a subscribed peer may write to us BEFORE its link has opened,
+     * held in order rather than thrown away.
+     *
+     * This exists for one peer and one moment. An iOS central opens its own link
+     * the instant its subscription is confirmed and starts writing immediately;
+     * we are still holding that connection for the L2CAP channel it is about to
+     * dial (see `BleGattServer.awaitFastPath`). Every datagram in that window
+     * would otherwise be acknowledged on the wire and silently discarded - and
+     * the first of them is the one that starts the session handshake, so losing
+     * it costs the whole connection while telling the iPhone the write
+     * succeeded.
+     *
+     * Bounded twice, because a peer decides how fast it talks. Filling the hold
+     * is taken as proof that the peer is mid-conversation and the fast-path wait
+     * is abandoned there and then, which flushes the hold rather than growing
+     * it.
+     */
+    const val MAX_PREOPEN_INBOUND_DATAGRAMS: Int = 16
+    const val MAX_PREOPEN_INBOUND_BYTES: Int = 32 * 1024
+
     /** Window used for the throughput estimate reported in link metrics. */
     const val THROUGHPUT_WINDOW_MS: Long = 3_000
 

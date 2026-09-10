@@ -34,6 +34,8 @@ export interface BubbleRow {
   readonly replyTo: Message | null;
   /** The newest thing this device said, which is where "Delivered" belongs. */
   readonly isNewestOutgoing: boolean;
+  /** The file this message carries, once the database knows anything about it. */
+  readonly attachment: AttachmentView | null;
 }
 
 export interface AttachmentView {
@@ -49,23 +51,31 @@ const FILE_ICON_SIZE = 36;
 /** How wide the "Saved" note under a queued message is allowed to run. */
 const STATUS_LINE_WIDTH = 260;
 
-export function MessageBubble({
+/**
+ * Memoised on purpose.
+ *
+ * A conversation re-reads its page whenever a receipt lands, and a long thread
+ * is a hundred mounted bubbles; without this, one tick climbing re-renders
+ * every one of them. The rows are rebuilt only when the page itself changes, so
+ * this comparison is the cheap one - reference equality on a stable object.
+ */
+export const MessageBubble = React.memo(MessageBubbleView);
+
+function MessageBubbleView({
   row,
   peerName,
-  attachment,
   onLongPress,
   onRetry,
   onToggleReaction,
 }: {
   row: BubbleRow;
   peerName: string;
-  attachment: AttachmentView | null;
   onLongPress: (message: Message) => void;
   onRetry: (messageId: string) => void;
   onToggleReaction: (messageId: string, emoji: string) => void;
 }): React.JSX.Element {
   const theme = useTheme();
-  const { message, mine } = row;
+  const { message, mine, attachment } = row;
   const time = clockTime(mine ? message.sentAt : message.receivedAt);
   const showMeta = !row.continuesBelow;
 
@@ -426,7 +436,8 @@ function Reactions({
           accessibilityLabel={chatCopy.reactionCount(emoji, count)}
           accessibilityState={{ selected: own }}
           onPress={() => onToggle(emoji)}
-          hitSlop={theme.spacing.sm}
+          // A pill is 20pt tall; the target around it has to reach 44.
+          hitSlop={theme.spacing.md}
           style={({ pressed }) => [
             {
               flexDirection: 'row',
