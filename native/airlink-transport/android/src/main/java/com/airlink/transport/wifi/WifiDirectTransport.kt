@@ -315,30 +315,15 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         }
         val broadcastReceiver = object : BroadcastReceiver() {
             override fun onReceive(receiverContext: Context?, intent: Intent?) {
-                when (intent?.action) {
-                    WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
-                        val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
-                        val enabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                        val changed = !p2pStateKnown || enabled != p2pEnabled
-                        p2pStateKnown = true
-                        if (changed) {
-                            p2pEnabled = enabled
-                            events?.availabilityChanged(
-                                kind,
-                                enabled,
-                                if (enabled) UnavailableReason.NONE else UnavailableReason.RADIO_OFF,
-                            )
-                        }
-                        if (!enabled) {
-                            // The radio went away underneath every link.
-                            links.values.toList().forEach { it.link.close("Wi-Fi was switched off") }
-                            failPending(AirLinkError.Failed("Wi-Fi was switched off"))
-                        }
-                    }
-
-                    WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeersSafely()
-
-                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> requestConnectionInfoSafely()
+                // Already on the control thread - the registration below hands
+                // the framework our own Handler - but NOT inside onControl(), so
+                // this body needs its own guard: a throw out of onReceive is an
+                // ANR-then-crash delivered from inside the system's broadcast
+                // dispatch, which is the worst place on the platform to throw.
+                try {
+                    handleBroadcast(intent)
+                } catch (t: Throwable) {
+                    log("error", "p2p broadcast threw: ${t.javaClass.simpleName}")
                 }
             }
         }
@@ -360,6 +345,35 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
             receiver = broadcastReceiver
         } catch (t: Throwable) {
             log("error", "could not register the p2p receiver: ${t.javaClass.simpleName}")
+        }
+    }
+
+    /** Runs on the control thread, courtesy of the Handler the receiver was registered with. */
+    private fun handleBroadcast(intent: Intent?) {
+        when (intent?.action) {
+            WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
+                val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
+                val enabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
+                val changed = !p2pStateKnown || enabled != p2pEnabled
+                p2pStateKnown = true
+                if (changed) {
+                    p2pEnabled = enabled
+                    events?.availabilityChanged(
+                        kind,
+                        enabled,
+                        if (enabled) UnavailableReason.NONE else UnavailableReason.RADIO_OFF,
+                    )
+                }
+                if (!enabled) {
+                    // The radio went away underneath every link.
+                    links.values.toList().forEach { it.link.close("Wi-Fi was switched off") }
+                    failPending(AirLinkError.Failed("Wi-Fi was switched off"))
+                }
+            }
+
+            WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeersSafely()
+
+            WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> requestConnectionInfoSafely()
         }
     }
 
@@ -438,8 +452,15 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     private val discoveryRefresh = Runnable {
-        val p2p = manager
-        if (discovering && p2p != null) issueDiscovery(p2p)
+        // Posted straight onto the Handler rather than through onControl(), so
+        // it carries its own guard for the same reason: a throw here would end
+        // the looper and take the process with it.
+        try {
+            val p2p = manager
+            if (discovering && p2p != null) issueDiscovery(p2p)
+        } catch (t: Throwable) {
+            log("error", "discovery refresh threw: ${t.javaClass.simpleName}")
+        }
     }
 
     override fun stopDiscovery() {
@@ -550,9 +571,13 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
             pending = request
 
             val timeout = Runnable {
-                if (pending === request) {
-                    cancelConnectSafely()
-                    failPending(AirLinkError.Timeout("connecting to $endpointId over Wi-Fi Direct"))
+                try {
+                    if (pending === request) {
+                        cancelConnectSafely()
+                        failPending(AirLinkError.Timeout("connecting to $endpointId over Wi-Fi Direct"))
+                    }
+                } catch (t: Throwable) {
+                    log("error", "connect timeout threw: ${t.javaClass.simpleName}")
                 }
             }
             pendingTimeout = timeout
@@ -665,10 +690,13 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     private fun acceptIncoming(socket: Socket): Boolean {
         if (!started || links.size >= MAX_LINKS) return false
         onControl {
-            if (!started) {
-                // stop() ran between the accept and this hop. Closing here is the
-                // only place left that can, and a socket nobody owns would
-                // otherwise sit open until the process died.
+            // The check above is a snapshot taken on the accept thread; a burst
+            // of simultaneous inbound connections all pass it and then all
+            // adopt, so MAX_LINKS only bites where the map is actually mutated.
+            // And because `true` was returned above, the accept loop has handed
+            // ownership over: a socket declined here has to be closed here, or
+            // it sits open until the process dies.
+            if (!started || links.size >= MAX_LINKS) {
                 closeQuietly(socket)
                 return@onControl
             }
@@ -875,6 +903,29 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     // -- helpers --------------------------------------------------------------
+
+    /**
+     * Runs one piece of work on the control thread, and contains anything it
+     * throws.
+     *
+     * EVERY hop onto this thread goes through here rather than through
+     * `control.post` directly, because this thread is a raw `Looper` and a throw
+     * out of a posted Runnable does not merely lose that piece of work: it
+     * escapes `Looper.loop()`, kills the HandlerThread, and reaches Android's
+     * default uncaught handler, which kills the PROCESS. Worse, every later
+     * `post` still returns true and silently never runs, so a single
+     * SecurityException from a revoked permission would take an offline app with
+     * it. The datagram path is not allowed to be that fragile.
+     */
+    private fun onControl(block: () -> Unit) {
+        control.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                log("error", "control task threw: ${t.javaClass.simpleName}")
+            }
+        }
+    }
 
     /**
      * Hands a result to a caller's completion, on the control thread.

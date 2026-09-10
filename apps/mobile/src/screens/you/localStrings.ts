@@ -46,6 +46,14 @@ export const local = {
     restoredIsWeak: 'Not verified in person yet.',
     emptyTitle: 'No friends yet',
     emptyBody: `Scan a friend's code, or connect to someone nearby and compare six digits.`,
+    /**
+     * The same invitation on a phone that cannot scan.
+     *
+     * Both halves of `emptyBody` have to be things this device can actually do,
+     * or the only sentence on an empty screen is describing someone else's
+     * phone. See `SCANNING_IS_SUPPORTED` in ScannerCamera.
+     */
+    emptyBodyNoScanner: `Show your code for a friend to scan, or connect to someone nearby and compare six digits.`,
     seenJustNow: 'Seen just now',
     seenMinutes: (n: number): string => (n === 1 ? 'Seen 1 minute ago' : `Seen ${n} minutes ago`),
     seenHours: (n: number): string => (n === 1 ? 'Seen 1 hour ago' : `Seen ${n} hours ago`),

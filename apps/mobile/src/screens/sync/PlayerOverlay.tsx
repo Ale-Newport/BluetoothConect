@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
-import { StatusDot, haptic, useTheme, type StatusTone } from '../../ui/index.js';
+import { haptic, useTheme, type StatusTone } from '../../ui/index.js';
 import { Scrubber } from './Scrubber.js';
 import { cinema, formatClock, formatSpeed } from './playerTheme.js';
 import { syncStrings, shared } from './syncStrings.js';
@@ -25,6 +25,8 @@ const TOUCH_MIN = 44;
 const PLAY_SIZE = 72;
 /** How far the skip controls jump. The step every player on earth uses. */
 const SKIP_MS = 10_000;
+/** The status dot. Small, because the words next to it do the work. */
+const DOT_SIZE = 6;
 
 export interface SubtitleOption {
   readonly index: number;
@@ -51,6 +53,16 @@ export interface PlayerOverlayProps {
   readonly controlsEnabled: boolean;
   /** Why the controls are inert, in plain words. Undefined when they are live. */
   readonly disabledReason: string | undefined;
+  /**
+   * The shared line is parked on the last frame.
+   *
+   * Playing forward from there is the one command in this player that cannot
+   * do anything: the core parks the line on the final frame when the film runs
+   * out, and a play command would publish a line that starts where no decoder
+   * can advance. So the transport offers a restart instead of a play that
+   * would look live and move nothing.
+   */
+  readonly atEnd: boolean;
   readonly speed: number;
   readonly subtitles: readonly SubtitleOption[];
   /** Index into `subtitles`, or null for off. */
@@ -59,6 +71,8 @@ export interface PlayerOverlayProps {
   readonly insetBottom: number;
   onToggleControls(): void;
   onTogglePlay(): void;
+  /** Put the shared line back at the beginning. One command, host or guest. */
+  onRestart(): void;
   onSkip(deltaMs: number): void;
   onScrubStart(): void;
   onScrubMove(positionMs: number): void;
@@ -81,6 +95,7 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
     durationMs,
     controlsEnabled,
     disabledReason,
+    atEnd,
     speed,
     subtitles,
     selectedSubtitle,
@@ -157,10 +172,13 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
                 borderRadius: theme.radius.pill,
                 backgroundColor: cinema.surface,
               }}
+              // One element, read as one sentence: a dot and a word announced
+              // separately are two announcements for one fact.
+              accessible
               accessibilityRole="text"
               accessibilityLabel={statusText}
             >
-              <StatusDot tone={statusTone} size={6} />
+              <PlayerDot tone={statusTone} />
               <PlayerText variant="caption" tone="secondary">
                 {statusText}
               </PlayerText>
@@ -181,14 +199,14 @@ export function PlayerOverlay(props: PlayerOverlayProps): React.JSX.Element {
               onPress={() => props.onSkip(-SKIP_MS)}
             />
             <GlyphButton
-              glyph={playing ? '❚❚' : '▶'}
+              glyph={atEnd ? '↺' : playing ? '❚❚' : '▶'}
               glyphVariant="title2"
-              label={playing ? syncStrings.pause : syncStrings.play}
+              label={atEnd ? syncStrings.watchFromStart : playing ? syncStrings.pause : syncStrings.play}
               hint={disabledReason}
               enabled={controlsEnabled}
               size={PLAY_SIZE}
               filled
-              onPress={props.onTogglePlay}
+              onPress={atEnd ? props.onRestart : props.onTogglePlay}
             />
             <GlyphButton
               glyph="⟳"
@@ -278,6 +296,26 @@ function PlayerText({
     <Text style={[theme.typography[variant] as TextStyle, { color }, style]} numberOfLines={numberOfLines}>
       {children}
     </Text>
+  );
+}
+
+/**
+ * The status dot, in the cinema palette.
+ *
+ * `StatusDot` reads its colour from `useTheme()`, and this surface is dark in
+ * BOTH schemes - so in light mode the shared primitive would put the light
+ * palette's darker green and amber on a near-black pill. Same reason as
+ * `PlayerText`, same fix: the design system's shape, the player's colours.
+ */
+function PlayerDot({ tone }: { tone: StatusTone }): React.JSX.Element {
+  const color = {
+    connected: cinema.connected,
+    connecting: cinema.connecting,
+    disconnected: cinema.disconnected,
+    warning: cinema.warning,
+  }[tone];
+  return (
+    <View style={{ width: DOT_SIZE, height: DOT_SIZE, borderRadius: DOT_SIZE / 2, backgroundColor: color }} />
   );
 }
 

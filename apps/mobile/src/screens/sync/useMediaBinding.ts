@@ -50,6 +50,18 @@ export interface MediaBinding {
    * jump - which is what "Catching up…" on screen is describing.
    */
   setHold(active: boolean): void;
+  /**
+   * Stop the picture, and tell nobody.
+   *
+   * Ending a watch party deliberately does NOT pause the player in the core:
+   * leaving a party stops you being corrected, it does not stop your film. That
+   * is right for the protocol and wrong for this screen, which keeps the same
+   * player behind the setup panel as a small preview - so a session that ended
+   * mid-film would leave the film running, with its sound, in a thumbnail under
+   * a "Session over" card. The screen parks it through here instead. Nothing is
+   * sent: this is the local player, not the shared line.
+   */
+  pauseLocally(): void;
   /** Latest position reading, in milliseconds. For the scrubber's fallback only. */
   positionMs(): number;
   /** Call from onProgress / onSeek / onLoad. Seconds, as the player reports them. */
@@ -77,6 +89,8 @@ export function useMediaBinding(): MediaBinding {
     heldRef.current = active;
     setHeld(active);
   }, []);
+
+  const pauseLocally = useCallback((): void => setPaused(true), []);
 
   const controller = useMemo<MediaController>(
     () => ({
@@ -106,6 +120,7 @@ export function useMediaBinding(): MediaBinding {
     rate,
     held,
     setHold,
+    pauseLocally,
     positionMs,
     notePositionSeconds,
   };

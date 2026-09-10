@@ -154,6 +154,18 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     private var registrationListener: NsdManager.RegistrationListener? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
 
+    /**
+     * Whether the caller has asked us to be discovering right now.
+     *
+     * Separate from [discoveryListener] because the framework's own view lags
+     * ours in both directions: `stopServiceDiscovery` is asynchronous, and a
+     * resolve or a service-info update that was already in flight when it was
+     * called still lands afterwards. Without this flag those late callbacks
+     * publish a `peerDiscovered` for a transport that has stopped discovering,
+     * and the layer above then holds an endpoint it will never be told is gone.
+     */
+    private var discovering = false
+
     /** The name the system actually registered - it renames us on a collision. */
     private var registeredServiceName: String? = null
     /** The name we asked for, needed to recognise our own service before registration completes. */
@@ -450,11 +462,18 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     private fun stopAdvertisingInternal() {
+        // Cleared BEFORE the early return below, and that order is the point.
+        // onRegistrationFailed drops the listener but cannot clear the name we
+        // ASKED for, so a failed advertisement used to leave `requestedServiceName`
+        // set for the life of the process - and that name is what
+        // handleServiceFound uses to recognise its own service. A real peer whose
+        // instance name collided with it would then be filtered out as "us" and
+        // never reported at all.
+        registeredServiceName = null
+        requestedServiceName = null
         val manager = nsdManager ?: return
         val listener = registrationListener ?: return
         registrationListener = null
-        registeredServiceName = null
-        requestedServiceName = null
         try {
             manager.unregisterService(listener)
         } catch (_: IllegalArgumentException) {
@@ -471,6 +490,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         val serviceType = normaliseServiceType(config.bonjourServiceType)
 
         onControl {
+            discovering = true
             if (discoveryListener != null) return@onControl
 
             val listener = object : NsdManager.DiscoveryListener {
@@ -481,6 +501,8 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 override fun onStartDiscoveryFailed(failedType: String, errorCode: Int) {
                     onControl {
                         discoveryListener = null
+                        // Nothing is discovering, so nothing may publish a peer.
+                        discovering = false
                         log("error", "discovery failed to start: ${nsdError(errorCode)}")
                         events?.availabilityChanged(kind, false, UnavailableReason.UNKNOWN)
                     }
@@ -491,7 +513,10 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 }
 
                 override fun onDiscoveryStopped(stoppedType: String) {
-                    onControl { discoveryListener = null }
+                    onControl {
+                        discoveryListener = null
+                        discovering = false
+                    }
                 }
 
                 override fun onServiceFound(serviceInfo: NsdServiceInfo) {
@@ -517,6 +542,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     private fun stopDiscoveryInternal() {
+        discovering = false
         val manager = nsdManager ?: return
         discoveryListener?.let { listener ->
             discoveryListener = null
@@ -541,6 +567,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     private fun handleServiceFound(serviceInfo: NsdServiceInfo) {
+        if (!discovering) return
         val config = configuration ?: return
         val name = serviceInfo.serviceName ?: return
         if (!sameServiceType(serviceInfo.serviceType, config.bonjourServiceType)) return
@@ -684,11 +711,19 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         // A resolve that never calls back would stall discovery forever, so the
         // queue moves on regardless. The generation check is what stops this
         // timeout from cancelling whichever resolve started after it.
+        // Explicitly a Runnable, not a bare lambda: ScheduledExecutorService
+        // overloads schedule() on Runnable AND on Callable<V>, and both accept a
+        // zero-argument lambda. Naming the interface is the difference between
+        // this compiling and an overload-resolution error, and it costs nothing.
         control.schedule(
-            {
-                if (resolveInFlight && resolveGeneration == generation) {
-                    log("debug", "resolve timed out for ${next.serviceName}")
-                    finishResolve(generation)
+            Runnable {
+                try {
+                    if (resolveInFlight && resolveGeneration == generation) {
+                        log("debug", "resolve timed out for ${next.serviceName}")
+                        finishResolve(generation)
+                    }
+                } catch (t: Throwable) {
+                    log("error", "resolve timeout threw: ${t.javaClass.simpleName}")
                 }
             },
             RESOLVE_TIMEOUT_MS,
@@ -719,6 +754,11 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     private fun publishResolved(serviceInfo: NsdServiceInfo) {
+        // A resolve or a service-info update that was already in flight when
+        // stopDiscovery() was called still arrives. Publishing it would announce
+        // a peer for a transport that has stopped looking, and no peerLost would
+        // ever follow it.
+        if (!discovering) return
         val name = serviceInfo.serviceName ?: return
         val port = serviceInfo.port
         if (port <= 0 || port > 65535) return
@@ -839,6 +879,17 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 deliver(completion, Result.failure(AirLinkError.NotStarted()))
                 return@onControl
             }
+            // The cap was checked before the dial thread was started, and every
+            // concurrent connect() checked the same pre-dial count - so N
+            // simultaneous calls can all pass it and all arrive here. Checking
+            // again where the map is mutated is what makes MAX_LINKS a limit
+            // rather than a hint. The socket is ours to close: nothing else
+            // holds it once the dial thread has handed it over.
+            if (links.size >= MAX_LINKS) {
+                closeQuietly(socket)
+                deliver(completion, Result.failure(AirLinkError.Failed("too many open links")))
+                return@onControl
+            }
             val linkId = adopt(socket, endpointId, incoming = false)
             deliver(completion, Result.success(linkId))
         }
@@ -871,10 +922,14 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         // TypeScript decides who this actually is.
         val endpointId = "${socket.inetAddress?.hostAddress ?: "?"}:${socket.port}"
         onControl {
-            if (!started) {
-                // stop() ran between the accept and this hop. Nothing else can
-                // close this socket now, and one nobody owns stays open until
-                // the process dies.
+            // Re-checked on this side of the hop, not only on the accept thread.
+            // The count above is a snapshot: a burst of simultaneous inbound
+            // connections all pass it and then all adopt, so MAX_LINKS is only
+            // really a limit when it is enforced where the map is mutated.
+            // Returning true above means the accept loop has handed ownership
+            // over, so a socket we decline here has to be closed here - nothing
+            // else can, and one nobody owns stays open until the process dies.
+            if (!started || links.size >= MAX_LINKS) {
                 closeQuietly(socket)
                 return@onControl
             }

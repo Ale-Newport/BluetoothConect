@@ -191,6 +191,10 @@ export function YouScreen(): React.JSX.Element {
             setSecurityOpen(false);
             setTimeout(() => navigation.navigate('ScanCode'), theme.motion.quick);
           }}
+          onShowMyCode={() => {
+            setSecurityOpen(false);
+            setTimeout(() => navigation.navigate('MyCode'), theme.motion.quick);
+          }}
         />
       </PageModal>
     </Screen>

@@ -1,6 +1,8 @@
 import {
+  CHAT_LIMITS,
   ConnectionState,
   DeliveryStatus,
+  encodedMessageSize,
   newSortableId,
   systemRandom,
   type ChatMessage,
@@ -97,6 +99,7 @@ type Listener = () => void;
 export class ChatCenter {
   private readonly listeners = new Set<Listener>();
   private version = 0;
+  private presence = 0;
 
   private readonly attachments = new Map<string, Attachment>();
   private readonly clientOff: (() => void)[] = [];
@@ -156,8 +159,28 @@ export class ChatCenter {
    */
   getVersion = (): number => this.version;
 
+  /**
+   * Bumped by things that are true of a person rather than of the database:
+   * whether they are typing.
+   *
+   * Deliberately a second counter. A typing signal arrives every couple of
+   * seconds while someone writes, and it changes nothing in SQLite - so
+   * folding it into `version` would have every screen re-read every
+   * conversation and every message on the page for three bouncing dots.
+   */
+  getPresenceVersion = (): number => this.presence;
+
   private publish(): void {
     this.version++;
+    this.notify();
+  }
+
+  private publishPresence(): void {
+    this.presence++;
+    this.notify();
+  }
+
+  private notify(): void {
     for (const listener of [...this.listeners]) listener();
   }
 
@@ -475,7 +498,12 @@ export class ChatCenter {
       chat.events.on('queued', () => this.persistOutbox(attachment)),
       chat.events.on('sendFailed', ({ messageId }) => {
         const rowId = this.aliases.get(messageId) ?? messageId;
-        this.safe(() => this.client.db.messages.setStatus(rowId, 'failed'));
+        // Losing the link mid-send is not a failure in this app, it is Tuesday.
+        // The entry stays in the outbox and the protocol re-sends it on the
+        // next session, so the bubble goes back to "Saved" rather than turning
+        // red and asking the user to fix something already fixing itself.
+        const status: MessageStatus = this.isUndeliverable(attachment, messageId) ? 'failed' : 'pending';
+        this.safe(() => this.client.db.messages.setStatus(rowId, status));
         this.persistOutbox(attachment);
         this.publish();
       }),
@@ -667,13 +695,13 @@ export class ChatCenter {
         setTimeout(() => {
           this.typingTimers.delete(peerId);
           this.typingPeers.delete(peerId);
-          this.publish();
+          this.publishPresence();
         }, TYPING_SAFETY_MS),
       );
     } else {
       this.typingPeers.delete(peerId);
     }
-    this.publish();
+    this.publishPresence();
   }
 
   private onReaction(attachment: Attachment, signal: ReactionSignal): void {

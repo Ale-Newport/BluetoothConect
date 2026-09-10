@@ -220,7 +220,14 @@ class HotspotHost(private val context: Context) {
             // some devices it never calls back at all - hence a deadline rather
             // than an open-ended wait on a promise in JavaScript.
             val deadline = Runnable {
-                settle(Result.failure(AirLinkError.Timeout("starting a local-only hotspot")))
+                // Posted straight onto the Handler rather than through
+                // onControl(), so it carries its own guard: a throw here would
+                // end the looper and take the process with it.
+                try {
+                    settle(Result.failure(AirLinkError.Timeout("starting a local-only hotspot")))
+                } catch (t: Throwable) {
+                    log("error", "hotspot deadline threw: ${t.javaClass.simpleName}")
+                }
             }
             timeout = deadline
             control.postDelayed(deadline, START_TIMEOUT_MS)
@@ -321,6 +328,28 @@ class HotspotHost(private val context: Context) {
         val completion = pending ?: return
         pending = null
         deliver(completion, result)
+    }
+
+    /**
+     * Runs one piece of work on the control thread, and contains anything it
+     * throws.
+     *
+     * EVERY hop onto this thread goes through here rather than through
+     * `control.post` directly. This thread is a raw `Looper`, and a throw out of
+     * a posted Runnable escapes `Looper.loop()`, kills the HandlerThread and
+     * reaches Android's default uncaught handler - which kills the PROCESS. It
+     * also leaves every later `post` returning true and silently never running,
+     * so the hotspot could never be stopped again. A vendor `SoftApConfiguration`
+     * that throws from a getter must not be able to do that.
+     */
+    private fun onControl(block: () -> Unit) {
+        control.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                log("error", "control task threw: ${t.javaClass.simpleName}")
+            }
+        }
     }
 
     /**

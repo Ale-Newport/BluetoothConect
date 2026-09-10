@@ -174,7 +174,7 @@ export interface Trip {
  * SQLite hands back loosely typed values, and a column may be absent entirely.
  * These narrow every read exactly once, so no repository ever has to guess.
  */
-type Cell = SqlValue | undefined;
+type Cell = SqlValue | ArrayBuffer | undefined;
 
 const bool = (v: Cell): boolean => v === 1 || v === '1';
 const num = (v: Cell): number => (typeof v === 'number' ? v : Number(v ?? 0));
@@ -182,14 +182,25 @@ const str = (v: Cell): string => (typeof v === 'string' ? v : String(v ?? ''));
 const strOrNull = (v: Cell): string | null => (typeof v === 'string' ? v : null);
 const numOrNull = (v: Cell): number | null => (v === null || v === undefined ? null : Number(v));
 
+/**
+ * Read a BLOB column.
+ *
+ * Accepts ArrayBuffer as well as Uint8Array: drivers differ - op-sqlite returns
+ * the former, node:sqlite the latter. The app's driver normalises at its own
+ * boundary, and this tolerates both so a future driver cannot reintroduce a
+ * failure that only appears on a device.
+ */
 function blob(v: Cell): Uint8Array {
   if (v instanceof Uint8Array) return v;
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
   if (v === null || v === undefined) return new Uint8Array(0);
   throw new Error('expected a BLOB column');
 }
 
 function blobOrNull(v: Cell): Uint8Array | null {
-  return v instanceof Uint8Array ? v : null;
+  if (v instanceof Uint8Array) return v;
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  return null;
 }
 
 function parseJsonArray(v: Cell): string[] {

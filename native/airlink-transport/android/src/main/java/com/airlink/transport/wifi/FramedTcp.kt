@@ -484,7 +484,14 @@ internal class FramedTcpServer(
      */
     @Throws(IOException::class)
     fun start(requestedPort: Int) {
-        if (running.get()) return
+        if (running.get()) {
+            // Not silent: returning normally tells the caller it is listening on
+            // `requestedPort` when it is in fact still listening on whatever it
+            // bound last time. Every caller today creates a fresh instance or
+            // guards on its own field, so this is a note for the next one.
+            logger("warn", "already listening on port $port, ignoring a request for $requestedPort")
+            return
+        }
         // Created unbound so that SO_REUSEADDR can be set BEFORE the bind, which
         // is the only time it has any effect. It matters for the Wi-Fi Direct
         // group owner, which rebinds one fixed port every time a group forms: a

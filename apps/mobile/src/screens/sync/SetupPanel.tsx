@@ -234,14 +234,17 @@ export function SetupPanel({
       ) : null}
 
       {/*
-        The one red line on this screen, and it earns it: a command that should
-        have reached the other phone did not, and the button above it is still
-        there to try again. Everything else here - no file, no answer, no link -
-        is a normal thing that happens on a plane.
+        The session would not start. There is no red on this screen and this is
+        not the exception: `create()` and `join()` refuse for exactly one
+        reachable reason - the two of you stopped being in range between the tap
+        and the send - and being out of range is the normal weather here, not a
+        fault. So it says what happened, in words, with the button above it
+        still there to try again. "Something went wrong" would be both alarming
+        and less true.
       */}
       {actionFailed ? (
-        <Label variant="footnote" tone="danger" align="center" style={{ marginTop: theme.spacing.md }}>
-          {shared.common.error}
+        <Label variant="footnote" tone="secondary" align="center" style={{ marginTop: theme.spacing.md }}>
+          {syncStrings.couldNotStart}
         </Label>
       ) : null}
     </Card>

@@ -17,6 +17,53 @@ import type { SqlRow, SqlStatement, SqlValue, SqliteDatabase } from '@airlink/db
  * an async trust lookup - would be unusable where it matters most.
  */
 
+/**
+ * Normalise one value on the way out of SQLite.
+ *
+ * op-sqlite hands BLOB columns back as ArrayBuffer, while node:sqlite - which
+ * the tests run against - hands back Uint8Array. Every repository would
+ * otherwise have to tolerate both, and the one that forgot would fail only on
+ * device: exactly how this was found, as "expected a BLOB column" on the very
+ * first launch after onboarding.
+ *
+ * Normalising here, at the single boundary, means the repositories see one type
+ * and the tests exercise the same code the app runs.
+ */
+function normaliseValue(value: unknown): SqlValue {
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (value instanceof Uint8Array) return value;
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' || typeof value === 'number') return value;
+  if (typeof value === 'bigint') {
+    // SQLite integers can exceed the safe range; a row id or a timestamp that
+    // does would be a corrupt read rather than something to silently truncate.
+    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new Error('sqlite: integer column exceeds the safe integer range');
+    }
+    return Number(value);
+  }
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  throw new Error(`sqlite: unsupported column type ${typeof value}`);
+}
+
+function normaliseRow(row: Record<string, unknown>): SqlRow {
+  const out: Record<string, SqlValue> = {};
+  for (const key of Object.keys(row)) out[key] = normaliseValue(row[key]);
+  return out;
+}
+
+/** And on the way IN: op-sqlite wants ArrayBuffer for a BLOB parameter. */
+function toDriverParam(value: SqlValue): unknown {
+  if (value instanceof Uint8Array) {
+    // A subarray view must be copied, or op-sqlite writes the whole backing
+    // buffer rather than the slice it was handed.
+    return value.byteOffset === 0 && value.byteLength === value.buffer.byteLength
+      ? value.buffer
+      : value.slice().buffer;
+  }
+  return value;
+}
+
 class OpStatement implements SqlStatement {
   constructor(
     private readonly db: DB,
@@ -24,8 +71,8 @@ class OpStatement implements SqlStatement {
   ) {}
 
   all<T extends SqlRow = SqlRow>(...params: SqlValue[]): T[] {
-    const result = this.db.executeSync(this.sql, params as never[]);
-    return (result.rows ?? []) as unknown as T[];
+    const result = this.db.executeSync(this.sql, params.map(toDriverParam) as never[]);
+    return ((result.rows ?? []) as Record<string, unknown>[]).map(normaliseRow) as unknown as T[];
   }
 
   get<T extends SqlRow = SqlRow>(...params: SqlValue[]): T | undefined {
@@ -33,7 +80,7 @@ class OpStatement implements SqlStatement {
   }
 
   run(...params: SqlValue[]): { changes: number; lastInsertRowId: number } {
-    const result = this.db.executeSync(this.sql, params as never[]);
+    const result = this.db.executeSync(this.sql, params.map(toDriverParam) as never[]);
     return {
       changes: result.rowsAffected ?? 0,
       lastInsertRowId: Number(result.insertId ?? 0),

@@ -294,6 +294,10 @@ export function Sheet({
         {/* Taps inside the sheet must not reach the scrim behind it. */}
         <View
           onStartShouldSetResponder={() => true}
+          // ...but a drag that begins on the sheet and turns into a scroll must
+          // be handed to the list below. Claiming the responder on touch start
+          // and then yielding it is what lets both of those be true at once.
+          onResponderTerminationRequest={() => true}
           style={[
             {
               backgroundColor: theme.colors.surface,

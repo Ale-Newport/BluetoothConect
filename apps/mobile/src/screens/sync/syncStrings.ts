@@ -50,10 +50,18 @@ export const syncStrings = {
   endedTitle: 'Session over',
   endedBody: 'You can start another one whenever you like.',
   watchSomethingElse: 'Watch something else',
+  /**
+   * A command that never left this phone, which in practice means the two of
+   * you stopped being in range between the tap and the send. Calm on purpose:
+   * being out of range is the normal weather here, not a fault.
+   */
+  couldNotStart: "That didn't start. Check you are both still in range, then try again.",
 
   // -- the player ----------------------------------------------------------
   play: 'Play',
   pause: 'Pause',
+  /** Replaces [Play] on the last frame, where playing forward has nowhere to go. */
+  watchFromStart: 'Watch from the start',
   back10: 'Back 10 seconds',
   forward10: 'Forward 10 seconds',
   position: 'Position',

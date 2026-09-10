@@ -50,9 +50,29 @@ export async function pickVideo(): Promise<PickedVideo | null> {
   // The picker reports a size for almost every provider, but "almost" is not a
   // guarantee and the size is a byte-exact part of the match - so when it is
   // missing we ask the filesystem rather than guessing.
-  const byteLength = picked.size ?? (await ReactNativeBlobUtil.fs.stat(path)).size;
+  const byteLength = picked.size ?? (await statSize(path));
 
   return { uri, path, title, mimeType: picked.type, byteLength };
+}
+
+/**
+ * The file's exact length, from the filesystem.
+ *
+ * `fs.stat().size` is DECLARED as a number and is a string at runtime on both
+ * platforms - `ReactNativeBlobUtilFS.java` calls `putString("size", ...)` and
+ * the iOS module formats it with `%llu`. A string reaches `describeContent`,
+ * fails `Number.isSafeInteger` inside `sampledWindowOffsets`, and the screen
+ * reports a perfectly good film as one it could not read - every time, for that
+ * file. So it is coerced and checked here, at the only boundary that knows the
+ * declaration is wrong.
+ */
+async function statSize(path: string): Promise<number> {
+  const stat = await ReactNativeBlobUtil.fs.stat(path);
+  const size = Number(stat.size);
+  if (!Number.isSafeInteger(size) || size <= 0) {
+    throw new Error(`sync: the filesystem reported no usable size for ${path}`);
+  }
+  return size;
 }
 
 /**

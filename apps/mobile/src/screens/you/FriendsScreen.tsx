@@ -20,6 +20,7 @@ import { useClient } from '../../client/ClientProvider.js';
 import { selectPeers, useAppStore } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
 import { local } from './localStrings.js';
+import { SCANNING_IS_SUPPORTED } from './ScannerCamera.js';
 import { Chevron, Group, NavRow, Sheet, formatSeen, verificationOf } from './shared.js';
 
 /**
@@ -167,11 +168,23 @@ export function FriendsScreen(): React.JSX.Element {
   if (friends.length === 0 && blocked.length === 0) {
     return (
       <Screen>
+        {/*
+          The only action on an empty screen has to be one this phone can
+          finish. Where there is no scanner, "Scan a friend" leads to a page
+          whose whole content is an apology - so the invitation is the other
+          half of the same handshake instead, which works everywhere.
+        */}
         <EmptyState
           icon="👋"
           title={local.friends.emptyTitle}
-          body={local.friends.emptyBody}
-          action={<Button title={strings.profile.scanQr} onPress={() => navigation.navigate('ScanCode')} />}
+          body={SCANNING_IS_SUPPORTED ? local.friends.emptyBody : local.friends.emptyBodyNoScanner}
+          action={
+            SCANNING_IS_SUPPORTED ? (
+              <Button title={strings.profile.scanQr} onPress={() => navigation.navigate('ScanCode')} />
+            ) : (
+              <Button title={strings.profile.showQr} onPress={() => navigation.navigate('MyCode')} />
+            )
+          }
         />
       </Screen>
     );

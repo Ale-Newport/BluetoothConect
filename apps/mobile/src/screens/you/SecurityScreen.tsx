@@ -7,6 +7,7 @@ import { Avatar, Button, Card, EmptyState, Gap, Label, Screen, SectionHeading, u
 import { useClient } from '../../client/ClientProvider.js';
 import type { RootStackParams } from '../../navigation/routes.js';
 import { local } from './localStrings.js';
+import { SCANNING_IS_SUPPORTED } from './ScannerCamera.js';
 import { Chevron, Group, NavRow, formatDate, verificationOf } from './shared.js';
 
 /**
@@ -133,9 +134,12 @@ export function SecurityScreen({ route }: NativeStackScreenProps<RootStackParams
 export function SecurityOverviewPanel({
   onPickFriend,
   onAddFriend,
+  onShowMyCode,
 }: {
   onPickFriend: (peerId: string) => void;
   onAddFriend: () => void;
+  /** Where a phone with no scanner is sent instead. */
+  onShowMyCode: () => void;
 }): React.JSX.Element {
   const client = useClient();
   const friends = useMemo<readonly TrustedPeer[]>(() => {
@@ -159,7 +163,13 @@ export function SecurityOverviewPanel({
           icon="🔒"
           title={local.security.noFriendsTitle}
           body={local.security.noFriendsBody}
-          action={<Button title={strings.profile.scanQr} onPress={onAddFriend} />}
+          action={
+            SCANNING_IS_SUPPORTED ? (
+              <Button title={strings.profile.scanQr} onPress={onAddFriend} />
+            ) : (
+              <Button title={strings.profile.showQr} onPress={onShowMyCode} />
+            )
+          }
         />
       ) : (
         <>
