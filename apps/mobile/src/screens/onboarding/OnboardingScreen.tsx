@@ -220,14 +220,13 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
   const enter = useCallback(
     (radiosUp: boolean) => {
       const store = useAppStore.getState();
-      // Only a *positive* answer is written back. Nothing downstream ever
-      // clears `permissionsGranted`, so recording a refusal we have not
-      // actually seen - an iOS prompt can still be on screen when this runs -
-      // would be a lie that sticks. What Home shows is driven by `bluetoothOn`,
-      // which the transport keeps live: it puts up a calm banner with Open
-      // Settings while Bluetooth is off, and takes it down by itself the moment
-      // the user says yes.
-      if (radiosUp) store.setRadios({ permissionsGranted: true, detail: null });
+      // Nothing is recorded about the *permissions*, only about the radios, and
+      // only when they actually came up. An iOS prompt can still be on screen
+      // when this runs, so a refusal here would be a guess - and what Home shows
+      // is driven by `bluetoothOn`, which the transport keeps live: a calm
+      // banner with Open Settings while Bluetooth is off, taken down by itself
+      // the moment the user says yes.
+      if (radiosUp) store.setRadios({ detail: null });
       store.setProfile(client.profile);
       store.setPhase(AppPhase.READY);
       // Reset rather than navigate: there is no going back to a first run.

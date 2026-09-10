@@ -48,7 +48,6 @@ interface AppState {
 const INITIAL_RADIOS: RadioStatus = {
   bluetoothOn: false,
   wifiOn: false,
-  permissionsGranted: false,
   detail: null,
 };
 

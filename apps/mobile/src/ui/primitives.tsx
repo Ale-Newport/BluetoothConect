@@ -109,6 +109,8 @@ export function Label({
   align,
   numberOfLines,
   style,
+  accessibilityRole,
+  accessibilityLabel,
 }: {
   children: React.ReactNode;
   variant?: TypeVariant;
@@ -116,6 +118,17 @@ export function Label({
   align?: TextStyle['textAlign'];
   numberOfLines?: number;
   style?: StyleProp<TextStyle>;
+  /**
+   * Forwarded to the underlying `Text`.
+   *
+   * Present because the alternative was worse. Without them, marking a heading
+   * as a heading meant wrapping it in `<View accessible accessibilityRole=
+   * "header">` - and `accessible` on a View collapses everything inside it into
+   * a single node, which silently swallowed a caption that was the only line
+   * stating the current choice. A role belongs on the text that has it.
+   */
+  accessibilityRole?: 'header' | 'text' | 'link' | 'summary';
+  accessibilityLabel?: string;
 }): React.JSX.Element {
   const theme = useTheme();
   const colorByTone = {
@@ -131,6 +144,8 @@ export function Label({
     <Text
       style={[theme.typography[variant] as TextStyle, { color: colorByTone[tone] }, align ? { textAlign: align } : null, style]}
       numberOfLines={numberOfLines}
+      accessibilityRole={accessibilityRole}
+      accessibilityLabel={accessibilityLabel}
     >
       {children}
     </Text>

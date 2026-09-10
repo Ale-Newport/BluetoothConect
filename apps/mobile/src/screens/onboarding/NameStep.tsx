@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Keyboard, ScrollView, TextInput, View, type TextInputInstance, type TextStyle } from 'react-native';
+import { Keyboard, ScrollView, TextInput, type TextInputInstance, type TextStyle } from 'react-native';
 import { strings } from '@airlink/config';
 import { Gap, Label, useTheme } from '../../ui/index.js';
 import { MAX_NAME_LENGTH } from './name.js';
@@ -58,9 +58,9 @@ export function NameStep({
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
     >
-      <View accessible accessibilityRole="header">
-        <Label variant="title">{strings.onboarding.nameTitle}</Label>
-      </View>
+      <Label variant="title" accessibilityRole="header">
+        {strings.onboarding.nameTitle}
+      </Label>
       <Gap size="sm" />
       <Label variant="subheadline" tone="secondary">
         {strings.onboarding.nameSubtitle}

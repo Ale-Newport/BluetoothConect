@@ -53,7 +53,6 @@ export interface PendingPairing {
 export interface RadioStatus {
   readonly bluetoothOn: boolean;
   readonly wifiOn: boolean;
-  readonly permissionsGranted: boolean;
   /** Reason to show the user when something is off, already phrased for them. */
   readonly detail: string | null;
 }

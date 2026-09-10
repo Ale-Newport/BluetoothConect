@@ -55,7 +55,9 @@ export function AvatarStep({
       }}
       showsVerticalScrollIndicator={false}
     >
-      <Label variant="largeTitle">{strings.onboarding.avatarTitle}</Label>
+      <Label variant="largeTitle" accessibilityRole="header">
+        {strings.onboarding.avatarTitle}
+      </Label>
       <Label variant="subheadline" tone="secondary">
         {strings.onboarding.avatarSubtitle}
       </Label>

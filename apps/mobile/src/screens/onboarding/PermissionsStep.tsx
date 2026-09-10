@@ -80,9 +80,9 @@ export function PermissionsStep({
       }}
       showsVerticalScrollIndicator={false}
     >
-      <View accessible accessibilityRole="header">
-        <Label variant="title">{onboardingCopy.permissionsTitle}</Label>
-      </View>
+      <Label variant="title" accessibilityRole="header">
+        {onboardingCopy.permissionsTitle}
+      </Label>
       <Gap size="sm" />
       <Label variant="subheadline" tone="secondary">
         {strings.profile.privacyBody}
