@@ -75,6 +75,14 @@ class BleTransport(context: Context) : AirLinkTransport {
 
     override val kind: TransportKind = TransportKind.BLE
 
+    /**
+     * Volatile because the module sets this from its own thread immediately
+     * after construction, and every read of it happens on the radio's handler
+     * thread. Without it the handler thread is entitled to go on seeing null,
+     * and a transport whose events never arrive looks exactly like a transport
+     * that never found anybody.
+     */
+    @Volatile
     override var events: TransportEventSink? = null
 
     private val appContext: Context = context.applicationContext
@@ -129,6 +137,12 @@ class BleTransport(context: Context) : AirLinkTransport {
         } catch (e: IllegalArgumentException) {
             throw BleErrors.failed("the AirLink service UUIDs are malformed: ${e.message}")
         }
+
+        // The one place a handler thread is ever created. Every other entry
+        // point uses the one that exists or reports that we are not started -
+        // so a stray callback arriving after stop() can never resurrect a
+        // thread for a transport nobody is using.
+        ensureHandler()
 
         onHandler("start") {
             if (started) return@onHandler
@@ -261,6 +275,14 @@ class BleTransport(context: Context) : AirLinkTransport {
                 completion(Result.failure(BleErrors.notStarted()))
                 return@post
             }
+
+            // `getRemoteDevice` demands an upper-case MAC address and throws on
+            // anything else, and an endpoint id has been round-tripped through
+            // JavaScript by the time it comes back to us. Normalising here means
+            // "aa:bb:.." opens a link instead of reporting an unknown endpoint,
+            // and it keeps the connections map keyed the same way the addresses
+            // coming out of the scanner are.
+            val endpointId = endpointId.uppercase(Locale.ROOT)
 
             val existing = connections[endpointId]
             if (existing != null) {
@@ -601,7 +623,7 @@ class BleTransport(context: Context) : AirLinkTransport {
      * better than hanging whichever thread the bridge called us on.
      */
     private fun <T> onHandler(what: String, block: () -> T): T {
-        val h = handler
+        val h = handlerRef ?: throw BleErrors.notStarted()
         if (Looper.myLooper() === h.looper) return block()
 
         val latch = CountDownLatch(1)

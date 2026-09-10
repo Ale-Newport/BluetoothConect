@@ -1,14 +1,14 @@
 package com.airlink.transport.wifi
 
 /*
- * WHY WifiAwareTransport IS AN ADAPTER AND NOT A TRANSPORT
- * ========================================================
+ * WHY THERE IS NO WifiAwareTransport.kt IN THIS DIRECTORY
+ * =======================================================
  *
  * This file exists so the next person to read this directory knows that Wi-Fi
- * Aware (NAN) was considered and deliberately left out, not forgotten. The
- * class next door, WifiAwareTransport.kt, keeps the identifier alive in the
- * capability vocabulary and reports "unavailable" honestly; it opens no radio
- * and moves no bytes.
+ * Aware (NAN) was considered and deliberately left out, not forgotten. There is
+ * no class, no adapter and no stub: the identifier lives on in the vocabulary
+ * (TransportKind.WIFI_AWARE) and AirLinkTransportModule reports it honestly as
+ * never available, which is all a transport nobody can use needs.
  *
  * The pitch is genuinely attractive: Wi-Fi Aware gives peer-to-peer discovery
  * and a high-bandwidth data path with no access point, no group owner
@@ -39,21 +39,25 @@ package com.airlink.transport.wifi
  *    several MB/s. Any device on a shared network already has NSD plus TCP in
  *    LocalNetworkTransport.kt at similar speed. Aware would be a third path to
  *    the same destinations, with its own discovery model, its own permission
- *    story and its own failure modes to test.
+ *    story and its own failure modes to test - on hardware most users do not
+ *    have, for a case it does not actually solve.
  *
  * WHAT THE CODE DOES INSTEAD
  * --------------------------
- * AirLinkTransportModule reports 'wifiAware' as supported only when
- * FEATURE_WIFI_AWARE is present, and available never - with the reason
- * 'unsupportedHardware' on devices without the feature and a documented
- * "unavailable" path on the ones that have it. That keeps the identifier alive
- * in the negotiation protocol, so if the interop story ever changes this becomes
- * one file's worth of work and no feature code changes at all. Nothing in the
- * product promises it today.
+ * AirLinkTransportModule.platformGate() reports 'wifiAware' as supported only
+ * when FEATURE_WIFI_AWARE is present, and available never - with the reason
+ * 'unsupportedHardware' on devices without the feature, and a documented
+ * "we choose not to" explanation on the ones that have it. buildTransports()
+ * registers nothing for it, so there is no object, no thread and no radio.
+ * That keeps the identifier alive in the negotiation protocol: if the interop
+ * story ever changes this becomes one new file here and no feature code
+ * changes at all. Nothing in the product promises it today.
  *
  * If you do revisit it: android.net.wifi.aware.WifiAwareManager, an
  * attach/publish/subscribe session, then WifiAwareNetworkSpecifier through
  * ConnectivityManager.requestNetwork to get a real socket - at which point the
  * length framing in FramedTcp.kt applies unchanged, because it is the same
- * TCP-shaped byte stream as everything else here.
+ * TCP-shaped byte stream as everything else here. Implement AirLinkTransport,
+ * add one line to buildTransports(), and nothing above the transport layer
+ * needs to know.
  */

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import { initialsFor, strings } from '@airlink/config';
 import { Avatar, Gap, Label, haptic, useTheme } from '../../ui/index.js';
 import { AVATAR_EMOJI } from './avatars.js';
@@ -48,7 +48,21 @@ export function AvatarStep({
   });
 
   return (
-    <View style={{ width, flex: 1, justifyContent: 'center', paddingHorizontal: theme.spacing.lg }}>
+    // Scrollable, and centred only while there is room to centre in. Twenty-five
+    // tiles, a preview and two headings do not fit above the fold on a 4.7"
+    // phone, and they fit on nothing once the system text size is turned up -
+    // an emoji you cannot reach is worse than one you have to scroll to.
+    <ScrollView
+      style={{ width }}
+      contentContainerStyle={{
+        flexGrow: 1,
+        justifyContent: 'center',
+        paddingHorizontal: theme.spacing.lg,
+        paddingVertical: theme.spacing.lg,
+      }}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+    >
       <View accessible accessibilityRole="header">
         <Label variant="title">{strings.onboarding.avatarTitle}</Label>
       </View>
@@ -59,8 +73,15 @@ export function AvatarStep({
 
       <Gap size="xl" />
 
-      <View accessible accessibilityLabel={name} style={{ alignItems: 'center' }}>
-        <Avatar name={name} emoji={emoji} size={preview} />
+      {/* Deliberately NOT one `accessible` element: collapsing the preview into
+          a single node labelled with the name is what hides the "just my
+          initials" caption from a screen reader, which is the one line here
+          that says what the current choice actually is. The avatar itself is
+          decorative - the label directly beneath it says the same thing. */}
+      <View style={{ alignItems: 'center' }}>
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <Avatar name={name} emoji={emoji} size={preview} />
+        </View>
         <Gap size="sm" />
         <Label variant="headline" align="center" numberOfLines={1}>
           {name}
@@ -117,6 +138,6 @@ export function AvatarStep({
           );
         })}
       </View>
-    </View>
+    </ScrollView>
   );
 }

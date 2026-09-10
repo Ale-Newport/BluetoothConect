@@ -253,8 +253,7 @@ export function FriendsScreen(): React.JSX.Element {
           right={<Chevron />}
           onPress={() => {
             const friend = acting;
-            setActing(null);
-            if (friend) navigation.navigate('Security', { peerId: friend.peerId });
+            if (friend) afterSheet(() => navigation.navigate('Security', { peerId: friend.peerId }));
           }}
         />
         <NavRow
@@ -262,8 +261,7 @@ export function FriendsScreen(): React.JSX.Element {
           destructive
           onPress={() => {
             const friend = acting;
-            setActing(null);
-            if (friend) confirmRemove(friend);
+            if (friend) afterSheet(() => confirmRemove(friend));
           }}
         />
         <NavRow
@@ -271,8 +269,7 @@ export function FriendsScreen(): React.JSX.Element {
           destructive
           onPress={() => {
             const friend = acting;
-            setActing(null);
-            if (friend) confirmBlock(friend);
+            if (friend) afterSheet(() => confirmBlock(friend));
           }}
         />
         <Gap size="sm" />

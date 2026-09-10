@@ -19,6 +19,8 @@ export const syncStrings = {
   nothingChosenBody:
     'Pick a film you both already have on your phones. The video never travels - only play, pause and position do.',
   chooseAnother: 'Choose another video',
+  /** Stands in for a name we do not have yet. Never a device id. */
+  aFriend: 'Your friend',
 
   // -- preparing the file --------------------------------------------------
   preparing: 'Reading the video…',
@@ -27,15 +29,19 @@ export const syncStrings = {
   unreadableBody: 'That file could not be opened. Try another one.',
 
   // -- checking the friend -------------------------------------------------
+  checkingDetail: 'Comparing the two files. Nothing is uploaded.',
   noAnswerTitle: 'No answer yet',
   noAnswerBody: (name: string): string => `Ask ${name} to open Watch together, then check again.`,
   checkAgain: 'Check again',
   differentFile: (name: string): string => `${name} has a different copy of this`,
   sameFileNeeded: 'It has to be the same file on both phones.',
+  /** Under [Send the file]: the share screen asks for the file itself. */
+  sendFileDetail: 'You choose the file on the next screen.',
 
   // -- being invited -------------------------------------------------------
   invitedTitle: (name: string): string => `${name} wants to watch together`,
   invitedBody: 'Choose your copy of this video to join.',
+  invitedReady: (name: string): string => `You both have this. Join ${name} whenever you like.`,
   notNow: 'Not now',
   thisIsDifferent: 'This is a different file',
 
@@ -54,11 +60,18 @@ export const syncStrings = {
   speed: 'Speed',
   subtitles: 'Subtitles',
   subtitlesOff: 'Off',
+  /** A track the file names neither by title nor by language. */
+  subtitleTrack: (n: number): string => `Track ${n}`,
+  noSubtitles: 'This video has no subtitles.',
   showControls: 'Show the controls',
   hideControls: 'Hide the controls',
+  /** Fallback for a file whose name the picker did not give us. */
+  untitled: 'Video',
 
   // -- not connected -------------------------------------------------------
   needsConnection: 'Watching together needs a connection.',
+  /** Why the picture stopped when the two phones lost sight of each other. */
+  holdingForLink: 'Paused until you are both back in range.',
 } as const;
 
 /**

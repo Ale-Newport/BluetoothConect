@@ -61,6 +61,9 @@ export const shareStrings = {
   waitingForThem: (name: string): string => `Waiting for ${name} to accept…`,
   offerExpired: 'They never answered.',
 
+  /** A name that was nothing but invisible characters. See `safeDisplayName`. */
+  unnamedFile: 'Unnamed file',
+
   /** Who a file is going to or came from, under its name. */
   toPerson: (name: string): string => `To ${name}`,
   fromPerson: (name: string): string => `From ${name}`,

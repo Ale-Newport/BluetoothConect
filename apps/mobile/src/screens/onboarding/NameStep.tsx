@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Keyboard, TextInput, View, type TextInputInstance, type TextStyle } from 'react-native';
+import { Keyboard, ScrollView, TextInput, View, type TextInputInstance, type TextStyle } from 'react-native';
 import { strings } from '@airlink/config';
 import { Gap, Label, useTheme } from '../../ui/index.js';
 import { MAX_NAME_LENGTH } from './name.js';
@@ -43,7 +43,21 @@ export function NameStep({
   }, [active]);
 
   return (
-    <View style={{ width, flex: 1, justifyContent: 'center', paddingHorizontal: theme.spacing.lg }}>
+    // Centred while it fits, scrollable when it does not. With the keyboard up
+    // and the system text size turned up, the field is the thing that falls off
+    // the bottom - and a text field you cannot reach is a screen with no way
+    // forward, since Continue is gated on what goes in it.
+    <ScrollView
+      style={{ width }}
+      contentContainerStyle={{
+        flexGrow: 1,
+        justifyContent: 'center',
+        paddingHorizontal: theme.spacing.lg,
+        paddingVertical: theme.spacing.lg,
+      }}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+    >
       <View accessible accessibilityRole="header">
         <Label variant="title">{strings.onboarding.nameTitle}</Label>
       </View>
@@ -82,6 +96,6 @@ export function NameStep({
           },
         ]}
       />
-    </View>
+    </ScrollView>
   );
 }

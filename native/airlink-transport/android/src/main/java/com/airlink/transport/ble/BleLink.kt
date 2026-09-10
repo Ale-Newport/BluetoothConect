@@ -226,8 +226,15 @@ internal class BleLink(
             completion(BleErrors.failed("link $id is not connected"))
             return
         }
+        if (bytes.isEmpty()) {
+            // Not a datagram. Rejected rather than sent, because an empty ATT
+            // write is indistinguishable from several other things on the wire
+            // and the layer above never has a reason to send one.
+            completion(BleErrors.failed("a datagram must not be empty"))
+            return
+        }
         val limit = path.maxDatagramSize
-        if (bytes.isEmpty() || bytes.size > limit) {
+        if (bytes.size > limit) {
             completion(BleErrors.payloadTooLarge(bytes.size, limit))
             return
         }
@@ -235,13 +242,26 @@ internal class BleLink(
         if (!reliable) {
             if (outbound.size >= BleTuning.MAX_REALTIME_QUEUE_DEPTH) {
                 // Best-effort by definition: newer game state supersedes what is
-                // waiting, so the oldest goes rather than the newest. Reported
-                // as success because for this channel that is what happened -
-                // rejecting it would make the caller retry state that is already
-                // stale.
-                outbound.pollFirst()?.let {
-                    packetsDropped++
-                    complete(it, null)
+                // waiting, so something has to go. It must be a BEST-EFFORT
+                // datagram, never a reliable one - the two share this queue, and
+                // discarding a reliable datagram while reporting it sent would
+                // break the contract's "reliable sends arrive in order and
+                // without duplication; loss is signalled, never silent" in the
+                // worst possible way: as a message that vanishes with nothing
+                // above it any the wiser.
+                val victim = removeOldestRealtime()
+                packetsDropped++
+                if (victim != null) {
+                    // Reported as success because for this channel that is what
+                    // happened; rejecting it would make the caller retry state
+                    // that is already stale.
+                    complete(victim, null)
+                } else {
+                    // The backlog is entirely reliable traffic, so realtime
+                    // yields to it: the newest best-effort datagram is the one
+                    // dropped, and it is dropped before it is ever queued.
+                    completion(null)
+                    return
                 }
             }
         } else if (outbound.size >= BleTuning.MAX_RELIABLE_QUEUE_DEPTH) {
@@ -252,6 +272,22 @@ internal class BleLink(
 
         outbound.addLast(Outbound(bytes, reliable, completion))
         pump()
+    }
+
+    /**
+     * The oldest queued best-effort datagram, removed. Null when everything
+     * waiting is reliable and must therefore be left exactly where it is.
+     */
+    private fun removeOldestRealtime(): Outbound? {
+        val iterator = outbound.iterator()
+        while (iterator.hasNext()) {
+            val item = iterator.next()
+            if (!item.reliable) {
+                iterator.remove()
+                return item
+            }
+        }
+        return null
     }
 
     private fun pump() {

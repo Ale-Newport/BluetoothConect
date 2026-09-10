@@ -192,23 +192,29 @@ internal class BleScanner(
         }
 
         val record = result.scanRecord
-        val blob = BleWire.decodeAdvertisement(
+        val service = serviceUuid ?: return
+
+        // Service data under our own service UUID, and the whole value is the
+        // token. That is the one shape an iOS central can read - see the long
+        // note in BleWire - so it is the shape both platforms advertise.
+        val token = BleWire.decodeAdvertisedToken(
             try {
-                record?.getManufacturerSpecificData(BleWire.MANUFACTURER_ID)
+                record?.getServiceData(ParcelUuid(service))
             } catch (_: Throwable) {
                 null
             },
         )
 
-        // Android peers put the opt-in name in our manufacturer blob; iOS peers
-        // can only put it in the BLE local name. Look in both, prefer ours.
-        val advertisedName = try {
+        // Only an iPhone ever fills this in: CoreBluetooth gives the local name
+        // its own room, while Android's `setIncludeDeviceName` would broadcast
+        // the system Bluetooth name, which AirLink will not do. An Android
+        // peer's opt-in name arrives later, from its identity characteristic,
+        // through enrich().
+        val name = try {
             record?.deviceName.orEmpty()
         } catch (_: Throwable) {
             ""
-        }
-        val name = (if (blob.name.isNotEmpty()) blob.name else advertisedName)
-            .take(BleWire.MAX_NAME_BYTES)
+        }.take(BleWire.MAX_NAME_BYTES)
 
         val endpoint = DiscoveredEndpoint(
             transport = TransportKind.BLE,
@@ -219,11 +225,7 @@ internal class BleScanner(
             // two layers above this file.
             endpointId = address,
             name = name,
-            token = if (blob.token.isEmpty()) {
-                ""
-            } else {
-                Base64.encodeToString(blob.token, Base64.NO_WRAP)
-            },
+            token = if (token.isEmpty()) "" else Base64.encodeToString(token, Base64.NO_WRAP),
             rssi = result.rssi,
         )
 

@@ -61,13 +61,19 @@ private enum NetworkFraming {
 
     /// Hard ceiling on a length prefix we will honour on receive.
     ///
-    /// Deliberately larger than what we advertise. A peer running a slightly
-    /// different build might legitimately use a bigger datagram, and killing a
-    /// working link over that would be a miserable failure mode; MAX_FRAME_BYTES
-    /// in the protocol layer is 256 KB, so nothing legitimate can ever exceed
-    /// it. Anything larger is a desynchronised or hostile stream and the link is
-    /// closed rather than allocated for.
-    static let receiveHardLimit = 256 * 1024
+    /// The same number as `maxDatagramSize`, and that is the whole point: a peer
+    /// can never make us allocate a buffer we would not have been willing to
+    /// send ourselves. FramedTcp.kt on Android states the same rule and enforces
+    /// the same 64 KB, so both platforms reject byte-for-byte identically.
+    ///
+    /// It is tempting to be generous here and allow the protocol layer's
+    /// MAX_FRAME_BYTES (256 KB), but that is the ceiling on a *reassembled
+    /// logical frame*, not on a datagram: peerSession fragments to
+    /// `maxDatagramSize` before anything reaches this file, so nothing
+    /// legitimate ever presents a datagram over 64 KB. Being laxer than the peer
+    /// only buys a link that behaves differently against iOS than against
+    /// Android, which is precisely the bug you cannot reproduce.
+    static let receiveHardLimit = maxDatagramSize
 
     /// Bytes handed to the socket but not yet processed, above which a REALTIME
     /// datagram is dropped instead of queued. Realtime state is superseded by
@@ -102,12 +108,37 @@ private enum NetworkTiming {
     static let closeWatchdogSeconds = 3.0
     /// Backoff for restarting a browser or listener the system failed.
     static let restartBackoffSeconds: [Double] = [1, 2, 4]
+    /// How long an ACCEPTED connection may take to reach .ready before we drop
+    /// it. An outbound dial is bounded by connect()'s own timeout; an inbound
+    /// one has no caller waiting on it, so without this a peer that opens TCP
+    /// and then stalls holds a slot of `maxConcurrentLinks` for ever.
+    static let inboundReadyTimeoutSeconds = 10.0
 }
 
-/// TXT record keys. Short because a Bonjour TXT record is a scarce resource.
+/**
+ * TXT record keys.
+ *
+ * THESE ARE A CROSS-PLATFORM WIRE CONTRACT, not local names. They are defined
+ * in LocalNetworkTransport.kt on Android ("THE TXT RECORD - iOS must publish and
+ * read exactly these keys") and must match it byte for byte, because Bonjour and
+ * NSD are the same protocol and this is the cross-platform high-bandwidth path.
+ * Getting them wrong does not fail loudly: both sides discover each other and
+ * report every peer with no token and no name, so pairing silently never
+ * matches. One character each because a DNS-SD TXT record is small.
+ */
 private enum NetworkTxtKey {
-    static let token = "tk"
-    static let displayName = "dn"
+    /// Protocol version, decimal ASCII. Currently "1".
+    static let version = "v"
+    /// Base64 of the rotating advertisement token; absent when not advertising.
+    static let token = "t"
+    /// The user's short display name. Present ONLY when the user opted in -
+    /// presence alone answers "did they opt in", so never an empty string.
+    static let displayName = "n"
+
+    /// What we publish in `version`. Not checked on receive, exactly as Android
+    /// does not check it: rejecting an unknown version here would break a future
+    /// peer that is otherwise perfectly compatible.
+    static let versionValue = "1"
 }
 
 /**
@@ -482,6 +513,9 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
 
     private func makeService(type: String) -> NWListener.Service {
         var txt = NWTXTRecord()
+        // Always present, so a peer can tell a v1 record from whatever comes
+        // next without guessing from which keys happen to be there.
+        txt[NetworkTxtKey.version] = NetworkTxtKey.versionValue
         if !advertisedToken.isEmpty { txt[NetworkTxtKey.token] = advertisedToken }
         // Only present when the user opted in. An empty key would still occupy
         // space in a record that has to fit a single DNS response.
@@ -545,6 +579,9 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         guard isStarted, isAdvertising,
               listenerRestartAttempt < NetworkTiming.restartBackoffSeconds.count,
               let configuration else {
+            // A failed NWListener still owns its socket until it is cancelled;
+            // dropping the reference alone leaks it.
+            listener?.cancel()
             listener = nil
             return
         }
@@ -803,6 +840,21 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         )
         links[link.id] = link
         resetMetrics(for: link)
+
+        // An inbound connection has no caller waiting on it and therefore no
+        // connect() timeout, so without this one it can sit in `links` for ever
+        // if it never reaches .ready - and sixteen of those are all the link
+        // slots this transport has. `.waiting` is still not treated as failure;
+        // this is the deadline that eventually gives up, exactly as the connect
+        // timeout is for an outbound dial.
+        let readyTimeout = DispatchWorkItem { [weak self, weak link] in
+            guard let self, let link, !link.isOpen else { return }
+            self.log("warn", "inbound connection never became ready; dropping it")
+            self.abandon(link, error: AirLinkError.timeout("accepting an inbound connection"))
+        }
+        link.connectTimeout = readyTimeout
+        queue.asyncAfter(deadline: .now() + NetworkTiming.inboundReadyTimeoutSeconds, execute: readyTimeout)
+
         attachHandlers(to: link)
         connection.start(queue: queue)
     }
@@ -984,6 +1036,16 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
                 boxed.value(.failure(AirLinkError.payloadTooLarge(data.count, NetworkFraming.maxDatagramSize)))
                 return
             }
+            // A zero-length datagram is a framing violation on this wire, not a
+            // datagram: the shared format in FramedTcp.kt defines a valid length
+            // as 1...maxDatagramSize, and an Android peer TEARS THE LINK DOWN on
+            // receiving a zero length word. Refusing here means we can never be
+            // the side that does that. Nothing above produces one anyway - every
+            // AirLink frame carries at least a version and a type byte.
+            guard !data.isEmpty else {
+                boxed.value(.failure(AirLinkError.failed("a zero-length datagram is not a valid frame")))
+                return
+            }
 
             if !reliable && link.queuedBytes > NetworkFraming.realtimeHighWaterMark {
                 // TCP has no lossy path, so best-effort is expressed by dropping
@@ -1060,6 +1122,11 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         link.connection.receive(minimumIncompleteLength: NetworkFraming.lengthPrefixBytes,
                                 maximumLength: NetworkFraming.lengthPrefixBytes) { [weak self, weak link] content, _, isComplete, error in
             guard let self, let link else { return }
+            // An in-flight send holds `link` strongly, so this completion can
+            // still arrive after the link was reported terminal and forgotten.
+            // Delivering into it would emit a data event for a link JavaScript
+            // has already been told is closed.
+            guard self.links[link.id] != nil, !link.didReportTerminal else { return }
             if let error {
                 self.fail(link, reason: "receive failed: \(error)")
                 return
@@ -1086,11 +1153,14 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
                 self.fail(link, reason: "peer announced a \(length) byte datagram, over the \(NetworkFraming.receiveHardLimit) byte limit")
                 return
             }
-            if length == 0 {
-                // A zero-byte datagram is still a datagram: N bytes in, N bytes
-                // out. Delivering nothing here would break the contract.
-                self.deliver(link, payload: Data())
-                self.receiveLengthPrefix(link)
+            guard length > 0 else {
+                // Zero is NOT "an empty datagram, faithfully delivered". The
+                // shared wire format defines a valid length as 1...64 KB and
+                // Android rejects zero as a framing violation, so accepting it
+                // here would make the two platforms disagree about whether a
+                // stream is still aligned - and a byte stream cannot be
+                // resynchronised once that is in question. Close the link.
+                self.fail(link, reason: "peer announced a zero-length datagram, which is a framing violation")
                 return
             }
             self.receiveBody(link, length: length)
@@ -1100,6 +1170,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
     private func receiveBody(_ link: NetworkPeerLink, length: Int) {
         link.connection.receive(minimumIncompleteLength: length, maximumLength: length) { [weak self, weak link] content, _, isComplete, error in
             guard let self, let link else { return }
+            guard self.links[link.id] != nil, !link.didReportTerminal else { return }
             if let error {
                 self.fail(link, reason: "receive failed: \(error)")
                 return
@@ -1151,10 +1222,16 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
 
     private func setMetrics(for link: NetworkPeerLink, _ body: (inout LinkMetricsSnapshot) -> Void) {
         stateLock.lock()
-        var snapshot = metricsByLink[link.id] ?? LinkMetricsSnapshot(maxDatagramSize: NetworkFraming.maxDatagramSize)
+        defer { stateLock.unlock() }
+        // Update-only, never insert. `resetMetrics` creates the entry when the
+        // link is created and `forget` removes it when the link dies; a send
+        // completion that lands after forget() would otherwise put the entry
+        // back, keyed by a link id that no longer exists and that nothing will
+        // ever remove again. That is a small leak per racing disconnect, and it
+        // is unbounded over the life of the process.
+        guard var snapshot = metricsByLink[link.id] else { return }
         body(&snapshot)
         metricsByLink[link.id] = snapshot
-        stateLock.unlock()
     }
 
     /// Estimates throughput from what actually moved, over ~1 second windows.
@@ -1213,10 +1290,21 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
 
         // AWDL and Bonjour are both IPv6 link-local; forcing IPv4 would break
         // peer-to-peer outright and is never needed on a local link.
+        //
+        // Cellular is prohibited, which is the whole of what we actually want: a
+        // peer on the far side of a carrier network is not a local peer, and
+        // Bonjour does not run there anyway.
         parameters.prohibitedInterfaceTypes = [.cellular]
-        // An offline app has no business on a metered path, and a peer on the
-        // far side of a cellular connection is not a peer.
-        parameters.prohibitExpensivePaths = true
+
+        // prohibitExpensivePaths is deliberately NOT set. It sounds like a
+        // tighter version of the line above and is not: iOS marks a joined phone
+        // hotspot as expensive, and joining a peer's hotspot is the entire
+        // point of HotspotJoiner and the only high-bandwidth iPhone-to-Android
+        // route with no network present. Setting it there would refuse the one
+        // path this transport exists to use - and refuse it silently, because
+        // makeBrowserParameters() does not set it, so the peer is discovered
+        // and only the connection then sits in .waiting until the timeout.
+        // Cellular is already excluded, so the flag buys nothing else.
         parameters.serviceClass = .responsiveData
 
         return parameters

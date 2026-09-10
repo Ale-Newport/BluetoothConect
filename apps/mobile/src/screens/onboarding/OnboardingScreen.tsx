@@ -111,6 +111,18 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
   // A retry must not mint a second identity: `createProfile` writes a keypair
   // and a row, and doing it twice would orphan the first one.
   const profileCreated = useRef(false);
+  /**
+   * The `start()` already in flight, if any.
+   *
+   * A deadline abandons a promise; it cannot cancel the work behind it. The
+   * native stack is still coming up when `withDeadline` gives up, and
+   * `AirLinkClient.start()` only guards against re-entry once it has *finished*
+   * - so calling it again from Retry would raise a second transport host and
+   * leave the first one advertising on a timer nothing holds a handle to.
+   * Retry therefore waits on the attempt already running; only a real failure
+   * clears the slot so the next press is a genuine second try.
+   */
+  const startAttempt = useRef<Promise<void> | null>(null);
 
   const [step, setStep] = useState<Step>(Step.WELCOME);
   const [rawName, setRawName] = useState('');
@@ -126,12 +138,16 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
   // ground out from under someone standing on it.
   const unlocked = Math.max(nameReady ? Step.PERMISSIONS : Step.NAME, step);
 
-  useEffect(
-    () => () => {
+  // Set on the way in as well as cleared on the way out: an effect that only
+  // ever writes `false` is permanently false after the first mount/unmount/
+  // remount cycle, and every `if (!mounted.current) return` below would then
+  // swallow the completion and strand the user on this screen.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const scrollToStep = useCallback(
     (target: Step) => {
@@ -218,7 +234,15 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
 
     try {
       // This is the call that raises the operating system's prompts.
-      await withDeadline(client.start(), START_TIMEOUT_MS);
+      if (!startAttempt.current) {
+        startAttempt.current = client.start().catch((error: unknown) => {
+          // A failure is retryable, so the slot is released. A timeout is not a
+          // failure and deliberately leaves it held.
+          startAttempt.current = null;
+          throw error instanceof Error ? error : new Error(String(error));
+        });
+      }
+      await withDeadline(startAttempt.current, START_TIMEOUT_MS);
     } catch {
       if (!mounted.current) return;
       setBusy(false);
@@ -229,7 +253,9 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
     const radiosUp = await waitForRadios(RADIO_SETTLE_MS);
     if (!mounted.current) return;
     setBusy(false);
-    haptic('success');
+    // A success tap is a claim that everything worked. If the radios have not
+    // reported in, the honest gesture is the quieter one.
+    haptic(radiosUp ? 'success' : 'impactLight');
     enter(radiosUp);
   }, [busy, nameReady, name, emoji, client, enter, goTo]);
 
@@ -332,6 +358,12 @@ export function OnboardingScreen({ navigation }: Props): React.JSX.Element {
           ref={pager}
           horizontal
           pagingEnabled
+          // Locked while the identity is being written and the radios brought
+          // up. The name and the avatar have already been handed to
+          // `createProfile` by then, so a field edited mid-flight would be
+          // silently discarded - a control that looks live but is not. The lock
+          // is bounded by the deadline above and the button spins throughout.
+          scrollEnabled={!busy}
           bounces={false}
           showsHorizontalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"

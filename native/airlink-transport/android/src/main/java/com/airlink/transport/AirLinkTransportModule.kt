@@ -144,9 +144,13 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                     // serves every device and simply reports less on older ones.
                     putBoolean("supportsL2cap", Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                     // WifiManager.startLocalOnlyHotspot exists from API 26, which
-                    // is this library's floor, so the only real question is
-                    // whether the device has Wi-Fi hardware at all.
-                    putBoolean("canCreateHotspot", hasSystemFeature(PackageManager.FEATURE_WIFI))
+                    // is this library's floor, so the hardware question is only
+                    // half of it: on API 31-32 there is no permission this build
+                    // can hold that unlocks it (see the matrix in Permissions.kt)
+                    // and createHotspot() will always reject. Reporting true
+                    // there would have JavaScript offer the user a fast path
+                    // that cannot exist.
+                    putBoolean("canCreateHotspot", canCreateHotspot())
                     // Deliberately false, and the asymmetry is the whole reason
                     // the handoff has Android hosting: an Android app cannot
                     // silently join an arbitrary hotspot the way an iPhone can
@@ -171,10 +175,24 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         // permissions and radio state, because those are facts about the device
         // rather than opinions of a transport. Only once it has nothing to
         // object to does the transport get to answer.
+        //
+        // An ADVISORY gate is the exception, and the local network is the only
+        // one: the module can only ask about the DEFAULT network, and the whole
+        // point of the hotspot handoff is a Wi-Fi path that is not the default
+        // route (the phone usually keeps cellular as its default while hosting a
+        // soft AP). Letting a guess about the default route veto the transport
+        // that is watching every network with a NetworkCallback would report the
+        // fast path as unavailable at exactly the moment it had just been built.
+        //
+        // The transport is asked lazily either way: its own probe can touch a
+        // radio, and there is no reason to pay for that - or to log the
+        // SecurityException it may raise - once an authoritative gate has
+        // already objected.
         val availability = when {
             !gate.supported -> gate.availability
-            !gate.availability.available -> gate.availability
-            else -> transport?.availabilitySafely() ?: gate.availability
+            gate.availability.available || gate.advisory ->
+                transport?.availabilitySafely() ?: gate.availability
+            else -> gate.availability
         }
 
         return Arguments.createMap().apply {
@@ -189,7 +207,17 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         }
     }
 
-    private data class Gate(val supported: Boolean, val availability: TransportAvailability)
+    /**
+     * @param advisory true when [availability] is a guess the module makes on
+     *   the transport's behalf and the transport's own answer, when it has one,
+     *   is better. False - the default - means the gate is a fact about the
+     *   device that no transport may override.
+     */
+    private data class Gate(
+        val supported: Boolean,
+        val availability: TransportAvailability,
+        val advisory: Boolean = false,
+    )
 
     /**
      * Everything about a transport that the module can determine without asking
@@ -202,6 +230,8 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         // device that cannot do BLE cannot install AirLink in the first place.
         TransportKind.BLE -> Gate(supported = true, availability = bleAvailability())
 
+        // Advisory: see [Gate.advisory] and hasLocalNetworkPath(). The transport
+        // knows more than this check does and gets the last word.
         TransportKind.LOCAL_NETWORK -> Gate(
             supported = true,
             availability = if (hasLocalNetworkPath()) {
@@ -213,6 +243,7 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                     detail = "Join the same Wi-Fi network as the other device to use the faster connection.",
                 )
             },
+            advisory = true,
         )
 
         TransportKind.PEER_TO_PEER_WIFI -> Gate(
@@ -412,7 +443,13 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
             // up - must not leave a JavaScript promise pending for the life of
             // the process. On expiry we answer with whatever the OS thinks now,
             // which is the truth either way.
-            handler.postDelayed({ expirePermissionRequest(request) }, PERMISSION_TIMEOUT_MS)
+            //
+            // Kept so the normal path can cancel it: a three-minute message
+            // holding a settled promise is three minutes of a JavaScript
+            // callback that cannot be collected, once per permission screen.
+            val watchdog = Runnable { expirePermissionRequest(request) }
+            request.watchdog = watchdog
+            handler.postDelayed(watchdog, PERMISSION_TIMEOUT_MS)
         }
     }
 
@@ -420,7 +457,11 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         val code: Int,
         val kinds: Map<String, TransportKind?>,
         val once: Once,
-    )
+    ) {
+        /** Set immediately after the dialog goes up; cleared when it is answered. */
+        @Volatile
+        var watchdog: Runnable? = null
+    }
 
     private val permissionListener = PermissionListener { requestCode, _, _ ->
         val request = synchronized(this) {
@@ -429,6 +470,8 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
             }
         }
         if (request != null) {
+            request.watchdog?.let { handler.removeCallbacks(it) }
+            request.watchdog = null
             // The grantResults array is deliberately ignored: what matters is
             // what the OS says we hold NOW, which also covers the case where the
             // user changed a permission in Settings while the dialog was up.
@@ -449,6 +492,7 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
             }
         }
         if (expired) {
+            request.watchdog = null
             log("warn", "permissions", "permission request expired without an answer")
             request.once.resolve(permissionResult(request.kinds))
         }
@@ -724,8 +768,17 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                 // Rule 3 of the datagram contract, enforced once for every radio:
                 // over-sized sends fail loudly. Truncating here would corrupt a
                 // frame in a way the layer above could not detect.
-                val limit = linkLimits[linkId] ?: 0
-                if (limit > 0 && bytes.size > limit) {
+                //
+                // The per-link limit arrives with `linkOpened`, which every
+                // transport emits before it completes a connect - but the
+                // interface does not *require* that order, and a link whose
+                // limit is unknown must not become a link with no limit at all.
+                // MAX_INBOUND_DATAGRAM_BYTES is the absolute ceiling in that
+                // case: no transport here advertises more than 64 KiB, so it
+                // rejects nothing legitimate and still stops an unbounded
+                // payload reaching a radio.
+                val limit = linkLimits[linkId]?.takeIf { it > 0 } ?: MAX_INBOUND_DATAGRAM_BYTES
+                if (bytes.size > limit) {
                     throw AirLinkError.PayloadTooLarge(bytes.size, limit)
                 }
 
@@ -795,6 +848,15 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
                 // Wi-Fi permission as discovery, and on API 31-32 there is none
                 // this build can hold - see the matrix in Permissions.kt.
                 for (permission in Permissions.hotspotPermissions()) {
+                    // "Not declared on this OS" and "declared but not granted"
+                    // are different answers to JavaScript: the first sends
+                    // nobody to Settings, because there is nothing there to
+                    // turn on.
+                    if (!Permissions.isDeclared(appContext, permission)) {
+                        throw AirLinkError.Unsupported(
+                            "Starting a hotspot on this version of Android",
+                        )
+                    }
                     if (!Permissions.isGranted(appContext, permission)) {
                         throw AirLinkError.Failed(
                             "AirLink does not have permission to start a Wi-Fi hotspot on this device.",
@@ -1209,6 +1271,24 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         false
     }
 
+    /**
+     * Whether `createHotspot()` could ever succeed on this device and this OS.
+     *
+     * Two conditions, and the second one is the interesting half: Wi-Fi
+     * hardware, and a permission the merged manifest actually declares on this
+     * release. On API 31 and 32 there is none - ACCESS_FINE_LOCATION is capped
+     * at 30 and NEARBY_WIFI_DEVICES starts at 33 - so the honest answer there is
+     * false even though the hardware and the API are both present.
+     *
+     * Deliberately NOT a check on whether the permission is granted: this is
+     * "could you", not "may you right now". JavaScript asks for the permission
+     * at the moment it offers the fast path.
+     */
+    private fun canCreateHotspot(): Boolean {
+        if (!hasSystemFeature(PackageManager.FEATURE_WIFI)) return false
+        return Permissions.hotspotPermissions().all { Permissions.isDeclared(appContext, it) }
+    }
+
     private fun hasSystemFeature(feature: String): Boolean = try {
         appContext.packageManager.hasSystemFeature(feature)
     } catch (t: Throwable) {
@@ -1220,10 +1300,15 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
      * Whether there is a network a peer could plausibly be reachable on.
      *
      * This is a heuristic and is documented as one: it asks about the DEFAULT
-     * network, so a phone on both cellular and an internet-less Wi-Fi may report
-     * false even though the local network would work. It is only ever used when
-     * the local-network transport itself has no opinion - the transport, which
-     * watches networks properly with a NetworkCallback, always wins.
+     * network, so a phone on both cellular and an internet-less Wi-Fi - or one
+     * hosting a local-only hotspot, where the soft AP is never the default route
+     * - reports false even though the local network would work perfectly.
+     *
+     * That is precisely why the gate it feeds is marked advisory in
+     * [platformGate]: it is used only when the local-network transport has no
+     * instance to answer for itself. The transport, which watches every network
+     * with a NetworkCallback rather than guessing from the default route,
+     * always wins.
      */
     private fun hasLocalNetworkPath(): Boolean = try {
         val manager = appContext.getSystemService(ConnectivityManager::class.java)

@@ -57,7 +57,17 @@ internal class BleGattServer(
     private val onIncomingLink: (BleLink) -> Unit,
 ) {
 
-    private val handler: Handler get() = host.handler
+    /**
+     * Captured once rather than fetched per use, and that is deliberate.
+     *
+     * The transport ends its handler thread in `stop()`. A GATT server callback
+     * can still arrive after that - the stack takes its time letting go - and
+     * asking the host for a handler at that moment would build a whole new
+     * thread to run work for a transport that has already shut down. Holding
+     * the original means a late post simply returns false and the message is
+     * dropped, which is exactly what should happen to it.
+     */
+    private val handler: Handler = host.handler
 
     private var uuids: BleWire.ServiceUuids? = null
     private var server: BluetoothGattServer? = null
@@ -104,7 +114,10 @@ internal class BleGattServer(
         stopAdvertising()
         l2capListener.stop()
 
-        peers.values.toList().forEach { it.link.close("the transport was stopped", failed = false) }
+        // closePeer rather than link.close, so every pending timer is cancelled
+        // as well: a grace period left armed would fire minutes later against a
+        // peer this object no longer knows about.
+        peers.values.toList().forEach { closePeer(it, "the transport was stopped", failed = false) }
         peers.clear()
 
         val current = server
@@ -214,7 +227,22 @@ internal class BleGattServer(
             false
         }
         if (!accepted) {
+            // Everything is torn back down rather than left half-built. A
+            // server object with no service on it looks healthy to every check
+            // in this file, so keeping one would mean `startAdvertising` waited
+            // forever for an onServiceAdded that is never coming - and the only
+            // symptom would be a phone nobody can find.
             host.log("error", "the GATT service was refused; incoming links are unavailable")
+            server = null
+            service = null
+            rxCharacteristic = null
+            txCharacteristic = null
+            identityCharacteristic = null
+            try {
+                opened.close()
+            } catch (t: Throwable) {
+                host.log("debug", "closing the refused GATT server threw ${t.javaClass.simpleName}")
+            }
             return false
         }
         return true
@@ -235,15 +263,20 @@ internal class BleGattServer(
             throw BleErrors.unsupported("Bluetooth advertising on this device")
         }
 
-        // Validate the payload before changing any state, so a rejected call
+        // Validate the token before changing any state, so a rejected call
         // leaves us advertising exactly what we were advertising before.
-        val payload = try {
-            BleWire.encodeAdvertisement(token, displayName)
+        val advertised = try {
+            BleWire.encodeAdvertisedToken(token)
         } catch (e: IllegalArgumentException) {
-            throw BleErrors.failed(e.message ?: "the advertisement payload does not fit")
+            throw BleErrors.failed(e.message ?: "the advertisement token does not fit")
         }
 
-        this.token = token.copyOf()
+        this.token = advertised
+        // The name is NOT part of the advertisement - there is no room for it
+        // next to a 128-bit service UUID, and Android cannot broadcast an
+        // arbitrary one anyway. It is served from the identity characteristic,
+        // so any length the user chooses is safe here: a long name can never be
+        // the reason a phone fails to advertise.
         this.displayName = displayName
         rebuildIdentityValue()
 
@@ -255,7 +288,7 @@ internal class BleGattServer(
             host.log("debug", "advertising deferred until the GATT service is registered")
             return
         }
-        beginAdvertising(ids, payload)
+        beginAdvertising(ids)
     }
 
     fun stopAdvertising() {
@@ -279,7 +312,38 @@ internal class BleGattServer(
         advertisingSet = null
     }
 
-    private fun beginAdvertising(ids: BleWire.ServiceUuids, payload: ByteArray) {
+    /**
+     * The two 31-byte structures, built in one place because the split between
+     * them is load bearing. See the budget arithmetic in [BleWire].
+     */
+    private fun advertiseData(ids: BleWire.ServiceUuids): Pair<AdvertiseData, AdvertiseData> {
+        val advertisement = AdvertiseData.Builder()
+            // The service UUID has to be in the advertisement itself, not the
+            // scan response: it is what every scan filter matches on, and a
+            // filter is mandatory for an iOS central scanning in the
+            // background. Eighteen bytes of the thirty-one go here.
+            .addServiceUuid(ParcelUuid(ids.service))
+            // Never the system Bluetooth name. See the note in BleWire.
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .build()
+
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .apply {
+                // Service data under our own UUID, holding the raw token and
+                // nothing else - the one layout CoreBluetooth can read. Omitted
+                // entirely rather than sent empty when there is no token, so a
+                // scanner sees "no token" instead of "a zero-length one".
+                if (token.isNotEmpty()) addServiceData(ParcelUuid(ids.service), token)
+            }
+            .build()
+
+        return advertisement to scanResponse
+    }
+
+    private fun beginAdvertising(ids: BleWire.ServiceUuids) {
         val advertiser = try {
             availability.adapter?.bluetoothLeAdvertiser
         } catch (_: Throwable) {
@@ -289,22 +353,7 @@ internal class BleGattServer(
         stopAdvertising()
         wantsAdvertising = true
 
-        val advertiseData = AdvertiseData.Builder()
-            // The service UUID has to be in the advertisement itself, not the
-            // scan response: it is what every scan filter matches on, and a
-            // filter is mandatory for an iOS central scanning in the
-            // background. Sixteen bytes of the thirty-one go here.
-            .addServiceUuid(ParcelUuid(ids.service))
-            // Never the system Bluetooth name. See BleWire.AdvertisementPayload.
-            .setIncludeDeviceName(false)
-            .setIncludeTxPowerLevel(false)
-            .build()
-
-        val scanResponse = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .setIncludeTxPowerLevel(false)
-            .addManufacturerData(BleWire.MANUFACTURER_ID, payload)
-            .build()
+        val (advertiseData, scanResponse) = advertiseData(ids)
 
         val parameters = AdvertisingSetParameters.Builder()
             // Legacy mode, deliberately. Extended advertising is invisible to
@@ -390,23 +439,8 @@ internal class BleGattServer(
                 host.log("warn", "startAdvertisingSet failed with status $status; falling back")
                 val ids = uuids
                 if (wantsAdvertising && ids != null) {
-                    val payload = try {
-                        BleWire.encodeAdvertisement(token, displayName)
-                    } catch (_: IllegalArgumentException) {
-                        return@post
-                    }
-                    startLegacyAdvertising(
-                        AdvertiseData.Builder()
-                            .addServiceUuid(ParcelUuid(ids.service))
-                            .setIncludeDeviceName(false)
-                            .setIncludeTxPowerLevel(false)
-                            .build(),
-                        AdvertiseData.Builder()
-                            .setIncludeDeviceName(false)
-                            .setIncludeTxPowerLevel(false)
-                            .addManufacturerData(BleWire.MANUFACTURER_ID, payload)
-                            .build(),
-                    )
+                    val (advertisement, scanResponse) = advertiseData(ids)
+                    startLegacyAdvertising(advertisement, scanResponse)
                 }
             }
         }
@@ -486,6 +520,13 @@ internal class BleGattServer(
 
         val l2capGrace = Runnable { if (!opened) openOverGatt(this@ServerPeer) }
 
+        /**
+         * The shorter of the two waits: this peer has subscribed but has not
+         * read our identity yet, so we do not know whether it is the kind of
+         * peer that upgrades. See [awaitFastPath].
+         */
+        val identityGrace = Runnable { if (!opened) openOverGatt(this@ServerPeer) }
+
         val notifyTimeout = Runnable {
             val done = notifyDone
             notifyDone = null
@@ -496,6 +537,7 @@ internal class BleGattServer(
     private fun closePeer(peer: ServerPeer, reason: String, failed: Boolean) {
         handler.removeCallbacks(peer.subscribeTimeout)
         handler.removeCallbacks(peer.l2capGrace)
+        handler.removeCallbacks(peer.identityGrace)
         handler.removeCallbacks(peer.notifyTimeout)
         peers.remove(peer.address)
         L2cap.closeQuietly(peer.pendingSocket)
@@ -508,6 +550,54 @@ internal class BleGattServer(
         }
     }
 
+    /**
+     * Decides how long, if at all, to hold a freshly subscribed peer before
+     * opening its link on GATT.
+     *
+     * THE PROBLEM THIS SOLVES, and it is the difference between the L2CAP
+     * upgrade working in one direction and in both.
+     *
+     * A peripheral cannot ask a central whether it intends to upgrade -
+     * negotiating that in band would be protocol knowledge, which this layer is
+     * not allowed to hold - so all it has is the order of the operations the
+     * central performs. The two platforms do them in different orders, and both
+     * are defensible:
+     *
+     *   Android central   reads identity, THEN subscribes. By the time we get
+     *                     here it already knows our PSM, so a channel is very
+     *                     likely on its way: wait the full grace.
+     *   iOS central       subscribes, THEN reads identity, because it opens its
+     *                     link immediately and treats the upgrade as something
+     *                     that arrives afterwards. So at this moment it has no
+     *                     idea we have a PSM at all.
+     *
+     * Opening on GATT immediately, as the obvious implementation does, means
+     * every iPhone-to-Android link is stuck on GATT forever - the iPhone dials
+     * a moment later and finds a link that has already committed to the slow
+     * path. Waiting the full grace for everybody instead would add seconds to
+     * every incoming connection from a peer that was never going to upgrade.
+     *
+     * So there are two waits. A peer that has read our identity gets the long
+     * one. A peer that has not gets a short one, and the identity read - if it
+     * comes, which for any real AirLink peer it does within a few milliseconds
+     * of subscribing - promotes it to the long one. A peer that never reads
+     * identity pays [BleTuning.IDENTITY_READ_GRACE_MS] once and nothing else.
+     */
+    private fun awaitFastPath(peer: ServerPeer) {
+        if (peer.opened) return
+        if (l2capListener.psm == 0) {
+            openOverGatt(peer)
+            return
+        }
+        handler.removeCallbacks(peer.identityGrace)
+        handler.removeCallbacks(peer.l2capGrace)
+        if (peer.readOurIdentity) {
+            handler.postDelayed(peer.l2capGrace, BleTuning.L2CAP_ACCEPT_GRACE_MS)
+        } else {
+            handler.postDelayed(peer.identityGrace, BleTuning.IDENTITY_READ_GRACE_MS)
+        }
+    }
+
     private fun openOverGatt(peer: ServerPeer) {
         if (peer.opened) return
         val tx = txCharacteristic
@@ -516,6 +606,7 @@ internal class BleGattServer(
             return
         }
         handler.removeCallbacks(peer.l2capGrace)
+        handler.removeCallbacks(peer.identityGrace)
         handler.removeCallbacks(peer.subscribeTimeout)
         peer.opened = true
         peer.link.attach(NotifySender(peer, tx))
@@ -534,6 +625,7 @@ internal class BleGattServer(
             return
         }
         handler.removeCallbacks(peer.l2capGrace)
+        handler.removeCallbacks(peer.identityGrace)
         handler.removeCallbacks(peer.subscribeTimeout)
         peer.opened = true
         val sender = L2capSender(
@@ -666,13 +758,8 @@ internal class BleGattServer(
                 host.log("debug", "GATT service registered")
                 val ids = uuids
                 if (wantsAdvertising && !advertising && ids != null) {
-                    val payload = try {
-                        BleWire.encodeAdvertisement(token, displayName)
-                    } catch (_: IllegalArgumentException) {
-                        return@post
-                    }
                     try {
-                        beginAdvertising(ids, payload)
+                        beginAdvertising(ids)
                     } catch (t: Throwable) {
                         host.log("error", "advertising failed: ${t.message ?: t.javaClass.simpleName}")
                     }
@@ -771,7 +858,15 @@ internal class BleGattServer(
                 // A read longer than MTU-1 arrives as a series of blob reads at
                 // increasing offsets; honouring `offset` is what makes them
                 // reassemble correctly at the peer.
-                peers[address]?.readOurIdentity = true
+                peers[address]?.let { peer ->
+                    val first = !peer.readOurIdentity
+                    peer.readOurIdentity = true
+                    // Only the first read of a record promotes the wait. A blob
+                    // read at a later offset is the same read continuing, and
+                    // restarting the grace on each one would let a peer stretch
+                    // it indefinitely.
+                    if (first && peer.subscribed && !peer.opened) awaitFastPath(peer)
+                }
                 respond(
                     target,
                     requestId,
@@ -880,17 +975,7 @@ internal class BleGattServer(
                     return@post
                 }
 
-                // The only honest signal that this central intends an L2CAP
-                // upgrade is that it has already read our identity, and so
-                // knows our PSM. When it has, wait briefly for the channel;
-                // when it has not, open on GATT immediately rather than make
-                // every peer that will never upgrade pay for the ones that
-                // might. See the ordering note in CentralConnection.
-                if (l2capListener.psm != 0 && peer.readOurIdentity) {
-                    handler.postDelayed(peer.l2capGrace, BleTuning.L2CAP_ACCEPT_GRACE_MS)
-                } else {
-                    openOverGatt(peer)
-                }
+                awaitFastPath(peer)
             }
         }
 

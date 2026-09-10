@@ -119,7 +119,15 @@ export function Scrubber({
       }}
       style={{ height: TOUCH_HEIGHT, justifyContent: 'center' }}
     >
+      {/*
+        The track and the knob are drawing, not targets. Without pointerEvents
+        the hit test lands on whichever of them is under the finger, and
+        `locationX` on the grant event would then be measured from THAT view -
+        so tapping the knob would report a position of seven pixels and jump the
+        film back to the start.
+      */}
       <View
+        pointerEvents="none"
         style={{
           height: TRACK_HEIGHT,
           borderRadius: theme.radius.pill,
@@ -136,6 +144,7 @@ export function Scrubber({
         />
       </View>
       <View
+        pointerEvents="none"
         style={{
           position: 'absolute',
           left: knobLeft,

@@ -273,7 +273,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.airlink.app";
+				PRODUCT_BUNDLE_IDENTIFIER = com.airlink.app;
 				PRODUCT_NAME = AirLink;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -302,7 +302,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.airlink.app";
+				PRODUCT_BUNDLE_IDENTIFIER = com.airlink.app;
 				PRODUCT_NAME = AirLink;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 5.0;

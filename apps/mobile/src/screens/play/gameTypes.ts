@@ -45,6 +45,7 @@ export type {
 export {
   MAX_TAP_MS,
   NOBODY as REACTION_NOBODY,
+  NO_ROUND_YET as REACTION_NO_ROUND,
   NOT_TAPPED,
   NO_TIME,
   ROUNDS_TO_PLAY,
@@ -71,6 +72,11 @@ export {
   scores as wordDuelScores,
 } from '../../../../../packages/games/src/games/wordDuel.js';
 export type { WordDuelState } from '../../../../../packages/games/src/games/wordDuel.js';
+export {
+  MAX_WORD_LENGTH,
+  MIN_WORD_LENGTH,
+  isWord,
+} from '../../../../../packages/games/src/games/wordList.js';
 
 export {
   BOARD_RADIUS as DART_BOARD_RADIUS,

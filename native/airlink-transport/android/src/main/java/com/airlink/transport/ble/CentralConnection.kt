@@ -225,11 +225,15 @@ internal class CentralConnection(
         // interval is roughly 7.5ms instead of roughly 50ms.
         if (availability.supports2MPhy) {
             attempt("setPreferredPhy") {
-                g.setPreferredPhy(
-                    BluetoothDevice.PHY_LE_2M_MASK,
-                    BluetoothDevice.PHY_LE_2M_MASK,
-                    BluetoothDevice.PHY_OPTION_NO_PREFERRED,
-                )
+                // Both bits, not 2M alone. This is a preference handed to the
+                // controller, and offering it the pair lets it settle on 2M
+                // with a peer that has it and stay on 1M with a peer that does
+                // not. A 2M-only mask asks some stacks for something they
+                // cannot negotiate, and they answer by failing the request
+                // outright - trading a possible doubling of throughput for a
+                // guaranteed nothing.
+                val mask = BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK
+                g.setPreferredPhy(mask, mask, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
             }
         }
         requestHighPriority()

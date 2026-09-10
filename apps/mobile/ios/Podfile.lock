@@ -33,54 +33,9 @@ PODS:
     - ReactNativeDependencies
   - glog (0.3.5):
     - ReactNativeDependencies
-  - GoogleDataTransport (10.1.1):
-    - nanopb (~> 3.30910.0)
-    - PromisesObjC (~> 2.4)
-  - GoogleMLKit/BarcodeScanning (9.0.0):
-    - GoogleMLKit/MLKitCore
-    - MLKitBarcodeScanning (~> 8.0.0)
-  - GoogleMLKit/MLKitCore (9.0.0):
-    - MLKitCommon (~> 14.0.0)
-  - GoogleToolboxForMac/Defines (4.2.1)
-  - GoogleToolboxForMac/Logger (4.2.1):
-    - GoogleToolboxForMac/Defines (= 4.2.1)
-  - "GoogleToolboxForMac/NSData+zlib (4.2.1)":
-    - GoogleToolboxForMac/Defines (= 4.2.1)
-  - GoogleUtilities/Environment (8.1.3):
-    - GoogleUtilities/Privacy
-  - GoogleUtilities/Logger (8.1.3):
-    - GoogleUtilities/Environment
-    - GoogleUtilities/Privacy
-  - GoogleUtilities/Privacy (8.1.3)
-  - GoogleUtilities/UserDefaults (8.1.3):
-    - GoogleUtilities/Logger
-    - GoogleUtilities/Privacy
-  - GTMSessionFetcher/Core (3.5.0)
   - hermes-engine (250829098.0.17):
     - hermes-engine/Pre-built (= 250829098.0.17)
   - hermes-engine/Pre-built (250829098.0.17)
-  - MLImage (1.0.0-beta8)
-  - MLKitBarcodeScanning (8.0.0):
-    - MLKitCommon (~> 14.0)
-    - MLKitVision (~> 10.0)
-  - MLKitCommon (14.0.0):
-    - GoogleDataTransport (~> 10.0)
-    - GoogleToolboxForMac/Logger (< 5.0, >= 4.2.1)
-    - "GoogleToolboxForMac/NSData+zlib (< 5.0, >= 4.2.1)"
-    - GoogleUtilities/Logger (~> 8.0)
-    - GoogleUtilities/UserDefaults (~> 8.0)
-    - GTMSessionFetcher/Core (< 4.0, >= 3.3.2)
-  - MLKitVision (10.0.0):
-    - GoogleToolboxForMac/Logger (< 5.0, >= 4.2.1)
-    - "GoogleToolboxForMac/NSData+zlib (< 5.0, >= 4.2.1)"
-    - GTMSessionFetcher/Core (< 4.0, >= 3.3.2)
-    - MLImage (= 1.0.0-beta8)
-    - MLKitCommon (~> 14.0)
-  - nanopb (3.30910.0):
-    - nanopb/decode (= 3.30910.0)
-    - nanopb/encode (= 3.30910.0)
-  - nanopb/decode (3.30910.0)
-  - nanopb/encode (3.30910.0)
   - NitroImage (0.15.2):
     - hermes-engine
     - NitroModules
@@ -150,7 +105,6 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - PromisesObjC (2.4.1)
   - RCT-Folly (2024.11.18.00):
     - RCT-Folly/Default (= 2024.11.18.00)
     - ReactNativeDependencies
@@ -2346,33 +2300,6 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - VisionCameraBarcodeScanner (5.2.3):
-    - GoogleMLKit/BarcodeScanning (= 9.0.0)
-    - hermes-engine
-    - NitroImage
-    - NitroModules
-    - RCTRequired
-    - RCTTypeSafety
-    - React-bridging
-    - React-callinvoker
-    - React-Core
-    - React-Core-prebuilt
-    - React-debug
-    - React-Fabric
-    - React-featureflags
-    - React-graphics
-    - React-ImageManager
-    - React-jsi
-    - React-NativeModulesApple
-    - React-RCTFabric
-    - React-renderercss
-    - React-rendererdebug
-    - React-utils
-    - ReactCodegen
-    - ReactCommon/turbomodule/core
-    - ReactNativeDependencies
-    - VisionCamera
-    - Yoga
   - Yoga (0.0.0):
     - React-Core-prebuilt
 
@@ -2481,22 +2408,7 @@ DEPENDENCIES:
   - RNWorklets (from `../node_modules/react-native-worklets`)
   - SocketRocket (from `build/rndeps-facades/SocketRocket`)
   - VisionCamera (from `../node_modules/react-native-vision-camera`)
-  - VisionCameraBarcodeScanner (from `../node_modules/react-native-vision-camera-barcode-scanner`)
   - Yoga (from `build/rncore-facades/Yoga`)
-
-SPEC REPOS:
-  trunk:
-    - GoogleDataTransport
-    - GoogleMLKit
-    - GoogleToolboxForMac
-    - GoogleUtilities
-    - GTMSessionFetcher
-    - MLImage
-    - MLKitBarcodeScanning
-    - MLKitCommon
-    - MLKitVision
-    - nanopb
-    - PromisesObjC
 
 EXTERNAL SOURCES:
   airlink-transport:
@@ -2706,8 +2618,6 @@ EXTERNAL SOURCES:
     :path: build/rndeps-facades/SocketRocket
   VisionCamera:
     :path: "../node_modules/react-native-vision-camera"
-  VisionCameraBarcodeScanner:
-    :path: "../node_modules/react-native-vision-camera-barcode-scanner"
   Yoga:
     :path: build/rncore-facades/Yoga
 
@@ -2719,21 +2629,10 @@ SPEC CHECKSUMS:
   FBLazyVector: e08a27053b503eeb756ea4bd75d570d2f2522a1b
   fmt: ba0886e864ebb21d14c98b2e12e164b8002f5b93
   glog: 3cf7cb46f743c4bc758ae3e6d9c15bd1b4cfd6d4
-  GoogleDataTransport: a24e58982ab3ba2f64d79613e027fe7f57e88539
-  GoogleMLKit: b1eee21a41c57704fe72483b15c85cb2c0cd7444
-  GoogleToolboxForMac: d1a2cbf009c453f4d6ded37c105e2f67a32206d8
-  GoogleUtilities: 4e0c2ad9fa0d0d18b5c4df8bf57b461cba35b0bb
-  GTMSessionFetcher: 5aea5ba6bd522a239e236100971f10cb71b96ab6
   hermes-engine: f950618e994e43d007f013c66a7666906b11ed29
-  MLImage: 0de5c6c2bf9e93b80ef752e2797f0836f03b58c0
-  MLKitBarcodeScanning: 39de223e7b1b8a8fbf10816a536dd292d8a39343
-  MLKitCommon: 47d47b50a031d00db62f1b0efe5a1d8b09a3b2e6
-  MLKitVision: 39a5a812db83c4a0794445088e567f3631c11961
-  nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   NitroImage: bb0b6d44556ba085e2c472451056bd5fc13e00db
   NitroModules: b4d92f95f7e70027935b09736d7a589181bc0912
   op-sqlite: 33615442b87eb19bf50508e56282c53ec273144f
-  PromisesObjC: 752c3227f599e3467650e47ea36f433eeb10c273
   RCT-Folly: 82921e585c0400eda46fac1068297aa9dfb035e4
   RCTDeprecation: 5cc865306ce4974b7a57ddbc575fd1f3fef41957
   RCTRequired: ea6f2c41f2670961ce9a48a4bf17a190dd53e493
@@ -2826,7 +2725,6 @@ SPEC CHECKSUMS:
   RNWorklets: f4d00e95073078710265b9875923514e54f0b59f
   SocketRocket: 37aec555668fb852ec12e3c0de59a86ca58f0871
   VisionCamera: 1b76ec326db3fb65e3a840a12383144a5c374db2
-  VisionCameraBarcodeScanner: 53852ad3d06ec9828e8eff641980ac6a59786028
   Yoga: d1c536142c5ff8ec8cd856ab2a7c227a1d875c8e
 
 PODFILE CHECKSUM: 882b9ea00d911e31a1e876a3ae36b755892402c4

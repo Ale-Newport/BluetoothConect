@@ -81,6 +81,23 @@ internal object BleTuning {
     const val L2CAP_ACCEPT_GRACE_MS: Long = 4_000
 
     /**
+     * How long a subscribed peer that has NOT yet read our identity is held
+     * before its link opens on GATT.
+     *
+     * This exists for one peer in particular: an iOS central subscribes first
+     * and reads the identity characteristic immediately afterwards, so at the
+     * moment it subscribes there is no way to tell it apart from a peer that
+     * will never upgrade. The read follows within a few milliseconds on a live
+     * connection, so this only has to cover an ATT round trip and a little
+     * scheduling - it is not a guess at how long an upgrade takes, which is
+     * what [L2CAP_ACCEPT_GRACE_MS] is for.
+     *
+     * It is the delay every incoming link from a peer with no identity
+     * characteristic pays exactly once, which is why it is this short.
+     */
+    const val IDENTITY_READ_GRACE_MS: Long = 700
+
+    /**
      * How long an incoming GATT connection may sit without subscribing to our
      * TX characteristic before we drop it. Anything that connects and stays
      * silent is not an AirLink peer - or is one that failed halfway - and it is

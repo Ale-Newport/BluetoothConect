@@ -99,116 +99,102 @@ internal object BleWire {
     // -- The advertisement ----------------------------------------------------
 
     /**
-     * Manufacturer identifier used for the AirLink advertisement blob.
+     * THE ADVERTISEMENT IS SERVICE DATA HOLDING THE RAW TOKEN, AND NOTHING ELSE.
      *
-     * 0xFFFF is the Bluetooth SIG's reserved "internal and interoperability
-     * test" company identifier: it belongs to nobody, so anybody may use it and
-     * anybody may collide with it. That is acceptable precisely because the
-     * blob is treated as untrusted hint data - a malformed or foreign blob
-     * yields an empty token and nothing else changes. If AirLink is ever
-     * assigned a real Company Identifier, this constant is the only line that
-     * changes on Android.
+     * This layout is dictated by CoreBluetooth, and getting it wrong costs the
+     * headline feature. An iOS central reads a peer's token out of
+     * `CBAdvertisementDataServiceDataKey[serviceUUID]` and base64s **the whole
+     * value** as the token - it does not parse a header, because iOS has no way
+     * to publish one of its own to parse against. So a version byte or a length
+     * byte in front of the token would not be skipped by an iPhone; it would be
+     * folded into the token, and every iPhone would fail to recognise every
+     * Android friend it has ever paired with. The bytes here are exactly the
+     * token the protocol layer handed down.
+     *
+     * WHY NOT MANUFACTURER DATA. An iOS advertiser cannot publish it and an iOS
+     * central does not look for it, so it only ever works Android-to-Android -
+     * and the one combination this transport exists for is the other one.
+     *
+     * THE BUDGET, and why the opt-in display name is not up here with it. A
+     * legacy advertisement is 31 bytes and its scan response is another 31:
+     *
+     *   advertisement    3  flags, inserted by the controller when connectable
+     *                   18  the 128-bit service UUID (2 header + 16), which MUST
+     *                       be here: it is what every scan filter matches on,
+     *                       and a filter is mandatory for a background iOS scan
+     *                   --
+     *                   10  spare
+     *
+     *   scan response   18  service-data header (2 + the same 16-byte UUID)
+     *                   --
+     *                   13  spare, and that is the whole token budget
+     *
+     * A second AD structure for a name costs two bytes of header before a
+     * single character, and neither 10 nor 13 bytes leaves room for a name
+     * worth showing. Android also cannot broadcast an *arbitrary* name in the
+     * first place: `AdvertiseData.setIncludeDeviceName` publishes the system
+     * Bluetooth name ("Sam's Pixel"), a durable identifier the user never
+     * agreed to hand out, so it stays off. The display name therefore travels
+     * in the identity characteristic, which both platforms read on connect and
+     * which has room for a real name. An iPhone advertises its name in the BLE
+     * local name as well, because CoreBluetooth allots that its own space - so
+     * a scanner looks there too, and finds it only for iOS peers.
      */
-    const val MANUFACTURER_ID: Int = 0xFFFF
-
-    /** Format byte, so a future layout change is detectable rather than misparsed. */
-    private const val ADVERTISEMENT_VERSION: Byte = 1
+    const val MAX_ADVERTISED_TOKEN_BYTES: Int = 13
 
     /**
-     * A legacy BLE advertisement is 31 bytes and the scan response is another
-     * 31. The 128-bit service UUID alone costs 18 of the first budget (2 header
-     * + 16 UUID) on top of the 3-byte flags structure the controller inserts
-     * for a connectable advertisement, which leaves 10 bytes - too tight to
-     * hold a token and a name and still have room to grow.
-     *
-     * So the service UUID goes in the advertisement (that is what a scan filter
-     * matches on, and it MUST be there) and everything else goes in the scan
-     * response. Cost: a scan-request/scan-response round trip per sighting,
-     * which is why the advertisement is left scannable.
+     * @throws IllegalArgumentException when the token will not fit the scan
+     *   response. Never truncates: a truncated token matches nobody, and a
+     *   loudly rejected `startAdvertising` is far better than a phone that is
+     *   mysteriously unrecognisable to its own friends.
      */
-    private const val SCAN_RESPONSE_BUDGET: Int = 31
-
-    /** 1 byte length + 1 byte AD type + 2 bytes little-endian company identifier. */
-    private const val MANUFACTURER_AD_OVERHEAD: Int = 4
-
-    /** Payload bytes available to us inside the manufacturer-data structure. */
-    const val ADVERTISEMENT_PAYLOAD_BUDGET: Int = SCAN_RESPONSE_BUDGET - MANUFACTURER_AD_OVERHEAD
-
-    /**
-     * The rotating advertisement token, capped. The protocol uses 6 bytes; the
-     * cap exists so a caller cannot quietly overflow the advertisement budget.
-     */
-    const val MAX_TOKEN_BYTES: Int = 16
-
-    /**
-     * What we broadcast, and what we read back off a peer's advertisement.
-     *
-     *      0        1        2                 2 + tokenLength
-     *      +--------+--------+=================+==============+
-     *      | version| tokLen |      token      | name (UTF-8) |
-     *      +--------+--------+=================+==============+
-     *
-     * The name runs to the end of the structure - there is no second length,
-     * because there is nothing after it and a byte of budget is a byte of name.
-     *
-     * WHY THE NAME IS HERE AT ALL. Android cannot put an arbitrary string in a
-     * BLE local name: `AdvertiseData.setIncludeDeviceName` broadcasts the
-     * *system* Bluetooth name ("Sam's Pixel"), which is a durable identifier
-     * the user never agreed to publish, and AirLink promises that nothing on
-     * the wire is derived from the device. So the opt-in display name travels
-     * in our own blob, and `setIncludeDeviceName` is never enabled. iOS, which
-     * has the opposite restriction - it may advertise a local name and may not
-     * advertise manufacturer data - publishes its name as the BLE local name
-     * instead, so a scanner has to look in both places. It does.
-     */
-    class AdvertisementPayload(val token: ByteArray, val name: String)
-
-    /**
-     * @throws IllegalArgumentException when the token or name cannot fit. Never
-     *   truncates: a truncated token is a token that matches nobody, and
-     *   failing at `startAdvertising` is a bug the developer sees immediately
-     *   rather than a phone that is mysteriously invisible.
-     */
-    fun encodeAdvertisement(token: ByteArray, name: String): ByteArray {
-        require(token.size <= MAX_TOKEN_BYTES) {
-            "advertisement token of ${token.size} bytes exceeds the $MAX_TOKEN_BYTES byte limit"
+    fun encodeAdvertisedToken(token: ByteArray): ByteArray {
+        require(token.size in 1..MAX_ADVERTISED_TOKEN_BYTES) {
+            "advertisement token of ${token.size} bytes does not fit the " +
+                "$MAX_ADVERTISED_TOKEN_BYTES byte scan-response budget"
         }
-        val nameBytes = name.encodeToByteArray()
-        val total = 2 + token.size + nameBytes.size
-        require(total <= ADVERTISEMENT_PAYLOAD_BUDGET) {
-            "advertisement payload of $total bytes exceeds the $ADVERTISEMENT_PAYLOAD_BUDGET byte scan-response budget"
-        }
-        val out = ByteArray(total)
-        out[0] = ADVERTISEMENT_VERSION
-        out[1] = token.size.toByte()
-        token.copyInto(out, 2)
-        nameBytes.copyInto(out, 2 + token.size)
-        return out
+        // Copied so a caller reusing its buffer cannot change what we broadcast.
+        return token.copyOf()
     }
 
     /**
-     * Parses a peer's blob. Every field is attacker-controlled, so this returns
-     * an empty payload rather than throwing for anything it does not like: a
-     * neighbouring app using 0xFFFF for its own purposes must cost us a
-     * discarded scan result, never an exception on the scan callback thread.
+     * Reads a peer's token back off its advertisement.
+     *
+     * Every byte is attacker-controlled - anything may put data under a service
+     * UUID it has learned - so this is total: an oversized or empty value costs
+     * a discarded token, never an exception on the scan callback thread. The
+     * ceiling is the identity record's, not the advertisement's, so a peer
+     * using a future transport with a bigger budget still parses.
      */
-    fun decodeAdvertisement(raw: ByteArray?): AdvertisementPayload {
-        val empty = AdvertisementPayload(ByteArray(0), "")
-        if (raw == null || raw.size < 2) return empty
-        if (raw[0] != ADVERTISEMENT_VERSION) return empty
-        val tokenLength = raw[1].toInt() and 0xFF
-        if (tokenLength > MAX_TOKEN_BYTES || 2 + tokenLength > raw.size) return empty
-        val token = raw.copyOfRange(2, 2 + tokenLength)
-        val name = decodeName(raw, 2 + tokenLength, raw.size)
-        return AdvertisementPayload(token, name)
+    fun decodeAdvertisedToken(raw: ByteArray?): ByteArray {
+        if (raw == null || raw.isEmpty() || raw.size > MAX_IDENTITY_TOKEN_BYTES) return ByteArray(0)
+        return raw.copyOf()
     }
 
     // -- The identity characteristic ------------------------------------------
 
-    /** Format byte for the identity record; independent of the advertisement's. */
+    /** Format byte for the identity record. */
     private const val IDENTITY_VERSION: Byte = 1
 
     private const val IDENTITY_FLAG_HAS_PSM: Int = 1 shl 0
+
+    /** version + flags + PSM(2) + token length. */
+    private const val IDENTITY_HEADER_BYTES: Int = 5
+
+    /**
+     * Every bound below is shared with `ios/Transport/BleIdentityRecord.swift`
+     * and must stay identical to it. A record longer than the ceiling, or a
+     * token longer than the cap, is rejected outright by the iOS decoder - so a
+     * mismatch here does not degrade, it silently removes the L2CAP upgrade and
+     * the display name in one direction only, which is the hardest kind of bug
+     * to find with two phones on a table.
+     *
+     * 128 bytes also keeps the whole record inside one ATT response at any MTU
+     * worth having, so the common case is a single read rather than a series of
+     * blob reads.
+     */
+    const val MAX_IDENTITY_BYTES: Int = 128
+    const val MAX_IDENTITY_TOKEN_BYTES: Int = 32
 
     /**
      * Hard ceiling on a display name, in UTF-8 bytes, wherever it appears. Long
@@ -241,26 +227,33 @@ internal object BleWire {
     }
 
     fun encodeIdentity(psm: Int, token: ByteArray, name: String): ByteArray {
-        val safeToken = if (token.size > MAX_TOKEN_BYTES) ByteArray(0) else token
-        val nameBytes = name.encodeToByteArray().let {
-            // Truncating a name at a byte boundary can split a UTF-8 sequence,
-            // so drop it entirely rather than emit invalid UTF-8 at a peer.
-            if (it.size > MAX_NAME_BYTES) ByteArray(0) else it
-        }
-        val out = ByteArray(5 + safeToken.size + nameBytes.size)
+        // A token we cannot express is dropped rather than truncated: half a
+        // token is not a shorter token, it is a token that matches the wrong
+        // person. The protocol's is six bytes, so this never fires in practice.
+        val safeToken = if (token.size > MAX_IDENTITY_TOKEN_BYTES) ByteArray(0) else token
+        val used = IDENTITY_HEADER_BYTES + safeToken.size
+        val nameBytes = trimUtf8(name, minOf(MAX_NAME_BYTES, MAX_IDENTITY_BYTES - used))
+
+        val out = ByteArray(used + nameBytes.size)
         out[0] = IDENTITY_VERSION
         out[1] = if (psm in 1..0xFFFF) IDENTITY_FLAG_HAS_PSM.toByte() else 0
         out[2] = ((psm ushr 8) and 0xFF).toByte()
         out[3] = (psm and 0xFF).toByte()
         out[4] = safeToken.size.toByte()
-        safeToken.copyInto(out, 5)
-        nameBytes.copyInto(out, 5 + safeToken.size)
+        safeToken.copyInto(out, IDENTITY_HEADER_BYTES)
+        nameBytes.copyInto(out, used)
         return out
     }
 
-    /** Bounded and total, for the same reason as [decodeAdvertisement]. */
+    /**
+     * Bounded and total: a peer decides what comes back from this read, so
+     * anything unexpected yields an empty record - no upgrade and no name -
+     * rather than an exception on a GATT callback thread.
+     */
     fun decodeIdentity(raw: ByteArray?): IdentityRecord {
-        if (raw == null || raw.size < 5) return IdentityRecord.EMPTY
+        if (raw == null || raw.size < IDENTITY_HEADER_BYTES || raw.size > MAX_IDENTITY_BYTES) {
+            return IdentityRecord.EMPTY
+        }
         if (raw[0] != IDENTITY_VERSION) return IdentityRecord.EMPTY
         val flags = raw[1].toInt() and 0xFF
         val psm = if (flags and IDENTITY_FLAG_HAS_PSM != 0) {
@@ -269,9 +262,11 @@ internal object BleWire {
             0
         }
         val tokenLength = raw[4].toInt() and 0xFF
-        if (tokenLength > MAX_TOKEN_BYTES || 5 + tokenLength > raw.size) return IdentityRecord.EMPTY
-        val token = raw.copyOfRange(5, 5 + tokenLength)
-        val name = decodeName(raw, 5 + tokenLength, raw.size)
+        if (tokenLength > MAX_IDENTITY_TOKEN_BYTES || IDENTITY_HEADER_BYTES + tokenLength > raw.size) {
+            return IdentityRecord.EMPTY
+        }
+        val token = raw.copyOfRange(IDENTITY_HEADER_BYTES, IDENTITY_HEADER_BYTES + tokenLength)
+        val name = decodeName(raw, IDENTITY_HEADER_BYTES + tokenLength, raw.size)
         return IdentityRecord(psm, token, name)
     }
 
@@ -336,6 +331,34 @@ internal object BleWire {
     }
 
     // -- internals ------------------------------------------------------------
+
+    /**
+     * Encodes as much of [text] as fits in [limit] UTF-8 bytes, dropping WHOLE
+     * characters from the end.
+     *
+     * Cutting UTF-8 at a byte boundary splits multi-byte sequences, and the
+     * peer that decodes it sees replacement characters - which looks to the
+     * person reading it like a bug in the app rather than like a shortened
+     * name. Surrogate pairs are stepped over as one unit for the same reason,
+     * so an emoji is either present or absent, never half of one. This mirrors
+     * the same loop in `ios/Transport/BleIdentityRecord.swift`.
+     */
+    private fun trimUtf8(text: String, limit: Int): ByteArray {
+        if (limit <= 0 || text.isEmpty()) return ByteArray(0)
+        val whole = text.encodeToByteArray()
+        if (whole.size <= limit) return whole
+
+        var end = text.length
+        while (end > 0) {
+            // A low surrogate is never a character on its own.
+            val step = if (end >= 2 && text[end - 1].isLowSurrogate() && text[end - 2].isHighSurrogate()) 2 else 1
+            end -= step
+            if (end == 0) break
+            val candidate = text.substring(0, end).encodeToByteArray()
+            if (candidate.size <= limit) return candidate
+        }
+        return ByteArray(0)
+    }
 
     private fun decodeName(raw: ByteArray, from: Int, to: Int): String {
         if (from >= to) return ""

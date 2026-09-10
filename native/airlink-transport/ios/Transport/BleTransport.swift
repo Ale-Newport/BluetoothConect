@@ -68,6 +68,14 @@ final class BleTransport: NSObject, AirLinkTransport {
     /// queue is wedged; the link is dead even though nothing has said so.
     private static let reliableWriteTimeoutMs = 15_000
     private static let housekeepingIntervalMs = 2_000
+    /// Consecutive housekeeping ticks a send queue may make no progress at all
+    /// before it is treated as wedged. Ticks rather than seconds so that time
+    /// spent suspended - during which nothing could have moved anyway - does not
+    /// count against a link that is perfectly healthy when the app comes back.
+    private static let stallTicksBeforeGivingUp = 10
+    /// Ceiling on the CBPeripheral cache before entries nothing refers to are
+    /// dropped. Large enough to hold a crowded room, small enough to be a bound.
+    private static let maxCachedPeripherals = 64
     /// How long an L2CAP channel with no link yet is held before it is dropped.
     private static let unmatchedChannelTtlMs: Double = 10_000
     private static let maxUnmatchedChannels = 4
@@ -490,10 +498,33 @@ final class BleTransport: NSObject, AirLinkTransport {
                 return
             }
 
-            // Already connected to this peer as a central: hand back the link we
-            // have rather than building a second GATT client to the same device.
-            if let existingId = linkIdByPeripheral[identifier], let existing = links[existingId], existing.state == .connected {
-                finish(.success(existing.id))
+            /*
+             * One link per peripheral, always.
+             *
+             * `linkIdByPeripheral` is how every CBPeripheral delegate callback
+             * finds its link, and it holds exactly one entry per device. A
+             * second link to the same peripheral would therefore overwrite the
+             * first one's route home: whichever link lost the race would go
+             * deaf - no notifications, no write acknowledgements - and when it
+             * eventually timed out its teardown would delete the *survivor's*
+             * entry and cancel the connection out from under it.
+             *
+             * So a connect() aimed at a peer we are already talking to hands
+             * back the live link, and one aimed at a peer we are still dialling
+             * joins that attempt rather than starting a competing one.
+             */
+            if let existingId = linkIdByPeripheral[identifier], let existing = links[existingId] {
+                if existing.state == .connected {
+                    finish(.success(existing.id))
+                    return
+                }
+                let alreadyWaiting = existing.connectCompletion
+                existing.connectCompletion = { result in
+                    alreadyWaiting?(result)
+                    finish(result)
+                }
+                // The attempt in flight owns the timeout; a second caller's
+                // deadline cannot shorten a dial that is already under way.
                 return
             }
 
@@ -579,6 +610,7 @@ final class BleTransport: NSObject, AirLinkTransport {
                 // onDatagramSettled when a datagram is really in the stream.
                 // Accounting there rather than here is what keeps a datagram
                 // that falls back to GATT from being counted on both paths.
+                link.fastPathInFlight += 1
                 session.send(BleOutboundDatagram(data: data, reliable: reliable, completion: deliver))
                 return
             }
@@ -623,11 +655,17 @@ final class BleTransport: NSObject, AirLinkTransport {
     /// on every send and on every "I can take more" callback; getting either of
     /// those wrong is how a BLE transport silently loses data.
     private func pumpOutbound(_ link: BleLink) {
+        let queuedBefore = link.outbound.count
         switch link.role {
         case .central:
             pumpCentralOutbound(link)
         case .peripheral:
             pumpPeripheralOutbound(link)
+        }
+        // Any movement at all restarts the stall clock; a queue that is empty
+        // has nothing to stall on. See BleLink.outboundStallTicks.
+        if link.outbound.isEmpty || link.outbound.count != queuedBefore {
+            link.outboundStallTicks = 0
         }
         // The fast path is only adopted once the slow one has drained, so a
         // datagram already handed to ATT cannot be overtaken by one sent down
@@ -763,10 +801,17 @@ final class BleTransport: NSObject, AirLinkTransport {
         events?.mtuChanged(linkId: link.id, maxDatagramSize: size)
     }
 
+    /// A link that never opened. `notify` is unconditional: every link that
+    /// reaches this function was announced to JavaScript as `connecting` the
+    /// moment it was created - by connect() or by willRestoreState - so it owes
+    /// a terminal state as well. Rejecting the connect promise is a different
+    /// channel and does not discharge that debt; a listener watching only
+    /// linkState would otherwise be left with a link stuck in `connecting` for
+    /// the life of the process.
     private func failConnect(_ link: BleLink, error: Error) {
         let completion = link.connectCompletion
         link.connectCompletion = nil
-        closeLink(link, state: .failed, reason: (error as? AirLinkError)?.message ?? error.localizedDescription, notify: completion == nil)
+        closeLink(link, state: .failed, reason: (error as? AirLinkError)?.message ?? error.localizedDescription, notify: true)
         completion?(.failure(error))
     }
 
@@ -801,11 +846,22 @@ final class BleTransport: NSObject, AirLinkTransport {
             item.finish(.failure(AirLinkError.failed("Link closed: \(reason)")))
         }
 
+        /*
+         * Only ever tear down what this link still owns.
+         *
+         * The routing maps hold one entry per device, so a closing link must
+         * check that the entry is still pointing at *it* before deleting it -
+         * and must not cancel a physical connection that a different link is
+         * now using. Without that check a stale link's teardown silently
+         * unroutes and hangs up on the live one.
+         */
         switch link.role {
         case .central:
             if let peripheral = link.peripheral {
-                linkIdByPeripheral.removeValue(forKey: peripheral.identifier)
-                if let manager = centralManager, manager.state == .poweredOn,
+                let owner = linkIdByPeripheral[peripheral.identifier]
+                if owner == link.id { linkIdByPeripheral.removeValue(forKey: peripheral.identifier) }
+                if owner == nil || owner == link.id,
+                   let manager = centralManager, manager.state == .poweredOn,
                    peripheral.state == .connected || peripheral.state == .connecting {
                     manager.cancelPeripheralConnection(peripheral)
                 }
@@ -816,7 +872,7 @@ final class BleTransport: NSObject, AirLinkTransport {
             // the whole of what "disconnect" can mean on this side; anything the
             // peer keeps writing lands with no link to route it to and is
             // discarded, which is the honest outcome rather than a pretend one.
-            if let central = link.subscribedCentral {
+            if let central = link.subscribedCentral, linkIdByCentral[central.identifier] == link.id {
                 linkIdByCentral.removeValue(forKey: central.identifier)
             }
         }
@@ -873,6 +929,9 @@ final class BleTransport: NSObject, AirLinkTransport {
         }
         session.onDatagramSettled = { [weak self, weak link] bytes, written in
             guard let self, let link else { return }
+            // Every settle is progress on the channel, whichever way it went.
+            link.fastPathInFlight = max(0, link.fastPathInFlight - 1)
+            link.fastPathStallTicks = 0
             if written {
                 self.accountSent(link, bytes: bytes)
             } else {
@@ -904,6 +963,7 @@ final class BleTransport: NSObject, AirLinkTransport {
         link.l2capTimer?.cancel()
         link.l2capTimer = nil
         link.fastPath = .unavailable
+        link.fastPathStallTicks = 0
 
         if let session = link.l2cap {
             // Callbacks stay attached: handleFastPathClosed is what puts
@@ -929,6 +989,11 @@ final class BleTransport: NSObject, AirLinkTransport {
         link.l2capTimer?.cancel()
         link.l2capTimer = nil
         link.fastPath = .unavailable
+        // The session delivers every settle before it delivers onClosed, and
+        // stops delivering afterwards, so nothing is outstanding on it now:
+        // whatever it did not settle is in `unsent`, and this function owns it.
+        link.fastPathInFlight = 0
+        link.fastPathStallTicks = 0
 
         // Back onto the GATT queue, in order, ahead of anything queued since.
         // These provably never reached the peer, so this cannot duplicate.
@@ -1006,7 +1071,49 @@ final class BleTransport: NSObject, AirLinkTransport {
             discard(channel: held.channel, why: "no link appeared for it in time")
         }
 
+        /*
+         * Advertising that failed to start is retried here, and nowhere else.
+         * peripheralManagerDidStartAdvertising is the only report of a failure
+         * and it is terminal - nothing re-arms it - so without this the app
+         * silently stops being findable while still reporting the transport as
+         * available. `broadcastName` is the flag: applyAdvertisingState sets it
+         * on the way in and the failure path clears it again.
+         */
+        if wantsAdvertising, serviceAdded, broadcastName == nil, peripheralManager?.state == .poweredOn {
+            applyAdvertisingState()
+        }
+
+        pruneKnownPeripherals()
+
         for link in Array(links.values) {
+            /*
+             * Stalls. Every backpressure callback in this file is a promise the
+             * OS makes; when a peer wedges, one of them can simply never
+             * arrive, and a queued datagram's promise would then never settle.
+             * The GATT queue is the link's only path once the fast path is
+             * gone, so a stalled one is a dead link. A stalled L2CAP channel is
+             * not: dropping back to GATT re-queues everything the channel never
+             * wrote and the session above sees only a smaller MTU.
+             */
+            if !link.outbound.isEmpty {
+                link.outboundStallTicks += 1
+                if link.outboundStallTicks >= Self.stallTicksBeforeGivingUp {
+                    closeLink(link, state: .failed, reason: "peer stopped accepting datagrams", notify: true)
+                    continue
+                }
+            } else {
+                link.outboundStallTicks = 0
+            }
+
+            if link.fastPathInFlight > 0 {
+                link.fastPathStallTicks += 1
+                if link.fastPathStallTicks >= Self.stallTicksBeforeGivingUp {
+                    abandonFastPath(link, reason: "L2CAP channel stopped draining")
+                }
+            } else {
+                link.fastPathStallTicks = 0
+            }
+
             // RSSI, and a re-read of the negotiated write length: iOS raises the
             // ATT MTU shortly after connecting and there is no callback for it,
             // so the only honest way to report a change is to look again.
@@ -1025,6 +1132,24 @@ final class BleTransport: NSObject, AirLinkTransport {
             link.throughputWindowBytes = 0
             link.lastThroughputSample = now
             publishMetrics(link)
+        }
+    }
+
+    /**
+     * Keeps the CBPeripheral cache from being the one map with no ceiling.
+     *
+     * `discovered` expires, `links` close, but every peripheral ever seen used
+     * to sit here until stop(). Nothing is lost by dropping a peripheral that
+     * no discovery record and no link refers to any more: connect() falls back
+     * to retrievePeripherals(withIdentifiers:), which asks CoreBluetooth for the
+     * same object.
+     */
+    private func pruneKnownPeripherals() {
+        guard knownPeripherals.count > Self.maxCachedPeripherals else { return }
+        for identifier in Array(knownPeripherals.keys) {
+            guard discovered[identifier.uuidString] == nil,
+                  linkIdByPeripheral[identifier] == nil else { continue }
+            knownPeripherals.removeValue(forKey: identifier)
         }
     }
 
@@ -1441,6 +1566,10 @@ extension BleTransport: CBPeripheralDelegate {
     /// Swift 3 and does not exist to be implemented.
     func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
         guard let link = activeLink(forPeripheral: peripheral.identifier) else {
+            // The link went away while the channel was opening. The streams are
+            // ours now whether we want them or not, and only closing them hands
+            // the file descriptors back.
+            if let channel { discard(channel: channel, why: "its link closed while the channel was opening") }
             return
         }
         guard let channel, error == nil else {
@@ -1567,6 +1696,11 @@ extension BleTransport: CBPeripheralManagerDelegate {
 
     func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
         if let error {
+            // Clearing what applyAdvertisingState optimistically recorded is
+            // what lets the housekeeping tick notice and try again. Left set, a
+            // single transient failure would make the device invisible for the
+            // rest of the session while still claiming to be advertising.
+            broadcastName = nil
             log("error", "advertising failed: \(error.localizedDescription)")
         } else if advertisedName.isEmpty {
             log("info", "advertising the AirLink service, no display name")
@@ -1740,6 +1874,12 @@ extension BleTransport: CBPeripheralManagerDelegate {
         guard unmatchedInboundChannels.count < Self.maxUnmatchedChannels else {
             discard(channel: channel, why: "too many unmatched L2CAP channels")
             return
+        }
+        // One held channel per peer. A second one from the same peer replaces
+        // the first, and the first has to be closed on the way out - dropping
+        // the reference alone leaks both of its streams.
+        if let displaced = unmatchedInboundChannels.removeValue(forKey: peer.identifier) {
+            discard(channel: displaced.channel, why: "the same peer opened another channel")
         }
         unmatchedInboundChannels[peer.identifier] = (
             channel, CFAbsoluteTimeGetCurrent() + Self.unmatchedChannelTtlMs / 1000

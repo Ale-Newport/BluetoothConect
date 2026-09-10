@@ -236,10 +236,26 @@ export class TransferCenter {
     binding.protocol.accept(transferId, store, resume ?? undefined);
   }
 
+  /**
+   * The user said no.
+   *
+   * With a live session the peer is told and its own record ends; with the link
+   * already gone the answer is still honoured locally, because a user who
+   * pressed Decline must never come back to find the offer still sitting there
+   * waiting for them. The peer's copy expires on its own offer clock.
+   */
   decline(transferId: string): void {
     const record = this.records.get(transferId);
     if (!record) return;
-    this.bindings.get(record.peerKey)?.protocol.decline(transferId);
+    const binding = this.bindings.get(record.peerKey);
+    if (binding) {
+      binding.protocol.decline(transferId);
+      return;
+    }
+    // No failure text: the user declining is a decision, not something that
+    // went wrong, and the screens phrase it from the state alone.
+    this.finish(transferId, TransferState.DECLINED, null);
+    void this.releaseStores(transferId);
   }
 
   /** Stop a transfer, from either side, at any point. */

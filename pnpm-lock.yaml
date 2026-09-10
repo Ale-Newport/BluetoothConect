@@ -62,6 +62,9 @@ importers:
       '@shopify/react-native-skia':
         specifier: 2.11.2
         version: 2.11.2(7d85eb9ee98172aee95864b8a96d8e2d)
+      jsqr:
+        specifier: 1.4.0
+        version: 1.4.0
       react:
         specifier: 19.2.3
         version: 19.2.3
@@ -113,9 +116,6 @@ importers:
       react-native-vision-camera:
         specifier: 5.2.3
         version: 5.2.3(react-native-nitro-image@0.15.2(react-native-nitro-modules@0.37.1(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native-nitro-modules@0.37.1(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3)
-      react-native-vision-camera-barcode-scanner:
-        specifier: 5.2.3
-        version: 5.2.3(1e9b98e617b2102e67eac81d08f2c011)
       react-native-worklets:
         specifier: 0.12.2
         version: 0.12.2(@babel/core@7.29.7)(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3)
@@ -3195,6 +3195,9 @@ packages:
   jsonfile@4.0.0:
     resolution: {integrity: sha512-m6F1R3z8jjlf2imQHS2Qez5sjKWQzbuuhuJ/FKYFRZvPE3PuHcSMVZzfsLhGVOkfd20obL5SWEBew5ShlquNxg==}
 
+  jsqr@1.4.0:
+    resolution: {integrity: sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==}
+
   jsx-ast-utils@3.3.5:
     resolution: {integrity: sha512-ZZow9HBI5O6EPgSJLUb8n2NKgmVWTwCvHGwFuJlMjvLFqlGG6pjirPhtdsseaLZjSibD8eegzmYpUZwoIlj2cQ==}
     engines: {node: '>=4.0'}
@@ -3812,18 +3815,6 @@ packages:
     peerDependencies:
       react: '*'
       react-native: '*'
-
-  react-native-vision-camera-barcode-scanner@5.2.3:
-    resolution: {integrity: sha512-p8SyswRlr9Ty5gFcQ1qM8gmU8hKbHyRLyu9TKFMD7oUXsZDF93NKGvcr4Qdr16Z+AIj3HYA/fW1NgoeY+L353g==}
-    peerDependencies:
-      react: '*'
-      react-native: '*'
-      react-native-nitro-image: '*'
-      react-native-nitro-modules: '*'
-      react-native-vision-camera: '*'
-    peerDependenciesMeta:
-      react-native-nitro-modules:
-        optional: true
 
   react-native-vision-camera@5.2.3:
     resolution: {integrity: sha512-OHjgM8BPzxppTqbF1FEltj+fxvisj4xdghM7ypoT1p6cOe28HByhOJP1c7LkBiUiZuotbsdbQwGdJ8nU7ZvPzA==}
@@ -8388,6 +8379,8 @@ snapshots:
     optionalDependencies:
       graceful-fs: 4.2.11
 
+  jsqr@1.4.0: {}
+
   jsx-ast-utils@3.3.5:
     dependencies:
       array-includes: 3.1.9
@@ -9082,15 +9075,6 @@ snapshots:
     dependencies:
       react: 19.2.3
       react-native: 0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3)
-
-  react-native-vision-camera-barcode-scanner@5.2.3(1e9b98e617b2102e67eac81d08f2c011):
-    dependencies:
-      react: 19.2.3
-      react-native: 0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3)
-      react-native-nitro-image: 0.15.2(react-native-nitro-modules@0.37.1(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3)
-      react-native-vision-camera: 5.2.3(react-native-nitro-image@0.15.2(react-native-nitro-modules@0.37.1(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native-nitro-modules@0.37.1(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3)
-    optionalDependencies:
-      react-native-nitro-modules: 0.37.1(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3)
 
   react-native-vision-camera@5.2.3(react-native-nitro-image@0.15.2(react-native-nitro-modules@0.37.1(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native-nitro-modules@0.37.1(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3))(react-native@0.87.1(@babel/core@7.29.7)(@react-native-community/cli@20.2.0(typescript@6.0.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.3))(react@19.2.3):
     dependencies:

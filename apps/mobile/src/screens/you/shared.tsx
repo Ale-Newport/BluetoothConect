@@ -1,5 +1,17 @@
 import React from 'react';
-import { Clipboard, Modal, Pressable, ScrollView, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import {
+  Clipboard,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type StyleProp,
+  type TextStyle,
+  type ViewStyle,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PairingMethod, type TrustedPeer } from '@airlink/core';
 import { strings } from '@airlink/config';
@@ -7,10 +19,10 @@ import { Card, Divider, Label, haptic, useTheme } from '../../ui/index.js';
 import { local } from './localStrings.js';
 
 /**
- * Pieces shared by the five "You" screens.
+ * Pieces shared by the "You" screens.
  *
- * Everything here composes `ui/primitives` rather than replacing it. Two things
- * are built rather than imported, and both for a reason worth stating:
+ * Everything here composes `ui/primitives` rather than replacing it. Four things
+ * are built rather than imported, and each for a reason worth stating:
  *
  *  - `NavRow` exists because `ListRow` takes no `onLongPress` and sets no
  *    accessibility role or label on its pressable. Both are required here: the
@@ -18,6 +30,11 @@ import { local } from './localStrings.js';
  *    reachable by a screen reader.
  *  - `Sheet` and `PageModal` exist because the route map has no Privacy route
  *    and no per-friend action route, and the navigator is not ours to edit.
+ *  - `TextField` exists because the design system has no input at all, and
+ *    Settings has to let someone rename themselves.
+ *  - `KeyValue` exists for Developer Mode, the one screen allowed to show a raw
+ *    number - so it is deliberately NOT in `ui/primitives`, where a screen might
+ *    reach for it by accident.
  */
 
 // ---------------------------------------------------------------------------
@@ -130,6 +147,107 @@ export function Chevron(): React.JSX.Element {
     <Label variant="body" tone="tertiary">
       ›
     </Label>
+  );
+}
+
+/**
+ * A key and a raw value, side by side. Developer Mode only.
+ *
+ * The value is monospaced and selectable, because the whole point of this row is
+ * that somebody reads a session id off it and types it into a bug report at
+ * 35,000 feet.
+ */
+export function KeyValue({ label, value }: { label: string; value: string }): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <View
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel={`${label}: ${value}`}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: theme.spacing.md,
+        paddingVertical: theme.spacing.sm,
+        minHeight: 44,
+      }}
+    >
+      <Label variant="footnote" tone="secondary" style={{ flex: 1 }}>
+        {label}
+      </Label>
+      {/*
+        A raw Text rather than a Label: `Label` does not forward `selectable`,
+        and being able to long-press a session id and copy it is the entire
+        reason this row exists. Still styled only from theme tokens.
+      */}
+      <Text
+        selectable
+        style={[
+          theme.typography.mono as TextStyle,
+          { color: theme.colors.text, flex: 1.4, textAlign: 'right' },
+        ]}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+
+/**
+ * A single-line text field.
+ *
+ * `ui/primitives` has no input of any kind, so this is built here from the same
+ * tokens rather than being invented somewhere the rest of the app can see it. If
+ * a second screen ever needs an input, this is the shape to lift.
+ */
+export function TextField({
+  value,
+  onChangeText,
+  placeholder,
+  label,
+  maxLength,
+  autoFocus = false,
+  onSubmitEditing,
+}: {
+  value: string;
+  onChangeText: (next: string) => void;
+  placeholder: string;
+  label: string;
+  maxLength?: number;
+  autoFocus?: boolean;
+  onSubmitEditing?: () => void;
+}): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <TextInput
+      accessibilityLabel={label}
+      value={value}
+      onChangeText={onChangeText}
+      placeholder={placeholder}
+      placeholderTextColor={theme.colors.textTertiary}
+      autoCorrect={false}
+      autoCapitalize="words"
+      returnKeyType="done"
+      autoFocus={autoFocus}
+      {...(maxLength === undefined ? {} : { maxLength })}
+      {...(onSubmitEditing ? { onSubmitEditing } : {})}
+      style={[
+        theme.typography.body as TextStyle,
+        {
+          color: theme.colors.text,
+          backgroundColor: theme.colors.surfaceElevated,
+          borderRadius: theme.radius.md,
+          paddingHorizontal: theme.spacing.md,
+          // A finger needs 44pt whether it is tapping a button or an input.
+          minHeight: 48,
+          paddingVertical: theme.spacing.md,
+        },
+      ]}
+    />
   );
 }
 
@@ -305,6 +423,17 @@ export function formatSeen(at: number, now: number): string {
   return local.friends.seenOn(formatDate(at));
 }
 
+/** "2 hours ago", with no verb - the caller supplies one. */
+export function formatWhen(at: number | null, now: number): string {
+  if (at === null || !Number.isFinite(at) || at <= 0) return '';
+  const delta = now - at;
+  if (delta < MINUTE) return local.time.justNow;
+  if (delta < HOUR) return local.time.minutes(Math.floor(delta / MINUTE));
+  if (delta < DAY) return local.time.hours(Math.floor(delta / HOUR));
+  if (isYesterday(at, now)) return local.time.yesterday;
+  return formatDate(at);
+}
+
 export interface Verification {
   readonly label: string;
   readonly strength: string;
@@ -393,10 +522,32 @@ export function describeValue(value: unknown): string {
   return stringifyForBugReport(value);
 }
 
-function bytesToHex(bytes: Uint8Array): string {
+export function bytesToHex(bytes: Uint8Array): string {
   let out = '';
   for (const byte of bytes) out += byte.toString(16).padStart(2, '0');
   return out;
+}
+
+/** Developer Mode only: a byte count a human can read at a glance. */
+export function formatBytes(value: number | null): string {
+  if (value === null) return '—';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/** Developer Mode only. Sub-millisecond figures still matter on Wi-Fi. */
+export function formatMs(value: number | null): string {
+  if (value === null) return '—';
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`;
+}
+
+export function formatCount(value: number | null): string {
+  return value === null ? '—' : value.toLocaleString();
+}
+
+export function formatFlag(value: boolean | null): string {
+  return value === null ? '—' : value ? 'yes' : 'no';
 }
 
 /**

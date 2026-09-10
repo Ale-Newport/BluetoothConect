@@ -1,5 +1,5 @@
-import React from 'react';
-import { Linking, Platform, ScrollView, View } from 'react-native';
+import React, { useEffect } from 'react';
+import { AccessibilityInfo, Linking, Platform, ScrollView, View } from 'react-native';
 import { strings } from '@airlink/config';
 import { Button, Card, Gap, Label, StatusBanner, useTheme } from '../../ui/index.js';
 import { onboardingCopy } from './copy.js';
@@ -48,6 +48,21 @@ export function PermissionsStep({
 }): React.JSX.Element {
   const theme = useTheme();
   const cards = cardsFor(Platform.OS);
+
+  /**
+   * Say out loud that it did not work.
+   *
+   * The banner appears below the fold and the only other signal is the button
+   * relabelling itself to Retry - neither of which VoiceOver notices. Without
+   * this, a blind user presses Allow, waits, and is told nothing at all.
+   */
+  useEffect(() => {
+    if (!trouble) return;
+    const title = trouble === 'profile' ? onboardingCopy.profileFailed : onboardingCopy.startFailed;
+    const detail =
+      trouble === 'profile' ? onboardingCopy.profileFailedDetail : onboardingCopy.startFailedDetail;
+    AccessibilityInfo.announceForAccessibility(`${title} ${detail}`);
+  }, [trouble]);
 
   return (
     <ScrollView

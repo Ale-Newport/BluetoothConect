@@ -38,6 +38,15 @@ const SECURING_TIMEOUT_MS = 20_000;
 /** Long enough to read the word "Connected", short enough not to be a wait. */
 const SUCCESS_DISMISS_MS = 1000;
 
+/**
+ * The portrait at the top of the sheet.
+ *
+ * A pixel size rather than a token because the design system has no scale for
+ * component dimensions - `Avatar` takes a number - and this is the one place in
+ * the app where a peer is the whole screen rather than a row in a list.
+ */
+const AVATAR_SIZE = 72;
+
 export function ConnectSheet(): React.JSX.Element {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
@@ -173,7 +182,7 @@ export function ConnectSheet(): React.JSX.Element {
       <View>
         <Gap size="xxl" />
         <View style={{ alignItems: 'center' }}>
-          <Avatar name={view.displayName} peerId={view.peerId} emoji={view.avatarEmoji} size={72} />
+          <Avatar name={view.displayName} peerId={view.peerId} emoji={view.avatarEmoji} size={AVATAR_SIZE} />
           <Gap size="lg" />
           <Label variant="title2" align="center" numberOfLines={2}>
             {view.displayName}
@@ -197,7 +206,9 @@ export function ConnectSheet(): React.JSX.Element {
             borderRadius: theme.radius.md,
             paddingVertical: theme.spacing.md,
             paddingHorizontal: theme.spacing.lg,
-            minHeight: 64,
+            // Two lines' worth, reserved: the block grows a detail line as the
+            // connection moves, and the buttons below must not jump when it does.
+            minHeight: theme.spacing.xxxl + theme.spacing.lg,
             justifyContent: 'center',
           }}
         >
@@ -215,17 +226,6 @@ export function ConnectSheet(): React.JSX.Element {
             </View>
           </Row>
         </View>
-
-        {!view.isFriend && stage === 'idle' ? (
-          <>
-            <Gap size="md" />
-            {/* Said before the tap, not after it: a first meeting asks the user
-                to compare six digits, and that should not be a surprise. */}
-            <Label variant="footnote" tone="tertiary">
-              {homeCopy.firstMeeting}
-            </Label>
-          </>
-        ) : null}
       </View>
 
       <View>
@@ -258,7 +258,9 @@ function describe(stage: Stage, peer: PeerView): { title: string; detail?: strin
     case 'failed':
       return { title: strings.connection.failed, detail: homeCopy.connectFailedBody };
     default:
-      return { title: homeCopy.connectTitle(peer.displayName), detail: statusLine(peer) };
+      // A friend gets their status; a device nobody has met yet gets the one
+      // fact that decides what the next tap will ask of them.
+      return peer.isFriend ? { title: statusLine(peer) } : { title: homeCopy.firstMeeting };
   }
 }
 

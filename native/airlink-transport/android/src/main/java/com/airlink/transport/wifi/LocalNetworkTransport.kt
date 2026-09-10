@@ -1,5 +1,6 @@
 package com.airlink.transport.wifi
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -13,8 +14,6 @@ import com.airlink.transport.AirLinkError
 import com.airlink.transport.AirLinkTransport
 import com.airlink.transport.Availability
 import com.airlink.transport.DiscoveredEndpoint
-import com.airlink.transport.HotspotCredentials
-import com.airlink.transport.HotspotHost
 import com.airlink.transport.LinkMetricsSnapshot
 import com.airlink.transport.LinkState
 import com.airlink.transport.Permissions
@@ -62,11 +61,19 @@ import java.util.concurrent.atomic.AtomicLong
  * TypeScript layer matches it against a paired identity.
  * ===========================================================================
  *
- * This transport also owns the local-only hotspot (see LocalOnlyHotspot), which
- * is why it implements HotspotHost: a hotspot exists solely so that NSD and TCP
- * have somewhere to run when there is no shared network at all.
+ * WHEN THERE IS NO NETWORK AT ALL, one of the two phones raises one: see
+ * HotspotHost.kt. That is not a transport and it is not owned here - a hotspot
+ * exists solely so that this transport has somewhere to run, and the module
+ * starts it on request. Everything below is identical either way, which is the
+ * point: this code cannot tell a plane's Wi-Fi from a friend's hotspot.
+ *
+ * NewApi is suppressed at the class level rather than at each call: every
+ * API-34 entry point below sits behind an explicit `Build.VERSION.SDK_INT`
+ * check, and scattering the suppression made the version ladder harder to read
+ * than the ladder itself.
  */
-class LocalNetworkTransport(private val context: Context) : AirLinkTransport, HotspotHost {
+@SuppressLint("NewApi")
+class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
 
     private companion object {
         const val SCOPE = "localNetwork"
@@ -89,6 +96,13 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
         const val MAX_TXT_VALUE_CHARS = 64
 
         /**
+         * Ceiling on a decoded advertisement token. The real one is 6 bytes;
+         * this is only here so a peer cannot hand us a blob to carry. The same
+         * number is used on the iOS side.
+         */
+        const val MAX_TOKEN_BYTES = 32
+
+        /**
          * A resolve that never calls back would leak a listener slot for the
          * life of the process, so every one gets a deadline.
          */
@@ -109,19 +123,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
 
     override val kind: TransportKind = TransportKind.LOCAL_NETWORK
 
-    /**
-     * The Android side of the cross-platform handoff. It lives here rather than
-     * in its own transport because it is not one: it produces a Wi-Fi network
-     * for THIS transport to run over. Declared before `events` so the setter
-     * below always has something to hand the sink to.
-     */
-    private val hotspot = LocalOnlyHotspot(context)
-
     override var events: TransportEventSink? = null
-        set(value) {
-            field = value
-            hotspot.events = value
-        }
 
     /**
      * Every mutation of the state below happens on this one thread, so none of
@@ -289,21 +291,27 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
     }
 
     override fun stop() {
+        // Everything start() created is released synchronously HERE and torn
+        // down on the control thread afterwards, because the module is allowed
+        // to stop() and start() again in a single pass - that is what a
+        // configuration change does. If this method only posted, the posted
+        // teardown would run after the new start() and close the NEW listening
+        // socket, leaving a transport that is "started" and unreachable.
+        // Capturing the old socket keeps the two sessions apart.
+        started = false
+        configuration = null
+        val listening = server
+        server = null
+
         control.execute {
             stopAdvertisingInternal()
             stopDiscoveryInternal()
-            server?.stop()
-            server = null
+            listening?.stop()
             endpoints.clear()
             unwatchLocalNetwork()
             // Closing every link produces a `closed` state event for each, which
             // is what the layer above needs to stop waiting on them.
             links.values.toList().forEach { it.link.close("transport stopped") }
-            // A hotspot outliving the transport stack would be a radio nobody is
-            // watching and a network nobody can use.
-            hotspot.stop()
-            started = false
-            configuration = null
         }
     }
 
@@ -518,7 +526,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
                 // Not running. Fine.
             }
         }
-        if (Build.VERSION.SDK_INT >= 34) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             serviceInfoCallbacks.values.toList().forEach { callback ->
                 try {
                     manager.unregisterServiceInfoCallback(callback)
@@ -541,12 +549,21 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
         // system settled on after any collision rename.
         if (name == registeredServiceName || name == requestedServiceName) return
         if (serviceInfoCallbacks.containsKey(name)) return
+        // Three separate bounds because a service can sit in any one of these
+        // and never reach the next: a noisy - or hostile - network can announce
+        // names all day, and each one costs us a framework registration or a
+        // queue slot. The peer count is the number the product cares about; the
+        // other two exist so that nothing grows while it is still "pending".
         if (endpoints.size >= MAX_TRACKED_ENDPOINTS && !endpoints.containsKey(name)) {
             log("warn", "ignoring $name, already tracking ${endpoints.size} peers")
             return
         }
+        if (serviceInfoCallbacks.size >= MAX_TRACKED_ENDPOINTS || resolveQueue.size >= MAX_TRACKED_ENDPOINTS) {
+            log("warn", "ignoring $name, already resolving ${MAX_TRACKED_ENDPOINTS} services")
+            return
+        }
 
-        if (Build.VERSION.SDK_INT >= 34) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             registerServiceInfoCallback(serviceInfo, name)
         } else {
             resolveQueue.addLast(serviceInfo)
@@ -556,7 +573,12 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
 
     private fun handleServiceLost(name: String?) {
         val serviceName = name ?: return
-        if (Build.VERSION.SDK_INT >= 34) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // A tracker whose service is gone is unregistered rather than kept
+            // alive waiting for it to come back: the framework will report the
+            // service through onServiceFound again if it does, and a tracker per
+            // peer that has ever been seen is a registration we would never
+            // release on a network people walk in and out of all day.
             serviceInfoCallbacks.remove(serviceName)?.let { callback ->
                 try {
                     nsdManager?.unregisterServiceInfoCallback(callback)
@@ -576,33 +598,54 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
      * from a router to a hotspot - instead of handing back one stale snapshot.
      */
     private fun registerServiceInfoCallback(serviceInfo: NsdServiceInfo, name: String) {
-        if (Build.VERSION.SDK_INT < 34) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
         val manager = nsdManager ?: return
-        val callback = object : NsdManager.ServiceInfoCallback {
-            override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
-                control.execute {
-                    serviceInfoCallbacks.remove(name)
-                    log("warn", "could not track $name: ${nsdError(errorCode)}")
-                }
-            }
+        val tracker = ServiceTracker(name)
+        try {
+            manager.registerServiceInfoCallback(serviceInfo, control, tracker)
+            serviceInfoCallbacks[name] = tracker
+        } catch (e: RuntimeException) {
+            // IllegalArgumentException for a service info the framework will not
+            // accept, IllegalStateException when NSD is wedged. Losing one peer
+            // is not worth crashing an offline app for.
+            log("warn", "tracking $name rejected: ${e.javaClass.simpleName}")
+        }
+    }
 
-            override fun onServiceUpdated(serviceInfo: NsdServiceInfo) {
-                control.execute { publishResolved(serviceInfo) }
-            }
+    /**
+     * One live subscription to one discovered service (API 34+).
+     *
+     * A named class rather than an anonymous object so that every callback can
+     * check it is still the CURRENT tracker for this name before touching the
+     * map. A peer that walks out of range and back produces a second tracker,
+     * and a late `onServiceInfoCallbackUnregistered` from the first must not
+     * evict the second - that would leak a framework registration and let a
+     * third be created for the same service.
+     */
+    private inner class ServiceTracker(private val name: String) : NsdManager.ServiceInfoCallback {
 
-            override fun onServiceLost() {
-                control.execute { handleServiceLost(name) }
-            }
-
-            override fun onServiceInfoCallbackUnregistered() {
-                control.execute { serviceInfoCallbacks.remove(name) }
+        override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
+            control.execute {
+                forget()
+                log("warn", "could not track $name: ${nsdError(errorCode)}")
             }
         }
-        try {
-            manager.registerServiceInfoCallback(serviceInfo, control, callback)
-            serviceInfoCallbacks[name] = callback
-        } catch (e: RuntimeException) {
-            log("warn", "tracking $name rejected: ${e.javaClass.simpleName}")
+
+        override fun onServiceUpdated(serviceInfo: NsdServiceInfo) {
+            control.execute { publishResolved(serviceInfo) }
+        }
+
+        override fun onServiceLost() {
+            control.execute { handleServiceLost(name) }
+        }
+
+        override fun onServiceInfoCallbackUnregistered() {
+            control.execute { forget() }
+        }
+
+        /** Must run on the control thread. */
+        private fun forget() {
+            if (serviceInfoCallbacks[name] === this) serviceInfoCallbacks.remove(name)
         }
     }
 
@@ -688,7 +731,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
         } catch (_: RuntimeException) {
             emptyMap()
         }
-        val token = textOf(attributes[TXT_TOKEN])
+        val token = sanitisedToken(attributes[TXT_TOKEN])
         val displayName = textOf(attributes[TXT_NAME], MAX_DISPLAY_NAME_CHARS)
 
         val endpoint = ResolvedEndpoint(name, addresses, port, displayName, token)
@@ -697,13 +740,16 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
     }
 
     private fun addressesOf(serviceInfo: NsdServiceInfo): List<InetAddress> {
-        if (Build.VERSION.SDK_INT >= 34) {
-            val all = try {
-                serviceInfo.hostAddresses
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // getHostAddresses() is the API-34 replacement and gives us ALL of
+            // them - a peer usually has an IPv4 and one or more IPv6
+            // link-locals, and only trying them tells us which one routes.
+            val all: List<InetAddress> = try {
+                serviceInfo.hostAddresses?.filterNotNull() ?: emptyList()
             } catch (_: RuntimeException) {
-                emptyList<InetAddress>()
+                emptyList()
             }
-            if (all.isNotEmpty()) return all.toList()
+            if (all.isNotEmpty()) return all
         }
         // getHost() is deprecated from API 34 and gives one address only, which
         // is why it is the fallback rather than the default.
@@ -788,10 +834,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
 
         control.execute {
             if (!started) {
-                try {
-                    socket.close()
-                } catch (_: IOException) {
-                }
+                closeQuietly(socket)
                 completion(Result.failure(AirLinkError.NotStarted()))
                 return@execute
             }
@@ -826,8 +869,26 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
         // us; it is a transport-scoped id, never an identity. The handshake in
         // TypeScript decides who this actually is.
         val endpointId = "${socket.inetAddress?.hostAddress ?: "?"}:${socket.port}"
-        control.execute { adopt(socket, endpointId, incoming = true) }
+        control.execute {
+            if (!started) {
+                // stop() ran between the accept and this hop. Nothing else can
+                // close this socket now, and one nobody owns stays open until
+                // the process dies.
+                closeQuietly(socket)
+                return@execute
+            }
+            adopt(socket, endpointId, incoming = true)
+        }
         return true
+    }
+
+    /** A socket we decided not to adopt. Never worth an exception. */
+    private fun closeQuietly(socket: Socket) {
+        try {
+            socket.close()
+        } catch (_: IOException) {
+        } catch (_: RuntimeException) {
+        }
     }
 
     /** Must run on the control thread. Returns the new link id. */
@@ -915,16 +976,6 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
         )
     }
 
-    // -- hotspot (HotspotHost) -------------------------------------------------
-
-    override fun createHotspot(timeoutMs: Int, completion: (Result<HotspotCredentials>) -> Unit) {
-        hotspot.start(timeoutMs, completion)
-    }
-
-    override fun stopHotspot() {
-        hotspot.stop()
-    }
-
     // -- helpers --------------------------------------------------------------
 
     /**
@@ -952,6 +1003,37 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport, Ho
         return try {
             String(value, Charsets.UTF_8).take(limit)
         } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    /**
+     * The advertisement token, validated and re-encoded canonically.
+     *
+     * Mirrors `sanitisedToken` in the iOS LocalNetworkTransport, and has to: the
+     * pairing layer in TypeScript MATCHES ON THIS STRING, so if one platform
+     * passed the peer's bytes through verbatim and the other canonicalised them,
+     * the same phone would produce two different tokens and a paired friend
+     * would sometimes not be recognised. Decoding also rejects a TXT value that
+     * is not base64 at all, which is one less hostile input to reason about
+     * above this layer.
+     *
+     * The 32-byte ceiling is generous - the token is 6 bytes - and exists only
+     * so a peer cannot make us carry an arbitrary blob across the bridge.
+     */
+    private fun sanitisedToken(value: ByteArray?): String {
+        val raw = textOf(value)
+        if (raw.isEmpty()) return ""
+        return try {
+            val decoded = Base64.decode(raw, Base64.DEFAULT)
+            if (decoded.isEmpty() || decoded.size > MAX_TOKEN_BYTES) {
+                ""
+            } else {
+                Base64.encodeToString(decoded, Base64.NO_WRAP)
+            }
+        } catch (_: IllegalArgumentException) {
+            // Not base64. A peer is free to publish nonsense; we are not free to
+            // pass it on.
             ""
         }
     }

@@ -65,9 +65,27 @@ final class BleLink {
     var l2cap: BleL2CAPSession?
     var l2capTimer: DispatchSourceTimer?
     var remotePSM: UInt16 = 0
+    /// Datagrams handed to the L2CAP session that it has not settled yet.
+    var fastPathInFlight = 0
 
     var outbound: [BleOutboundDatagram] = []
     var outboundBytes = 0
+
+    /*
+     * Stall detection, counted in housekeeping ticks rather than wall-clock
+     * seconds on purpose.
+     *
+     * Every "I can take more" callback in this file - didWrite,
+     * peripheralIsReady, peripheralManagerIsReady, hasSpaceAvailable - is a
+     * promise the OS makes and can, on a wedged peer, quietly fail to keep;
+     * when that happens a queued datagram's promise is never settled and
+     * JavaScript waits for ever. Ticks and not timestamps because a suspended
+     * app comes back with an arbitrarily large elapsed time through no fault of
+     * the link, and killing a healthy link on resume would be worse than the
+     * bug being guarded against.
+     */
+    var outboundStallTicks = 0
+    var fastPathStallTicks = 0
 
     var connectCompletion: ((Result<String, Error>) -> Void)?
     var connectTimer: DispatchSourceTimer?

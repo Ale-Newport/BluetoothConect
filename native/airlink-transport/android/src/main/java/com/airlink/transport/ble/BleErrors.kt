@@ -20,7 +20,7 @@ import com.airlink.transport.TransportKind
  */
 internal object BleErrors {
 
-    fun notStarted(): Throwable = AirLinkError.NotStarted
+    fun notStarted(): Throwable = AirLinkError.NotStarted()
 
     fun unsupported(what: String): Throwable = AirLinkError.Unsupported(what)
 

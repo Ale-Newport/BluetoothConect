@@ -47,7 +47,6 @@ export const homeCopy = {
   compareFirst: 'Take a moment to compare the numbers.',
   /** Screen-reader label for the six digits: read one at a time, not as a number. */
   spellCode: (code: string): string => [...code].join(' '),
-  connectTitle: (name: string): string => `Connect to ${name}?`,
   /** The sheet is waiting on a radio that is not up yet. */
   notReadyToConnect: 'Still getting ready.',
   cancelAttempt: 'Stop trying',

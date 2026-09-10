@@ -12,6 +12,18 @@
 import { brand } from '@airlink/config';
 
 export const local = {
+  /**
+   * Relative time as a bare phrase, so a sentence can put its own verb in front
+   * of it. `friends.seen*` says the whole sentence because a friend row has no
+   * room for one.
+   */
+  time: {
+    justNow: 'just now',
+    minutes: (n: number): string => (n === 1 ? '1 minute ago' : `${n} minutes ago`),
+    hours: (n: number): string => (n === 1 ? '1 hour ago' : `${n} hours ago`),
+    yesterday: 'yesterday',
+  },
+
   you: {
     /** The navigator titles the Settings route "You"; the row needs its own word. */
     settings: 'Settings',
@@ -67,6 +79,8 @@ export const local = {
     noCameraTitle: 'No camera',
     noCameraBody: 'This device has no camera to scan with. You can still connect to someone nearby and compare six digits.',
     cameraFailedTitle: `Camera didn't start`,
+    cameraFailedBody: 'Close this screen and open it again. If it keeps happening, connect to your friend nearby and compare six digits instead.',
+    starting: 'Starting the camera…',
     scanning: 'Looking for a code…',
     addedTitle: (name: string): string => `${name} is now a friend`,
     addedBody: 'You will recognise each other automatically from now on.',
@@ -92,6 +106,7 @@ export const local = {
     rejectForgedBody: 'It did not pass its own signature check. Do not add this device.',
     saveFailed: 'That friend could not be saved.',
     saveFailedBody: 'Nothing was changed. Try scanning again.',
+    viewFriend: 'See safety number',
   },
 
   privacy: {
@@ -133,9 +148,15 @@ export const local = {
 
   settings: {
     profileSection: 'YOUR PROFILE',
+    avatarSection: 'YOUR LOOK',
     historySection: 'HISTORY',
+    aboutSection: 'ABOUT',
+    nameLabel: 'Your name',
     nameEmpty: 'Your name cannot be empty.',
+    nameUnchanged: 'Nothing to save yet.',
     nameSaved: 'Saved',
+    nameSaveFailed: 'That name could not be saved.',
+    nameHint: 'This is what friends nearby see. It is only ever sent to the phone next to you.',
     avatarNone: 'Initials',
     clearConversation: 'Clear a conversation',
     clearConversationPick: 'Which conversation?',
@@ -145,10 +166,13 @@ export const local = {
     clearAllTitle: 'Clear everything?',
     clearAllBody: 'Every message in every conversation is deleted from this device, and it cannot be undone. Your friends and your files are kept.',
     cleared: 'Cleared',
+    clearFailed: 'Nothing could be cleared.',
+    nothingToClear: 'There are no messages on this device yet.',
     noConversations: 'No conversations yet',
     noConversationsBody: 'Once you have chatted with someone, you can clear it here.',
     lastMessage: (when: string): string => `Last message ${when}`,
     neverUsed: 'No messages',
+    unknownPerson: 'Someone',
   },
 
   developer: {
@@ -160,9 +184,10 @@ export const local = {
     refresh: 'Refresh',
     turnOff: 'Turn off developer mode',
     deviceSection: 'DEVICE',
+    nativeSection: 'NATIVE LAYER',
     transportSection: 'TRANSPORTS',
     sessionSection: 'SESSIONS',
-    logSection: 'LOG',
+    logSection: 'ACTIVITY',
     rawSection: 'RAW SNAPSHOT',
     deviceId: 'Device id',
     peerId: 'Peer id',
@@ -199,10 +224,44 @@ export const local = {
     inFlight: 'In flight',
     queued: 'Queued',
     linkMetrics: 'Link metrics',
-    noLogTitle: 'No log to show',
+    bytesSent: 'Bytes sent',
+    bytesReceived: 'Bytes received',
+    throughputNow: 'Measured throughput',
+    signal: 'Signal',
+
+    // -- native layer --
+    osVersion: 'OS version',
+    deviceModel: 'Device model',
+    canAdvertiseBle: 'Can advertise (BLE peripheral)',
+    supportsL2cap: 'L2CAP channels',
+    canCreateHotspot: 'Can create a hotspot',
+    canJoinHotspot: 'Can join a hotspot',
+    supportedTransports: 'Supported transports',
     /** Honest about the reason rather than spinning forever. */
-    noLogBody: 'This build does not expose the log buffer to the interface.',
-    logEmpty: 'Nothing logged yet.',
+    nativeUnavailable: 'The native layer has not reported its capabilities. It reports them once the radios have started.',
+
+    // -- activity log --
+    /**
+     * The client's own event stream, not the native log buffer. `AirLinkClient`
+     * keeps its `Logger` private and does not expose `NativeTransportHost.logs`,
+     * so this is every line the interface can actually see. Said plainly rather
+     * than dressed up as more than it is.
+     */
+    logHint: 'Client events, newest first, since this screen opened.',
+    logEmpty: 'Nothing has happened yet.',
+    logNativeNote: 'The native log buffer is not exposed to the interface in this build.',
+    clearLog: 'Clear',
     entries: (n: number): string => (n === 1 ? '1 entry' : `${n} entries`),
+    eventPeers: (count: number): string => `discovery · ${count} nearby`,
+    eventConnection: (peerKey: string, state: string, quality: string | null): string =>
+      `session ${peerKey} · ${state}${quality ? ` · ${quality}` : ''}`,
+    eventPairingRequired: (peerKey: string, displayName: string): string =>
+      `pairing ${peerKey} · ${displayName} · awaiting confirmation`,
+    eventPairingResolved: (peerKey: string, trusted: boolean): string =>
+      `pairing ${peerKey} · ${trusted ? 'trusted' : 'refused'}`,
+    eventMessage: (peerKey: string, messageId: string): string => `message ${peerKey} · ${messageId}`,
+    eventRadio: (transport: string, available: boolean, detail: string): string =>
+      `radio ${transport} · ${available ? 'available' : 'unavailable'}${detail ? ` · ${detail}` : ''}`,
+    eventError: (message: string, fatal: boolean): string => `${fatal ? 'fatal' : 'error'} · ${message}`,
   },
 } as const;

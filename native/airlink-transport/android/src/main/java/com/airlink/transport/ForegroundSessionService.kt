@@ -237,13 +237,31 @@ class ForegroundSessionService : Service() {
         fun start(context: Context, linkCount: Int): Boolean = try {
             val intent = Intent(context, ForegroundSessionService::class.java)
                 .putExtra(EXTRA_LINK_COUNT, linkCount)
-            context.startForegroundService(intent)
-            true
+            // The undeclared-service case does NOT throw: startForegroundService
+            // returns null when the component cannot be resolved, and an
+            // exception is only raised for a background start on API 31+. Both
+            // have to be reported, or a missing <service> in the merged manifest
+            // looks exactly like success and every backgrounded session dies
+            // with nothing in the log to explain it.
+            val component = context.startForegroundService(intent)
+            if (component == null) {
+                Log.w(
+                    TAG,
+                    "the session service is not declared in the merged manifest; add " +
+                        "<service android:name=\"com.airlink.transport.ForegroundSessionService\" " +
+                        "android:exported=\"false\" " +
+                        "android:foregroundServiceType=\"connectedDevice\" />",
+                )
+                false
+            } else {
+                true
+            }
         } catch (t: Throwable) {
             Log.w(
                 TAG,
-                "could not start the session service - is it declared in the manifest with " +
-                    "android:foregroundServiceType=\"connectedDevice\"?",
+                "could not start the session service - a foreground service cannot be started " +
+                    "from the background on API 31+, and API 34+ also requires the declared " +
+                    "android:foregroundServiceType=\"connectedDevice\"",
                 t,
             )
             false

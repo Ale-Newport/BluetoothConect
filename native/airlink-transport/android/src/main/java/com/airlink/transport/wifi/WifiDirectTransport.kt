@@ -1,5 +1,6 @@
 package com.airlink.transport.wifi
 
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -60,7 +61,16 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * The framing, the maximum datagram size and every guarantee in the datagram
  * contract come from FramedTcp, shared with LocalNetworkTransport.
+ *
+ * MissingPermission is suppressed at the class level because lint cannot see
+ * through the version-dependent permission matrix in Permissions.kt: what
+ * discoverPeers needs is NEARBY_WIFI_DEVICES on API 33+ and
+ * ACCESS_FINE_LOCATION below it, which is exactly what [hasNearbyPermission]
+ * checks before every call that needs it. Every one of those calls also catches
+ * SecurityException, because a permission can be revoked between the check and
+ * the call.
  */
+@SuppressLint("MissingPermission")
 class WifiDirectTransport(private val context: Context) : AirLinkTransport {
 
     private companion object {
@@ -89,6 +99,9 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
 
         /** Upper bound on peers we will report from one scan. */
         const val MAX_PEERS = 32
+
+        /** A peer's system device name is untrusted text; it is truncated here. */
+        const val MAX_DEVICE_NAME_CHARS = 32
     }
 
     override val kind: TransportKind = TransportKind.WIFI_DIRECT
@@ -112,7 +125,15 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     private val wifiManager: WifiManager? =
         context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
+    /**
+     * Opened and closed on the module's thread by start()/stop() but read on the
+     * control thread by every callback, so both need to be volatile. start() has
+     * to be synchronous because the contract lets it throw.
+     */
+    @Volatile
     private var channel: WifiP2pManager.Channel? = null
+
+    @Volatile
     private var receiver: BroadcastReceiver? = null
 
     /** Read by the accept and dial threads, written only on `control`. */
@@ -126,8 +147,14 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
      * direct reading and fall back to whether Wi-Fi is on at all - p2p cannot be
      * enabled without it, so the fallback is never wrong in the direction that
      * matters (telling a user to turn on a radio that is already on).
+     *
+     * Volatile because availability() is answered on the module's thread while
+     * the broadcast that updates them arrives on the control thread.
      */
+    @Volatile
     private var p2pEnabled = false
+
+    @Volatile
     private var p2pStateKnown = false
 
     private val peers = LinkedHashMap<String, WifiP2pDevice>()
@@ -245,25 +272,37 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     override fun stop() {
+        // Everything start() opened is detached synchronously HERE and closed on
+        // the control thread afterwards, because the module is allowed to stop()
+        // and start() again in a single pass - that is what a configuration
+        // change does. If this method only posted, the posted teardown would run
+        // after the new start() and close the NEW p2p channel, leaving a
+        // transport that is "started" and dead. Capturing them keeps the two
+        // sessions apart.
+        started = false
+        val open = channel
+        channel = null
+        val registered = receiver
+        receiver = null
+
         control.post {
-            stopDiscoveryInternal()
+            stopDiscoveryInternal(open)
             links.values.toList().forEach { it.link.close("transport stopped") }
-            teardownGroup()
+            teardownGroup(open)
             server?.stop()
             server = null
             peers.clear()
+            groupFormed = false
             failPending(AirLinkError.Failed("transport stopped"))
-            unregisterReceiver()
-            channel?.let { open ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                    try {
-                        open.close()
-                    } catch (_: RuntimeException) {
-                    }
+            registered?.let { unregisterReceiver(it) }
+            if (open != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                // Channel became AutoCloseable in API 27. Below that the only way
+                // to release it is to let it go, which is what happens here.
+                try {
+                    open.close()
+                } catch (_: RuntimeException) {
                 }
             }
-            channel = null
-            started = false
         }
     }
 
@@ -308,7 +347,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         // protected system broadcasts and nothing else may deliver them to us.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(
+                context.applicationContext.registerReceiver(
                     broadcastReceiver,
                     filter,
                     null,
@@ -316,7 +355,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                     Context.RECEIVER_NOT_EXPORTED,
                 )
             } else {
-                context.registerReceiver(broadcastReceiver, filter, null, control)
+                context.applicationContext.registerReceiver(broadcastReceiver, filter, null, control)
             }
             receiver = broadcastReceiver
         } catch (t: Throwable) {
@@ -324,11 +363,12 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         }
     }
 
-    private fun unregisterReceiver() {
-        val existing = receiver ?: return
-        receiver = null
+    /** Takes the instance rather than reading the field: see the note in stop(). */
+    private fun unregisterReceiver(existing: BroadcastReceiver) {
         try {
-            context.unregisterReceiver(existing)
+            // Same context object as the registration: getApplicationContext()
+            // returns the one singleton, so these always pair up.
+            context.applicationContext.unregisterReceiver(existing)
         } catch (_: IllegalArgumentException) {
             // Not registered. Idempotent by design.
         }
@@ -403,14 +443,15 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     override fun stopDiscovery() {
-        control.post { stopDiscoveryInternal() }
+        control.post { stopDiscoveryInternal(channel) }
     }
 
-    private fun stopDiscoveryInternal() {
+    /** Takes the channel rather than reading the field: see the note in stop(). */
+    private fun stopDiscoveryInternal(open: WifiP2pManager.Channel?) {
         discovering = false
         control.removeCallbacks(discoveryRefresh)
         val p2p = manager ?: return
-        val open = channel ?: return
+        if (open == null) return
         try {
             p2p.stopPeerDiscovery(open, null)
         } catch (e: SecurityException) {
@@ -443,7 +484,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                 DiscoveredEndpoint(
                     kind,
                     address,
-                    device.deviceName ?: "",
+                    displayNameOf(device),
                     // No advertisement payload exists on this transport.
                     "",
                     // Wi-Fi Direct does not report signal strength to apps.
@@ -455,9 +496,17 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         peers.keys.toList().forEach { address ->
             if (address in seen) return@forEach
             val gone = peers.remove(address) ?: return@forEach
-            events?.peerLost(DiscoveredEndpoint(kind, address, gone.deviceName ?: "", "", 0))
+            events?.peerLost(DiscoveredEndpoint(kind, address, displayNameOf(gone), "", 0))
         }
     }
+
+    /**
+     * The system device name of a nearby phone. Attacker-controlled text - a
+     * device can call itself anything - so it is bounded here rather than
+     * anywhere further up, and it is never treated as an identity.
+     */
+    private fun displayNameOf(device: WifiP2pDevice): String =
+        (device.deviceName ?: "").take(MAX_DEVICE_NAME_CHARS)
 
     // -- links ----------------------------------------------------------------
 
@@ -616,6 +665,13 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     private fun acceptIncoming(socket: Socket): Boolean {
         if (!started || links.size >= MAX_LINKS) return false
         control.post {
+            if (!started) {
+                // stop() ran between the accept and this hop. Closing here is the
+                // only place left that can, and a socket nobody owns would
+                // otherwise sit open until the process died.
+                closeQuietly(socket)
+                return@post
+            }
             val request = pending
             // If this socket is the answer to our own connect() we report it as
             // outgoing, because the app asked for it - which side of the TCP
@@ -635,7 +691,11 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
 
         Thread({
             var socket: Socket? = null
-            while (SystemClock.uptimeMillis() < deadline) {
+            // `started` is checked every pass, not only at the top: without it a
+            // stop() would leave this thread dialling a dead group for up to the
+            // caller's whole timeout - two minutes of radio on a phone whose
+            // owner has closed the app.
+            while (started && SystemClock.uptimeMillis() < deadline) {
                 socket = try {
                     FramedTcp.dial(listOf(address), GROUP_OWNER_PORT, 3_000)
                 } catch (_: IOException) {
@@ -666,10 +726,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                     return@post
                 }
                 if (!started) {
-                    try {
-                        connected.close()
-                    } catch (_: IOException) {
-                    }
+                    closeQuietly(connected)
                     return@post
                 }
                 val current = pending
@@ -714,20 +771,35 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
             // A p2p group with nothing running over it keeps the radio busy and
             // blocks the next connect, so it is torn down once it is idle. When
             // to reconnect is still entirely the TypeScript layer's decision.
-            if (links.isEmpty() && pending == null) teardownGroup()
+            if (links.isEmpty() && pending == null) teardownGroup(channel)
         }
     }
 
     private fun resolvePending(linkId: String) {
         val request = pending ?: return
         clearPending()
-        request.completion(Result.success(linkId))
+        settle(request, Result.success(linkId))
     }
 
     private fun failPending(error: Throwable) {
         val request = pending ?: return
         clearPending()
-        request.completion(Result.failure(error))
+        settle(request, Result.failure(error))
+    }
+
+    /**
+     * These completions run on the control thread, which is also a broadcast
+     * receiver's thread and the p2p framework's callback thread. A completion
+     * that threw would take the process down from inside a system callback, so
+     * it is contained here - the promise on the JavaScript side is settled
+     * either way.
+     */
+    private fun settle(request: PendingConnect, result: Result<String>) {
+        try {
+            request.completion(result)
+        } catch (t: Throwable) {
+            log("error", "connect completion threw: ${t.javaClass.simpleName}")
+        }
     }
 
     private fun clearPending() {
@@ -745,12 +817,13 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         }
     }
 
-    private fun teardownGroup() {
+    /** Takes the channel rather than reading the field: see the note in stop(). */
+    private fun teardownGroup(open: WifiP2pManager.Channel?) {
         server?.stop()
         server = null
         groupFormed = false
         val p2p = manager ?: return
-        val open = channel ?: return
+        if (open == null) return
         try {
             p2p.removeGroup(
                 open,
@@ -815,6 +888,15 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     // -- helpers --------------------------------------------------------------
+
+    /** A socket we decided not to adopt. Never worth an exception. */
+    private fun closeQuietly(socket: Socket) {
+        try {
+            socket.close()
+        } catch (_: IOException) {
+        } catch (_: RuntimeException) {
+        }
+    }
 
     private fun actionError(reason: Int): String = when (reason) {
         WifiP2pManager.P2P_UNSUPPORTED -> "Wi-Fi Direct is not supported"
