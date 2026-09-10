@@ -31,17 +31,28 @@ export function Screen({
   children,
   scroll = false,
   padded = true,
+  /**
+   * Inset the top for the status bar and notch.
+   *
+   * On by default. A screen mounted inside a navigator that draws its own header
+   * already sits below the notch and should pass false, or its content ends up
+   * pushed down twice. A screen with no header - Home, the tabs - needs it, and
+   * without it the wordmark sits on top of the clock.
+   */
+  safeTop = true,
   style,
 }: {
   children: React.ReactNode;
   scroll?: boolean;
   padded?: boolean;
+  safeTop?: boolean;
   style?: StyleProp<ViewStyle>;
 }): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const content: StyleProp<ViewStyle> = [
     padded ? { paddingHorizontal: theme.spacing.lg } : null,
+    safeTop ? { paddingTop: insets.top + theme.spacing.sm } : null,
     { paddingBottom: insets.bottom + theme.spacing.lg },
     style,
   ];

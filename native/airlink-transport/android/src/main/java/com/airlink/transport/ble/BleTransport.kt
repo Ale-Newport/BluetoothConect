@@ -436,7 +436,13 @@ class BleTransport(context: Context) : AirLinkTransport {
      * again later. That is what keeps a callback arriving after `stop()` from
      * building a fresh thread for a transport nobody is using any more.
      */
-    private val handler: Handler get() = ensureHandler()
+    private val handler: Handler
+        // Reads the thread that exists; it does NOT create one. `start()` is the
+        // single creation site, and it stays that way only if this getter
+        // refuses to help: a stray collaborator asking for a handler after
+        // `stop()` would otherwise build a whole new thread to run work for a
+        // transport nobody is using any more, and leak it.
+        get() = handlerRef ?: throw BleErrors.notStarted()
 
     /**
      * How every link, connection and server in this package reports back.

@@ -174,7 +174,7 @@ export function SettingsScreen(): React.JSX.Element {
   );
 
   return (
-    <Screen scroll>
+    <Screen safeTop={false} scroll>
       <Gap size="lg" />
 
       <SectionHeading>{local.settings.profileSection}</SectionHeading>

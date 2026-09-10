@@ -23,7 +23,7 @@ import {
 import { selectPeers, useAppStore, type PeerView } from '../../state/index.js';
 import type { RootStackParams, TabParams } from '../../navigation/routes.js';
 import type { ConversationSummary } from './chatCenter.js';
-import { useConversations } from './useChat.js';
+import { firstNamed, useConversations } from './useChat.js';
 import { listTimestamp } from './chatTime.js';
 import { chatCopy } from './chatStrings.js';
 
@@ -116,7 +116,7 @@ export function ChatListScreen(): React.JSX.Element {
       if (item.kind === 'peer') {
         return (
           <ConversationRow
-            name={item.peer.displayName}
+            name={firstNamed(item.peer.displayName)}
             peerId={item.peer.peerId}
             avatarEmoji={item.peer.avatarEmoji}
             preview={chatCopy.sayHello}
@@ -130,7 +130,7 @@ export function ChatListScreen(): React.JSX.Element {
       const { summary } = item;
       return (
         <ConversationRow
-          name={summary.displayName}
+          name={firstNamed(summary.displayName)}
           peerId={summary.peerId}
           avatarEmoji={summary.avatarEmoji}
           preview={previewOf(summary)}

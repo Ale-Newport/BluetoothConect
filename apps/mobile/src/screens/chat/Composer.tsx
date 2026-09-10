@@ -101,8 +101,10 @@ export function Composer({
           placeholder={strings.chat.placeholder}
           placeholderTextColor={theme.colors.textTertiary}
           multiline
-          // The protocol counts code points, not UTF-16 units, so a message of
-          // 4000 emoji is 4000 characters here too.
+          // `maxLength` counts UTF-16 units where the wire limit counts code
+          // points, so this stops slightly short of the protocol's ceiling for
+          // text full of emoji. Erring that way is the safe one: the box can
+          // never accept a message the encoder would then refuse.
           maxLength={CHAT_LIMITS.maxBodyCodePoints}
           style={[
             theme.typography.body as TextStyle,

@@ -248,7 +248,7 @@ export function ScanCodeScreen(): React.JSX.Element {
   // implementation, and a hook cannot be called conditionally.
   if (!SCANNING_IS_SUPPORTED) {
     return (
-      <Screen scroll>
+      <Screen safeTop={false} scroll>
         <Gap size="xl" />
         <Label variant="title2">{local.scan.noScannerHereTitle}</Label>
         <Gap size="sm" />

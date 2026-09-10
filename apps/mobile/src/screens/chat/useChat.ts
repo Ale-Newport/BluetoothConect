@@ -88,8 +88,13 @@ function useChatPresence(centre: ChatCenter | null): number {
   return useSyncExternalStore(subscribe, snapshot);
 }
 
-/** The first of these that is a real name; a blank one is not a name. */
-function firstNamed(...candidates: readonly (string | null | undefined)[]): string {
+/**
+ * The first of these that is a real name; a blank one is not a name.
+ *
+ * A row with an empty headline, or a sheet saying " has to be in range", is
+ * what an unnamed peer looks like without this.
+ */
+export function firstNamed(...candidates: readonly (string | null | undefined)[]): string {
   for (const candidate of candidates) {
     if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate;
   }

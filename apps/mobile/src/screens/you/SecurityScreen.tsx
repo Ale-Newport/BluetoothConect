@@ -74,7 +74,7 @@ export function SecurityScreen({ route }: NativeStackScreenProps<RootStackParams
 
   if (!friend || !number) {
     return (
-      <Screen>
+      <Screen safeTop={false}>
         <EmptyState
           icon="🔒"
           title={local.security.unknownFriendTitle}

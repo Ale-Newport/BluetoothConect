@@ -363,10 +363,19 @@ internal object BleWire {
 
     private fun decodeName(raw: ByteArray, from: Int, to: Int): String {
         if (from >= to) return ""
-        val length = (to - from).coerceAtMost(MAX_NAME_BYTES)
-        // A peer chooses these bytes, so they may not be valid UTF-8. Kotlin's
-        // decoder substitutes U+FFFD rather than throwing, which is what we
-        // want: a name is untrusted display text, never a decision input.
-        return String(raw, from, length, Charsets.UTF_8)
+        // The whole tail is decoded first and only then shortened, by WHOLE
+        // CHARACTERS. Cutting the byte range at MAX_NAME_BYTES before decoding
+        // splits a multi-byte sequence, and the record ceiling means the peer
+        // can hand us at most a hundred-odd bytes here anyway - so there is
+        // nothing to protect against by slicing early, and something real to
+        // lose: the iOS encoder bounds a name only by the 128-byte record, so a
+        // 60-byte iPhone name would arrive on Android ending in U+FFFD.
+        //
+        // A peer chooses these bytes, so they may not be valid UTF-8 at all.
+        // Kotlin's decoder substitutes U+FFFD rather than throwing, which is
+        // what we want: a name is untrusted display text, never a decision
+        // input.
+        val whole = String(raw, from, to - from, Charsets.UTF_8)
+        return String(trimUtf8(whole, MAX_NAME_BYTES), Charsets.UTF_8)
     }
 }

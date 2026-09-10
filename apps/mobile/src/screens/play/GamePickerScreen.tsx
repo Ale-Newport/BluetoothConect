@@ -44,7 +44,7 @@ export function GamePickerScreen(): React.JSX.Element {
 
   if (!connected) {
     return (
-      <Screen scroll>
+      <Screen safeTop={false} scroll>
         <Gap size="xl" />
         <EmptyState
           icon="📡"

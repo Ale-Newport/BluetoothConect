@@ -20,6 +20,7 @@ import {
   publicIdentityOf,
   systemClock,
   systemRandom,
+  toHex,
   tokenRotation,
   type LocalIdentity,
   type PeerCapabilities,
@@ -90,6 +91,19 @@ export class AirLinkClient {
   private readonly peers = new Map<string, PeerHandle>();
   private readonly unsubscribers: (() => void)[] = [];
   private advertisingSlot = 0;
+  /**
+   * Tokens this device has advertised recently, as hex.
+   *
+   * Bonjour is not selective: a listener and a browser on the same device see
+   * each other, so without this the phone lists ITSELF as a nearby device -
+   * which is exactly what happened the first time the app ran on a real
+   * network. Only we can produce our own tokens, so recognising them is a
+   * complete filter, and it works for every transport rather than needing a
+   * special case per radio.
+   *
+   * Bounded: a handful of rotation slots is all that can be in flight.
+   */
+  private readonly ownTokens = new Set<string>();
   private advertiseTimer: ReturnType<typeof setInterval> | undefined;
   private started = false;
   private readonly log: Logger;
@@ -224,7 +238,11 @@ export class AirLinkClient {
 
   private wireTransport(transport: Transport): void {
     this.unsubscribers.push(
-      transport.events.on('peerDiscovered', ({ peer }) => this.registry.observe(peer)),
+      transport.events.on('peerDiscovered', ({ peer }) => {
+        // Never list ourselves. See `ownTokens`.
+        if (peer.advertisementToken && this.ownTokens.has(toHex(peer.advertisementToken))) return;
+        this.registry.observe(peer);
+      }),
       transport.events.on('peerLost', ({ endpointId }) => {
         this.registry.forgetEndpoint(transport.kind, endpointId);
       }),
@@ -262,6 +280,14 @@ export class AirLinkClient {
 
       const rotation = tokenRotation(friends, this.advertisingSlot++, Date.now());
       const token = rotation?.token ?? systemRandom.randomBytes(6);
+
+      this.ownTokens.add(toHex(token));
+      // Keep only the recent ones: a stale token cannot be advertised any more,
+      // and an unbounded set would be a slow leak on a long flight.
+      if (this.ownTokens.size > 32) {
+        const oldest = this.ownTokens.values().next().value;
+        if (oldest !== undefined) this.ownTokens.delete(oldest);
+      }
       const displayName = this.repositories.users.get()?.displayName ?? '';
 
       for (const transport of this.host.all()) {

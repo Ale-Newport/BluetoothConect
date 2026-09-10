@@ -181,7 +181,7 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
   }, [centre, file, recipient, navigation]);
 
   return (
-    <Screen scroll>
+    <Screen safeTop={false} scroll>
       <Gap size="lg" />
 
       {problem ? (

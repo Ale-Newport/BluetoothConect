@@ -31,13 +31,20 @@ import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen.js';
 const Stack = createNativeStackNavigator<RootStackParams>();
 const Tabs = createBottomTabNavigator<TabParams>();
 
-/** Emoji tab icons until real artwork exists. Clearly placeholder, on purpose. */
+/**
+ * Tab icons, until real artwork exists.
+ *
+ * Emoji rather than geometric glyphs: the first attempt used characters like
+ * U+2709 ENVELOPE and U+25C6 BLACK DIAMOND, and two of the five rendered as
+ * empty boxes because the system font does not carry them at that weight.
+ * Emoji are guaranteed present on both platforms.
+ */
 const TAB_ICON: Record<keyof TabParams, string> = {
-  Home: '◎',
-  Chat: '✉',
-  Play: '◆',
-  Share: '↑',
-  You: '●',
+  Home: '\u{1F4E1}', // satellite antenna - finding people nearby
+  Chat: '\u{1F4AC}', // speech balloon
+  Play: '\u{1F3AE}', // video game
+  Share: '\u{1F4E4}', // outbox tray
+  You: '\u{1F464}', // bust in silhouette
 };
 
 function TabNavigator(): React.JSX.Element {
@@ -53,8 +60,12 @@ function TabNavigator(): React.JSX.Element {
           borderTopColor: theme.colors.separator,
         },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
-        tabBarIcon: ({ color }) => (
-          <Text style={{ fontSize: 18, color, lineHeight: 22 }}>{TAB_ICON[route.name]}</Text>
+        // Emoji carry their own colour, so the active/inactive distinction is
+        // opacity plus the label tint rather than a tint on the glyph.
+        tabBarIcon: ({ focused }) => (
+          <Text style={{ fontSize: 20, lineHeight: 24, opacity: focused ? 1 : 0.45 }}>
+            {TAB_ICON[route.name]}
+          </Text>
         ),
       })}
     >

@@ -637,7 +637,11 @@ export class ChatCenter {
     if (!entry) return true;
     if (entry.attempts >= CHAT_LIMITS.maxSendAttempts) return true;
     const size = this.safe(() => encodedMessageSize(entry.message));
-    return size !== undefined && size > attachment.handle.session.maxPayloadBytes;
+    const budget = this.safe(() => attachment.handle.session.maxPayloadBytes);
+    // Anything we could not measure is given the benefit of the doubt: a
+    // message left queued goes out on the next link, where a message wrongly
+    // called failed sits under a red line waiting for a tap it never needed.
+    return size !== undefined && budget !== undefined && size > budget;
   }
 
   // -- inbound ---------------------------------------------------------------

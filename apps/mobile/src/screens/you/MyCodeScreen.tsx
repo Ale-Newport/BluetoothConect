@@ -87,7 +87,7 @@ export function MyCodeScreen(): React.JSX.Element {
 
   if (uri === null) {
     return (
-      <Screen>
+      <Screen safeTop={false}>
         <EmptyState
           icon="▣"
           title={local.myCode.unavailableTitle}

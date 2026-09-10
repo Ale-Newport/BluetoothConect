@@ -557,6 +557,19 @@ internal class BleGattServer(
          */
         var abandonedNotifications: Int = 0
 
+        /**
+         * Notify timeouts in a row, for the same reason
+         * [BleTuning.WEDGED_OPERATION_TIMEOUTS] exists on the central's queue.
+         *
+         * When the stack has genuinely lost an acknowledgement rather than
+         * merely delayed it, the ghost above is never claimed and every
+         * subsequent notification's real acknowledgement is swallowed by it. A
+         * link in that state is not slow, it is finished - and saying so lets
+         * the session above reconnect instead of watching every datagram take
+         * ten seconds and fail.
+         */
+        var consecutiveNotifyTimeouts: Int = 0
+
         /** True when [payload] fits the pre-open hold and has been taken. */
         fun hold(payload: ByteArray): Boolean {
             if (held.size >= BleTuning.MAX_PREOPEN_INBOUND_DATAGRAMS) return false
@@ -596,7 +609,11 @@ internal class BleGattServer(
                 // may yet deliver it. Recorded so it cannot be mistaken for the
                 // next notification's. See [abandonedNotifications].
                 abandonedNotifications++
+                consecutiveNotifyTimeouts++
                 done.invoke(BleErrors.failed("the notification was never acknowledged"))
+                if (consecutiveNotifyTimeouts >= BleTuning.WEDGED_OPERATION_TIMEOUTS) {
+                    closePeer(this@ServerPeer, "notifications stopped being acknowledged", failed = true)
+                }
             }
         }
     }
@@ -934,6 +951,7 @@ internal class BleGattServer(
                     return@post
                 }
                 handler.removeCallbacks(peer.notifyTimeout)
+                peer.consecutiveNotifyTimeouts = 0
                 val done = peer.notifyDone ?: return@post
                 peer.notifyDone = null
                 done(
@@ -1179,6 +1197,10 @@ internal class BleGattServer(
                 if (responseNeeded) {
                     respond(target, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                 }
+                // An empty ATT write is not a datagram - `deliver` ignores one
+                // anyway - and discarding it here is also what stops a peer
+                // filling the pre-open hold below with nothing.
+                if (payload.isEmpty()) return@post
                 if (!peer.opened) {
                     // HELD, NOT DROPPED, and this is the whole of iPhone-to-
                     // Android working at all.

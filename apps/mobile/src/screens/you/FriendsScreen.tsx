@@ -167,7 +167,7 @@ export function FriendsScreen(): React.JSX.Element {
 
   if (friends.length === 0 && blocked.length === 0) {
     return (
-      <Screen>
+      <Screen safeTop={false}>
         {/*
           The only action on an empty screen has to be one this phone can
           finish. Where there is no scanner, "Scan a friend" leads to a page

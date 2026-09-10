@@ -183,7 +183,7 @@ export function DeveloperModeScreen(): React.JSX.Element {
   const sessions = asArray(snapshot.sessions);
 
   return (
-    <Screen scroll>
+    <Screen safeTop={false} scroll>
       <Gap size="lg" />
       <Label variant="footnote" tone="secondary">
         {local.developer.intro}
