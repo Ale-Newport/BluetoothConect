@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ConnectionState, newUuidLike, systemRandom } from '@airlink/core';
 import { strings } from '@airlink/config';
 import type { GameCatalogueEntry } from '@airlink/games';
@@ -72,6 +72,29 @@ export function availabilityFor(
   return AVAILABLE;
 }
 
+/**
+ * Can ANYBODY here play this game?
+ *
+ * With several friends connected the tile is live if any one of them can play
+ * it, and the sheet that asks who then says which of them cannot. Judging the
+ * whole grid against whoever happens to be first in the list would grey out a
+ * game two of the three people present could play perfectly well.
+ */
+export function bestAvailabilityFor(
+  client: AirLinkClient | null,
+  peers: readonly { readonly key: string; readonly displayName: string }[],
+  entry: GameCatalogueEntry,
+): Availability {
+  if (peers.length === 0) return { playable: false, reason: playText.tabs.notConnected };
+  let best: Availability | null = null;
+  for (const peer of peers) {
+    const availability = availabilityFor(client, peer.key, entry, peer.displayName);
+    if (availability.playable) return availability;
+    best = best ?? availability;
+  }
+  return best ?? { playable: false, reason: playText.tabs.notConnected };
+}
+
 /** A fresh id for a game about to start. */
 export function newGameSessionId(): string {
   return newUuidLike(systemRandom);
@@ -109,14 +132,11 @@ export function GameTile({
   availability,
   width,
   onPress,
-  subtitle,
 }: {
   entry: GameCatalogueEntry;
   availability: Availability;
   width: number;
   onPress: () => void;
-  /** Overrides the blurb - used by a game in progress to say whose turn it is. */
-  subtitle?: string;
 }): React.JSX.Element {
   const theme = useTheme();
   const { playable, reason } = availability;
@@ -126,7 +146,7 @@ export function GameTile({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={entry.definition.name}
-        accessibilityHint={playable ? subtitle ?? entry.blurb : reason ?? undefined}
+        accessibilityHint={playable ? entry.blurb : reason ?? undefined}
         accessibilityState={{ disabled: !playable }}
         disabled={!playable}
         onPress={() => {
@@ -139,7 +159,7 @@ export function GameTile({
             padding: theme.spacing.md,
             borderRadius: theme.radius.lg,
             backgroundColor: theme.colors.surface,
-            borderWidth: 1,
+            borderWidth: StyleSheet.hairlineWidth,
             borderColor: theme.colors.separator,
             opacity: playable ? 1 : 0.5,
           },
@@ -149,15 +169,18 @@ export function GameTile({
         <Text
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
-          style={{ fontSize: 26, marginBottom: theme.spacing.xs }}
+          // The one size in the file, and it comes from the type scale: the
+          // catalogue's emoji are placeholder ARTWORK, so they are sized like a
+          // heading rather than picked by eye.
+          style={{ fontSize: theme.typography.title.fontSize, marginBottom: theme.spacing.xs }}
         >
           {entry.icon}
         </Text>
         <Label variant="headline" numberOfLines={1}>
           {entry.definition.name}
         </Label>
-        <Label variant="footnote" tone="secondary" numberOfLines={2} style={{ marginTop: 2 }}>
-          {subtitle ?? entry.blurb}
+        <Label variant="footnote" tone="secondary" numberOfLines={2}>
+          {entry.blurb}
         </Label>
         <Label variant="caption" tone="tertiary" style={{ marginTop: theme.spacing.xs }}>
           {playText.tabs.minutes(entry.typicalMinutes)}

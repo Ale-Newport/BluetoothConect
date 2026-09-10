@@ -131,6 +131,7 @@ export function IncomingFileScreen({
   const name = safeDisplayName(record.filename);
   const waiting = record.state === TransferState.OFFERED;
   const finished = isTerminal(record);
+  const rate = rateLine(record);
   const received = record.state === TransferState.COMPLETED && record.localPath !== null;
 
   return (
@@ -138,10 +139,14 @@ export function IncomingFileScreen({
       <Gap size="lg" />
 
       <Row gap="md">
-        <Avatar name={peerName} peerId={peerId} size={44} />
+        <Avatar name={peerName} peerId={peerId} />
         <View style={{ flex: 1 }}>
+          {/* Only an unanswered offer is a question. Once the user has said yes
+              the heading is about the file, not about being asked - leaving
+              "wants to send you a file" above a progress bar makes the sheet
+              look as though the Accept had not registered. */}
           <Label variant="title2">
-            {waiting ? strings.share.wantsToSend(peerName) : shareStrings.incomingFrom(peerName)}
+            {waiting ? strings.share.wantsToSend(peerName) : shareStrings.fileFrom(peerName)}
           </Label>
         </View>
       </Row>
@@ -169,13 +174,17 @@ export function IncomingFileScreen({
                 </Label>
               </>
             ) : null}
-            <Label
-              variant="footnote"
-              tone={statusTextTone(record)}
-              style={{ marginTop: theme.spacing.xs }}
-            >
-              {rateLine(record) ?? statusLine(record)}
+            {/* What is happening, then how fast. The status is never dropped in
+                favour of the rate: a sheet that shows "1.2 MB/s" and nothing
+                else never actually says the file is arriving. */}
+            <Label variant="footnote" tone={statusTextTone(record)} style={{ marginTop: theme.spacing.xs }}>
+              {statusLine(record)}
             </Label>
+            {rate ? (
+              <Label variant="caption" tone="tertiary">
+                {rate}
+              </Label>
+            ) : null}
             {record.paused && !finished ? (
               <Label variant="caption" tone="tertiary" style={{ marginTop: theme.spacing.xs }}>
                 {shareStrings.pausedDetail}

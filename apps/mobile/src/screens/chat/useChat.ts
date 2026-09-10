@@ -48,6 +48,18 @@ export function useChatCenter(): ChatCenter | null {
   return useMemo(() => (client ? chatCenterFor(client) : null), [client]);
 }
 
+/**
+ * Declares the version as a real input to a memo.
+ *
+ * Everything these hooks read lives in SQLite rather than in React state, so
+ * the centre's version counter IS the dependency - but a rule that only looks
+ * at identifiers inside the callback cannot see that. Naming it here keeps the
+ * dependency honest without an exemption comment on every read.
+ */
+function dependsOn(_version: number): void {
+  /* nothing to do: the value is the dependency */
+}
+
 /** Bumped whenever anything the database holds about chat has changed. */
 function useChatVersion(centre: ChatCenter | null): number {
   const subscribe = useCallback(
@@ -65,12 +77,10 @@ export function useConversations(): {
 } {
   const centre = useChatCenter();
   const version = useChatVersion(centre);
-  const conversations = useMemo(
-    // `version` is the dependency that matters: the rows themselves live in
-    // SQLite, and this re-reads them whenever the centre says they moved.
-    () => centre?.listConversations() ?? [],
-    [centre, version],
-  );
+  const conversations = useMemo(() => {
+    dependsOn(version);
+    return centre?.listConversations() ?? [];
+  }, [centre, version]);
   return { centre, conversations };
 }
 
@@ -123,13 +133,10 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
     [peers, peerKey],
   );
 
-  const stored = useMemo(
-    () => {
-      void version;
-      return centre?.peerRow(peerKey) ?? null;
-    },
-    [centre, peerKey, version],
-  );
+  const stored = useMemo(() => {
+    dependsOn(version);
+    return centre?.peerRow(peerKey) ?? null;
+  }, [centre, peerKey, version]);
 
   const peerId = live?.peerId ?? (stored ? stored.peerId : null);
   const displayName = live?.displayName ?? stored?.displayName ?? fallbackName;
@@ -140,16 +147,13 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
   // someone who has hundreds of them. It is safe to do here because it is
   // idempotent - the row is looked up first and only created when a
   // conversation with this person genuinely does not exist yet.
-  const conversationId = useMemo(
-    () => {
-      void version;
-      return centre && peerId ? centre.conversationFor(peerId, displayName) : null;
-    },
-    [centre, peerId, displayName, version],
-  );
+  const conversationId = useMemo(() => {
+    dependsOn(version);
+    return centre && peerId ? centre.conversationFor(peerId, displayName) : null;
+  }, [centre, peerId, displayName, version]);
 
   const connection = useMemo(() => {
-    void version;
+    dependsOn(version);
     if (!centre || !peerId) return live?.connection ?? ConnectionState.DISCONNECTED;
     const fromSession = centre.connectionFor(peerId);
     // The session is the truth while one exists; the nearby list is what is
@@ -162,7 +166,7 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
   useEffect(() => setLimit(MESSAGE_PAGE_SIZE), [conversationId]);
 
   const page = useMemo(() => {
-    void version;
+    dependsOn(version);
     return centre && conversationId ? centre.readPage(conversationId, limit) : EMPTY_PAGE;
   }, [centre, conversationId, limit, version]);
 

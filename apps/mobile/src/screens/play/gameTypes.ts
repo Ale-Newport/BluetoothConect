@@ -142,12 +142,16 @@ export type {
 } from '../../../../../packages/games/src/games/airHockey.js';
 
 export {
+  BALL_COUNT as POOL_BALL_COUNT,
   BALL_RADIUS as POOL_BALL_RADIUS,
   POCKETS as POOL_POCKETS,
   POCKET_RADIUS as POOL_POCKET_RADIUS,
   PoolGroup,
   TABLE_HEIGHT as POOL_TABLE_HEIGHT,
   TABLE_WIDTH as POOL_TABLE_WIDTH,
+  anyBallMoving,
+  pool,
+  poolBeginShot,
   poolLerp,
   poolView,
 } from '../../../../../packages/games/src/games/pool.js';

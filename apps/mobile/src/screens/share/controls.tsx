@@ -22,6 +22,14 @@ const TOUCH_MIN = 44;
  * up under is the sort of thing nobody can name but everybody notices.
  */
 export const TILE_SIZE = 44;
+/**
+ * Row height, matching `ListRow` in the design system so a file row lines up
+ * with a peer row. Exported because the Share rows are built here rather than
+ * out of `ListRow`, and two different 56s would drift apart.
+ */
+export const ROW_MIN_HEIGHT = 56;
+/** The larger tile the two sheets lead with, where the file is the subject. */
+export const SUMMARY_TILE_SIZE = 56;
 
 /**
  * A determinate progress bar.
@@ -99,16 +107,21 @@ export function FileTile({
     style,
   ];
 
+  // `importantForAccessibility` is Android's half of this and
+  // `accessibilityElementsHidden` is iOS's. Without the second one VoiceOver
+  // still walks into the tile and reads the glyph aloud as punctuation before
+  // every filename, which is the sort of thing that makes a screen reader user
+  // give up on an app.
   if (previewUri) {
     return (
-      <View style={base} accessible={false} importantForAccessibility="no-hide-descendants">
+      <View style={base} accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
         <Image source={{ uri: previewUri }} style={{ width: size, height: size }} resizeMode="cover" />
       </View>
     );
   }
 
   return (
-    <View style={base} accessible={false} importantForAccessibility="no-hide-descendants">
+    <View style={base} accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       <Text style={{ fontSize: size * 0.4, color: theme.colors.textSecondary }}>{KIND_GLYPH[kind]}</Text>
     </View>
   );
@@ -207,7 +220,7 @@ export function ChoiceRow({
           flexDirection: 'row',
           alignItems: 'center',
           gap: theme.spacing.md,
-          minHeight: 56,
+          minHeight: ROW_MIN_HEIGHT,
           paddingVertical: theme.spacing.sm,
           opacity: disabled ? 0.45 : 1,
         },

@@ -94,12 +94,7 @@ export function PlayerBar({
           <View
             key={player}
             accessible
-            accessibilityLabel={[
-              name,
-              score === null ? null : `${playText.room.score} ${score}`,
-              caption,
-              active ? (isLocal ? undefined : undefined) : undefined,
-            ]
+            accessibilityLabel={[name, score === null ? null : `${playText.room.score} ${score}`, caption]
               .filter((part): part is string => typeof part === 'string')
               .join(', ')}
             style={{

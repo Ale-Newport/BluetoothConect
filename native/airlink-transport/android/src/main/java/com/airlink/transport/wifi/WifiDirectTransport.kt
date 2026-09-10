@@ -255,7 +255,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                 // The framework dropped our channel - usually because Wi-Fi was
                 // turned off. Report it as state, never as a crash, and let the
                 // layer above decide what to do about it.
-                control.post {
+                onControl {
                     channel = null
                     p2pEnabled = false
                     events?.availabilityChanged(kind, false, UnavailableReason.RADIO_OFF)
@@ -285,7 +285,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         val registered = receiver
         receiver = null
 
-        control.post {
+        onControl {
             stopDiscoveryInternal(open)
             links.values.toList().forEach { it.link.close("transport stopped") }
             teardownGroup(open)
@@ -403,7 +403,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         val p2p = manager ?: throw AirLinkError.Unsupported("Wi-Fi Direct")
         if (!started) throw AirLinkError.NotStarted()
         if (!hasNearbyPermission()) throw AirLinkError.PermissionDenied(kind)
-        control.post {
+        onControl {
             discovering = true
             issueDiscovery(p2p)
         }
@@ -443,7 +443,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     override fun stopDiscovery() {
-        control.post { stopDiscoveryInternal(channel) }
+        onControl { stopDiscoveryInternal(channel) }
     }
 
     /** Takes the channel rather than reading the field: see the note in stop(). */
@@ -511,34 +511,34 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     // -- links ----------------------------------------------------------------
 
     override fun connect(endpointId: String, timeoutMs: Int, completion: (Result<String>) -> Unit) {
-        control.post {
+        onControl {
             val p2p = manager
             val open = channel
             if (p2p == null || open == null || !started) {
                 deliver(completion, Result.failure(AirLinkError.NotStarted()))
-                return@post
+                return@onControl
             }
             if (!p2pLikelyEnabled()) {
                 deliver(completion, Result.failure(AirLinkError.RadioOff(kind)))
-                return@post
+                return@onControl
             }
             if (!hasNearbyPermission()) {
                 deliver(completion, Result.failure(AirLinkError.PermissionDenied(kind)))
-                return@post
+                return@onControl
             }
             if (pending != null) {
                 // One negotiation at a time: the framework has a single p2p
                 // state machine and a second connect would cancel the first.
                 deliver(completion, Result.failure(AirLinkError.Busy("A Wi-Fi Direct connection")))
-                return@post
+                return@onControl
             }
             if (links.size >= MAX_LINKS) {
                 deliver(completion, Result.failure(AirLinkError.Failed("too many open links")))
-                return@post
+                return@onControl
             }
             if (!peers.containsKey(endpointId)) {
                 deliver(completion, Result.failure(AirLinkError.UnknownEndpoint(endpointId)))
-                return@post
+                return@onControl
             }
 
             val budget = timeoutMs.coerceIn(5_000, 120_000)
@@ -564,7 +564,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                 // The endpoint id is a MAC address handed to us by requestPeers;
                 // if it will not parse, the peer entry is stale.
                 failPending(AirLinkError.UnknownEndpoint(endpointId))
-                return@post
+                return@onControl
             }
 
             try {
@@ -578,7 +578,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                         }
 
                         override fun onFailure(reason: Int) {
-                            control.post {
+                            onControl {
                                 if (pending === request) {
                                     failPending(
                                         AirLinkError.Failed("Wi-Fi Direct connect failed: ${actionError(reason)}"),
@@ -664,13 +664,13 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
 
     private fun acceptIncoming(socket: Socket): Boolean {
         if (!started || links.size >= MAX_LINKS) return false
-        control.post {
+        onControl {
             if (!started) {
                 // stop() ran between the accept and this hop. Closing here is the
                 // only place left that can, and a socket nobody owns would
                 // otherwise sit open until the process died.
                 closeQuietly(socket)
-                return@post
+                return@onControl
             }
             val request = pending
             // If this socket is the answer to our own connect() we report it as
@@ -717,17 +717,17 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
             }
 
             val connected = socket
-            control.post {
+            onControl {
                 dialing.set(false)
                 if (connected == null) {
                     if (pending != null) {
                         failPending(AirLinkError.Timeout("reaching the Wi-Fi Direct group owner"))
                     }
-                    return@post
+                    return@onControl
                 }
                 if (!started) {
                     closeQuietly(connected)
-                    return@post
+                    return@onControl
                 }
                 val current = pending
                 val endpointId = current?.endpointId ?: address.hostAddress ?: "group-owner"
@@ -826,26 +826,26 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     override fun disconnect(linkId: String, reason: String) {
-        control.post {
-            val record = links[linkId] ?: return@post
+        onControl {
+            val record = links[linkId] ?: return@onControl
             events?.linkState(linkId, LinkState.CLOSING, reason)
             record.link.close(reason)
         }
     }
 
     override fun send(linkId: String, data: ByteArray, reliable: Boolean, completion: (Result<Unit>) -> Unit) {
-        control.post {
+        onControl {
             val record = links[linkId]
             if (record == null) {
                 deliver(completion, Result.failure(AirLinkError.UnknownLink(linkId)))
-                return@post
+                return@onControl
             }
             if (data.size > FramedTcp.MAX_DATAGRAM_BYTES) {
                 deliver(
                     completion,
                     Result.failure(AirLinkError.PayloadTooLarge(data.size, FramedTcp.MAX_DATAGRAM_BYTES)),
                 )
-                return@post
+                return@onControl
             }
             record.link.send(data, reliable) { result ->
                 deliver(

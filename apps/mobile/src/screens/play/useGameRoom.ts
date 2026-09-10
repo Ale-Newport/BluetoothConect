@@ -174,8 +174,16 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
   const [connection, setConnection] = useState<ConnectionState>(
     () => client.peer(peerKey)?.session.state ?? ConnectionState.DISCONNECTED,
   );
-  /** Bumped whenever the board changed. Realtime motion deliberately does not. */
-  const [revision, setRevision] = useState(0);
+  /**
+   * The re-render trigger.
+   *
+   * The counter itself is never read - only bumped - because the board lives in
+   * a ref rather than in state: a realtime game mutates it sixty times a second
+   * and React must never see that. `bumpBoard()` is called only when something
+   * DISCRETE changed, and the render it causes rebuilds the view below from the
+   * ref. Hence the empty slot: there is no value here worth naming.
+   */
+  const [, forceRender] = useState(0);
 
   const handle = client.peer(peerKey);
   const localPlayer = profile?.peerId ?? '';
@@ -187,7 +195,7 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
     [localPlayer, opponentName, profile?.displayName],
   );
 
-  const bumpBoard = useCallback(() => setRevision((n) => n + 1), []);
+  const bumpBoard = useCallback(() => forceRender((n) => n + 1), []);
 
   // -- persistence ----------------------------------------------------------
 
@@ -567,11 +575,17 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
   const leave = useCallback(() => {
     const game = sessionRef.current;
     if (handle) trySend(handle.session, MessageType.GAME_LEAVE, { s: gameSessionId });
+
+    // A game that reached a result has already been written by `persistOutcome`,
+    // with its winner. Touching the row again here would replace "finished" with
+    // "abandoned" and lose that, so a finished game is left exactly as it is.
     const finished = game ? game.status.kind !== GameStatusKind.IN_PROGRESS : false;
+    if (finished) return;
+
     // A realtime game cannot honestly be resumed - its state is a function of
     // elapsed time, and there is no truthful way to pick a puck up where it was
     // left. Saying so in the row keeps it off the "in progress" shelf.
-    const resumable = !finished && mode === GameMode.TURN_BASED && phase === RoomPhase.PLAYING;
+    const resumable = mode === GameMode.TURN_BASED && phase === RoomPhase.PLAYING;
     setRowState(client, gameSessionId, resumable ? 'active' : 'abandoned');
   }, [client, gameSessionId, handle, mode, phase]);
 
@@ -615,58 +629,44 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
 
   // -- the view -------------------------------------------------------------
 
-  const game = sessionRef.current;
+  /**
+   * Built fresh on every render, deliberately.
+   *
+   * The board itself lives in a ref, not in state - a realtime game mutates it
+   * sixty times a second and React must never see that. So what actually makes
+   * this hook produce a NEW view is the render `bumpBoard()` forces whenever
+   * something discrete changed: a move landed, the phase moved on, the link
+   * came back. Memoising the object on top of that would only add a dependency
+   * list that lies - it would have to name a ref it reads - to save building
+   * one small object per render.
+   */
+  const session = sessionRef.current;
 
-  return useMemo<GameRoomView>(() => {
-    const session = sessionRef.current;
-    return {
-      phase,
-      entry,
-      state: session ? (session.currentState as unknown) : null,
-      status: session ? session.status : null,
-      turn: session ? session.turn : null,
-      lastAction: lastActionRef.current,
-      players: playersRef.current,
-      local: localPlayer,
-      isHost,
-      live,
-      elapsedMs: session ? (isHost ? session.simulatedMs : remoteElapsedRef.current) : 0,
-      frames,
-      dispatch,
-      nameFor,
-      opponentName,
-      blockedReason,
-      sessionKey: gameSessionId,
-      incomingRematch,
-      leave,
-      retryInvite,
-      requestRematch,
-      acceptRematch,
-      declineRematch,
-    };
-    // `revision` is what makes this recompute. The session itself lives in a
-    // ref so a game running at sixty frames a second never re-renders React.
-  }, [
-    acceptRematch,
-    blockedReason,
-    declineRematch,
-    dispatch,
+  return {
+    phase,
     entry,
-    frames,
-    game,
-    gameSessionId,
-    incomingRematch,
+    state: session ? (session.currentState as unknown) : null,
+    status: session ? session.status : null,
+    turn: session ? session.turn : null,
+    lastAction: lastActionRef.current,
+    players: playersRef.current,
+    local: localPlayer,
     isHost,
-    leave,
     live,
-    localPlayer,
+    elapsedMs: session ? (isHost ? session.simulatedMs : remoteElapsedRef.current) : 0,
+    frames,
+    dispatch,
     nameFor,
     opponentName,
-    phase,
-    requestRematch,
+    blockedReason,
+    sessionKey: gameSessionId,
+    incomingRematch,
+    leave,
     retryInvite,
-    revision,
-  ]);
+    requestRematch,
+    acceptRematch,
+    declineRematch,
+  };
 }
 
 // ---------------------------------------------------------------------------

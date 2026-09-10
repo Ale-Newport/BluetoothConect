@@ -19,6 +19,10 @@ import {
 } from '../../ui/index.js';
 import { selectConnected, useAppStore } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
+// The app's one translation of a quality token into a word. Importing it beats
+// a second copy of the same four-case switch, which is how two screens end up
+// disagreeing about what "weak" is called.
+import { qualityWord } from '../home/peerPresentation.js';
 import { ChoiceRow, FileTile, RowSeparator } from './controls.js';
 import { FileSummary } from './TransferRow.js';
 import { pickDocument, pickPhoto, type PickResult, type PickedFile } from './picker.js';
@@ -81,14 +85,27 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
     if (!recipient && first) setRecipientKey(first.key);
   }, [connected, recipient]);
 
-  // The protocol refuses a fourth simultaneous send, so the button says so
-  // beforehand rather than throwing an error message at the user afterwards.
+  /**
+   * The protocol refuses a fourth simultaneous send, so the button says so
+   * beforehand rather than throwing an error message at the user afterwards.
+   *
+   * Counted PER PERSON, because that is how the protocol counts: there is one
+   * transfer protocol per peer and the limit belongs to it. Counting every send
+   * in the app would let three files paused on their way to a friend who has
+   * walked off block a send to somebody sitting in the same room, with a reason
+   * that told them to finish transfers that cannot be finished.
+   */
   const outgoingInFlight = useMemo(
     () =>
-      transfers.filter(
-        (record) => record.direction === TransferDirection.OUTGOING && !isTerminalState(record.state),
-      ).length,
-    [transfers],
+      recipient === null
+        ? 0
+        : transfers.filter(
+            (record) =>
+              record.direction === TransferDirection.OUTGOING &&
+              record.peerKey === recipient.key &&
+              !isTerminalState(record.state),
+          ).length,
+    [transfers, recipient],
   );
 
   const estimate = useMemo(
@@ -107,6 +124,12 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
       } else if (result.status === 'failed') {
         setProblem(result.message);
       }
+    } catch {
+      // A picker can reject as well as return a failure - a denied permission,
+      // a file the OS will not copy. Swallowing that would close the picker and
+      // leave the sheet exactly as it was, which reads as the tap having been
+      // ignored.
+      setProblem(shareStrings.couldNotReadFile);
     } finally {
       // Always: a picker that is cancelled, throws or hangs must still give the
       // sheet back to the user rather than leaving a spinner with no end.
@@ -117,15 +140,20 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
   const tooLarge = file !== null && file.fileBytes > FILE_LIMITS.defaultMaxFileBytes;
   const tooBusy = outgoingInFlight >= FILE_LIMITS.maxConcurrentOutgoing;
 
-  const disabledReason = !file
-    ? shareStrings.nothingChosen
-    : !recipient
-      ? shareStrings.connectFirst
-      : tooLarge
-        ? shareStrings.tooLarge
-        : tooBusy
-          ? shareStrings.tooManyAtOnce
-          : null;
+  // Every reason Send cannot be pressed, in the order a person would hit them.
+  // `centre` is null for the first moment after launch, while the radios come
+  // up: without it here the button would look live and do nothing at all.
+  const disabledReason = !centre
+    ? shareStrings.notReadyYet
+    : !file
+      ? shareStrings.nothingChosen
+      : !recipient
+        ? shareStrings.connectFirst
+        : tooLarge
+          ? shareStrings.tooLarge
+          : tooBusy
+            ? shareStrings.tooManyAtOnce(recipient.displayName)
+            : null;
 
   const send = useCallback(() => {
     if (!centre || !file || !recipient) return;
@@ -226,7 +254,9 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
               <ChoiceRow
                 role="radio"
                 title={peer.displayName}
-                subtitle={peer.quality ?? strings.home.connected}
+                // `peer.quality` is a raw token ("excellent", "weak"): a word
+                // for the code, not for a person. It is never shown as it is.
+                subtitle={qualityWord(peer.quality) ?? strings.home.connected}
                 selected={peer.key === recipientKey}
                 accessibilityLabel={shareStrings.recipientLabel(peer.displayName)}
                 left={<Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={ROW_TILE} />}

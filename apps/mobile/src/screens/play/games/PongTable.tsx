@@ -133,7 +133,12 @@ export function PongTable({
 
   // Letting go of the screen must stop the paddle even if the release never
   // arrives as an event - unmounting mid-press would otherwise leave it moving.
-  useEffect(() => () => void dispatch('input', { dir: 0 }), [dispatch]);
+  useEffect(
+    () => () => {
+      dispatch('input', { dir: 0 });
+    },
+    [dispatch],
+  );
 
   return (
     <View>

@@ -67,7 +67,6 @@ const SEARCH_HINT_MS = 6000;
 const AVATAR_SIZE = 44;
 
 export function HomeScreen(): React.JSX.Element {
-  const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
   const isFocused = useIsFocused();
 

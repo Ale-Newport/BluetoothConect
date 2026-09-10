@@ -5,6 +5,7 @@ import {
   TransferDirection,
   TransferState,
   defaultProfileFor,
+  isTerminalState,
   systemClock,
   systemRandom,
   totalChunksFor,
@@ -228,12 +229,36 @@ export class TransferCenter {
   async accept(transferId: string): Promise<void> {
     const record = this.records.get(transferId);
     const binding = record ? this.bindings.get(record.peerKey) : undefined;
-    if (!record || !binding) throw new Error(shareStrings.incomingGone);
+    if (!record || !binding) {
+      // Nobody to accept from. The offer cannot come back on a session that no
+      // longer exists, so the row is ended here rather than left sitting in
+      // "Waiting for you" offering a choice that does nothing.
+      if (record) this.expireOffer(transferId);
+      throw new Error(shareStrings.incomingGone);
+    }
 
     const store = await IncomingPartStore.open(transferId, record.totalBytes);
-    this.incomingStores.set(transferId, store);
-    const resume = this.resumeStateFor(transferId);
-    binding.protocol.accept(transferId, store, resume ?? undefined);
+    try {
+      this.incomingStores.set(transferId, store);
+      const resume = this.resumeStateFor(transferId);
+      binding.protocol.accept(transferId, store, resume ?? undefined);
+    } catch {
+      // The protocol has no pending offer with this id: it expired, or the
+      // session was rebuilt under us while the sheet was open. Either way the
+      // answer can never be delivered, so the record ends now.
+      this.incomingStores.delete(transferId);
+      await store.discard();
+      this.expireOffer(transferId);
+      // The protocol's own message is written for a log; the caller only needs
+      // to know the offer is gone.
+      throw new Error(shareStrings.incomingGone);
+    }
+  }
+
+  /** End an offer that can no longer be answered, so no row is left hanging. */
+  private expireOffer(transferId: string): void {
+    this.finish(transferId, TransferState.CANCELLED, shareStrings.incomingGone);
+    void this.releaseStores(transferId);
   }
 
   /**
@@ -247,32 +272,39 @@ export class TransferCenter {
   decline(transferId: string): void {
     const record = this.records.get(transferId);
     if (!record) return;
-    const binding = this.bindings.get(record.peerKey);
-    if (binding) {
-      binding.protocol.decline(transferId);
-      return;
-    }
+    // Tell the peer if we still can. `decline` on a protocol that has forgotten
+    // the offer - because it expired, or because the session was rebuilt after
+    // a reconnection - does nothing at all, which is why the answer is ALWAYS
+    // honoured locally below rather than only in the branch with no session.
+    this.bindings.get(record.peerKey)?.protocol.decline(transferId);
     // No failure text: the user declining is a decision, not something that
     // went wrong, and the screens phrase it from the state alone.
-    this.finish(transferId, TransferState.DECLINED, null);
-    void this.releaseStores(transferId);
+    this.endLocally(transferId, TransferState.DECLINED);
   }
 
   /** Stop a transfer, from either side, at any point. */
   cancel(transferId: string): void {
     const record = this.records.get(transferId);
     if (!record) return;
-    const binding = this.bindings.get(record.peerKey);
-    if (binding) {
-      binding.protocol.cancel(transferId);
-      return;
-    }
-    // No live session to tell, so this is a local abandonment: the peer will
-    // find out when it next tries to send us something for this transfer.
-    this.finish(transferId, TransferState.CANCELLED, null);
-    void this.incomingStores.get(transferId)?.discard();
-    this.incomingStores.delete(transferId);
-    this.outgoingSources.delete(transferId);
+    this.bindings.get(record.peerKey)?.protocol.cancel(transferId);
+    // Same rule as Decline: Stop is the one control on a stuck row, and it has
+    // to end the row whether or not there is anybody left to tell.
+    this.endLocally(transferId, TransferState.CANCELLED);
+  }
+
+  /**
+   * Finish a record the protocol has not finished for us.
+   *
+   * When the protocol did know the transfer it has already emitted its event
+   * and the record is terminal by the time this runs, so this is a no-op; when
+   * it did not, this is what stops the user pressing a live-looking button that
+   * cannot reach anyone.
+   */
+  private endLocally(transferId: string, state: TransferState): void {
+    const record = this.records.get(transferId);
+    if (!record || isTerminalState(record.state)) return;
+    this.finish(transferId, state, null);
+    void this.releaseStores(transferId);
   }
 
   /** Take a finished transfer off the list. Does not touch the received file. */
@@ -333,9 +365,14 @@ export class TransferCenter {
       protocol.events.on('completed', ({ transferId, direction, filename }) => {
         void this.onCompleted(transferId, direction, filename);
       }),
+      // `declined` is the one event that does not carry its direction, so it
+      // comes from the record - and the direction is what decides whether
+      // REJECTED_BY_USER means "they said no" or "you did".
       protocol.events.on('declined', ({ transferId, code }) => {
-        const name = this.records.get(transferId)?.peerName ?? this.nameFor(peerKey);
-        this.finish(transferId, TransferState.DECLINED, failureText(code, name));
+        const record = this.records.get(transferId);
+        const name = record?.peerName ?? this.nameFor(peerKey);
+        const direction = record?.direction ?? TransferDirection.INCOMING;
+        this.finish(transferId, TransferState.DECLINED, failureText(code, name, direction));
         void this.releaseStores(transferId);
       }),
       protocol.events.on('cancelled', ({ transferId, byPeer }) => {
@@ -343,9 +380,9 @@ export class TransferCenter {
         this.finish(transferId, TransferState.CANCELLED, byPeer ? shareStrings.stoppedByThem(name) : null);
         void this.releaseStores(transferId);
       }),
-      protocol.events.on('failed', ({ transferId, code }) => {
+      protocol.events.on('failed', ({ transferId, direction, code }) => {
         const name = this.records.get(transferId)?.peerName ?? this.nameFor(peerKey);
-        this.finish(transferId, TransferState.FAILED, failureText(code, name));
+        this.finish(transferId, TransferState.FAILED, failureText(code, name, direction));
         void this.releaseStores(transferId);
       }),
 
@@ -357,8 +394,35 @@ export class TransferCenter {
 
     const binding: Binding = { protocol, offs };
     this.bindings.set(peerKey, binding);
+    this.adoptRestored(peerKey, handle.session.peerId);
     void this.resumeOutgoingFor(peerKey, binding);
     return binding;
+  }
+
+  /**
+   * Re-key transfers that came back from the database.
+   *
+   * A row remembers the peer by its stable identity, which is the only name
+   * that survives a restart; everything else in the app addresses a peer by the
+   * key the nearby registry gave this session, and the two are not the same
+   * string. Until they are reconciled a restored transfer matches no live peer:
+   * its Try again never appears, and nothing would ever attach to it. This is
+   * the moment both names are known.
+   */
+  private adoptRestored(peerKey: string, peerId: string | null): void {
+    if (!peerId || peerId === peerKey) return;
+    const name = this.nameFor(peerKey);
+    let changed = false;
+    for (const record of [...this.records.values()]) {
+      if (record.peerKey !== peerId) continue;
+      this.records.set(record.id, {
+        ...record,
+        peerKey,
+        peerName: record.peerName.length > 0 ? record.peerName : name,
+      });
+      changed = true;
+    }
+    if (changed) this.publish();
   }
 
   private detach(peerKey: string): void {
@@ -383,8 +447,13 @@ export class TransferCenter {
       this.records.set(record.id, { ...record, paused: true, bytesPerSecond: null, etaMs: null });
       changed = true;
     }
+    if (!changed) return;
+    // Losing a link is the other moment worth a database write, but only when
+    // this peer really had something running: the event also fires for every
+    // step of discovery, and writing every record each time would put a burst
+    // of SQL on the main thread while the radios are at their busiest.
     this.persistAll();
-    if (changed) this.publish();
+    this.publish();
   }
 
   /**
@@ -461,12 +530,33 @@ export class TransferCenter {
     }
   }
 
+  /**
+   * The protocol reports progress on its own timer, several times a second, for
+   * every running transfer - so this is the hottest path in the feature and the
+   * two things it does NOT do matter.
+   *
+   * It does not publish when nothing has actually changed, because a tick that
+   * moved no bytes would otherwise re-render the whole tab. And it only moves a
+   * record's `updatedAt` on a change a person can see: the list is ordered by
+   * it, so bumping it on every tick made two running transfers trade places
+   * several times a second under the user's thumb.
+   */
   private onProgress(peerKey: string, progress: TransferProgress): void {
     const existing = this.records.get(progress.transferId);
     if (!existing) return;
     if (progress.bytesPerSecond !== null && progress.bytesPerSecond > 0) {
       this.measured.set(peerKey, progress.bytesPerSecond);
     }
+
+    const reordering = existing.state !== progress.state || existing.paused !== progress.stalled;
+    const changed =
+      reordering ||
+      existing.transferredBytes !== progress.transferredBytes ||
+      existing.percent !== progress.percent ||
+      existing.bytesPerSecond !== progress.bytesPerSecond ||
+      existing.etaMs !== progress.etaMs;
+    if (!changed) return;
+
     this.upsert({
       ...existing,
       state: progress.state,
@@ -475,7 +565,7 @@ export class TransferCenter {
       bytesPerSecond: progress.bytesPerSecond,
       etaMs: progress.etaMs,
       paused: progress.stalled,
-      updatedAt: Date.now(),
+      updatedAt: reordering ? Date.now() : existing.updatedAt,
     });
     this.persistProgress(progress.transferId, progress);
   }
@@ -572,6 +662,12 @@ export class TransferCenter {
   private resumeStateFor(transferId: string, offer?: FileOffer): ResumeState | null {
     const row = this.safeDb(() => this.client.db.transfers.get(transferId));
     if (!row || !row.receivedBitmap) return null;
+    // Only a row this device was RECEIVING can license resuming a receive.
+    // Sending persists a bitmap too, and `onOffer` treats a matching row as
+    // proof the user already agreed to this file - so without this check a peer
+    // could quote back the id, size and chunk size of a send it had just seen
+    // and have its own file accepted without anybody being asked.
+    if (row.direction !== 'incoming') return null;
     const file = this.safeDb(() => this.client.db.files.get(row.fileId));
     if (!file) return null;
     if (offer) {
@@ -675,21 +771,33 @@ export class TransferCenter {
   /**
    * Bring back transfers that were still running when the app was last killed.
    *
-   * They come back as PAUSED, which is the truth: nothing is wrong with them,
-   * they simply need the other phone to be nearby again. An outgoing one cannot
-   * resume by itself here - its source file may have been a temporary copy the
-   * OS has since cleared - so it is shown as paused with a Stop, and is
-   * re-offered only if the source is still readable.
+   * A RECEIVE comes back as paused, which is the truth: the bytes are on disk,
+   * and when the other phone is nearby again it re-offers the same file and the
+   * transfer picks up from the bitmap without anybody being asked twice.
+   *
+   * A SEND cannot do that. What it was reading from was a copy in a cache
+   * directory, the handle to it did not survive the process, and there is no
+   * message that restarts a send from the receiver's side. So it comes back as
+   * a stopped transfer that says so, with Try again beside it - rather than as
+   * a paused row promising to continue by itself, which is a promise this app
+   * would then never keep.
+   *
+   * An offer nobody had answered is simply dropped. Offers expire in minutes on
+   * both sides, so one that outlived a restart is long dead, and restoring it
+   * would put a question in "Waiting for you" that no longer has an answer.
    */
   private restoreInterrupted(): void {
     const rows = this.safeDb(() => this.client.db.transfers.active()) ?? [];
+    let restored = 0;
     for (const row of rows) {
       if (this.records.has(row.id)) continue;
+      if (row.state === 'offered') continue;
       const file = this.safeDb(() => this.client.db.files.get(row.fileId));
       if (!file) continue;
       this.records.set(row.id, restoredRecord(row, file.name, file.mimeType, file.sizeBytes, file.localPath));
+      restored++;
     }
-    if (rows.length > 0) this.publish();
+    if (restored > 0) this.publish();
   }
 
   /** The database is a convenience here; a failed write must never stop bytes. */
@@ -728,11 +836,14 @@ function restoredRecord(
   totalBytes: number,
   localPath: string | null,
 ): TransferRecord {
+  const incoming = row.direction !== 'outgoing';
   return {
     id: row.id,
+    // The registry key for this peer is not known yet; `adoptRestored` swaps it
+    // in the moment the peer connects.
     peerKey: row.peerId,
     peerName: nameForPeerId(row.peerId),
-    direction: row.direction === 'outgoing' ? TransferDirection.OUTGOING : TransferDirection.INCOMING,
+    direction: incoming ? TransferDirection.INCOMING : TransferDirection.OUTGOING,
     filename,
     mimeType,
     totalBytes,
@@ -740,10 +851,10 @@ function restoredRecord(
     percent: totalBytes > 0 ? Math.min(99, Math.round((row.bytesTransferred / totalBytes) * 100)) : 0,
     bytesPerSecond: null,
     etaMs: null,
-    state: TransferState.TRANSFERRING,
-    paused: true,
+    state: incoming ? TransferState.TRANSFERRING : TransferState.CANCELLED,
+    paused: incoming,
     localPath,
-    failure: null,
+    failure: incoming ? null : shareStrings.stoppedWhenClosed,
     updatedAt: row.updatedAt,
   };
 }

@@ -44,6 +44,10 @@ import { freshSalt, randomFleet, rotateShip, useFleetSecret } from './battleship
  */
 
 const MAX_GRID = 320;
+/** Hairline gutter between sea squares. Smaller than any spacing token, by need. */
+const GUTTER = 1;
+/** Corner on a sea square. The radius scale starts at 8, which would be a circle. */
+const CELL_RADIUS = 2;
 
 export function BattleshipBoard({
   state,
@@ -70,15 +74,18 @@ export function BattleshipBoard({
   const [draft, setDraft] = useState<readonly Ship[] | null>(null);
   const [selected, setSelected] = useState(0);
 
+  // Seeded once, from a stored fleet if there is one, otherwise from a shuffle.
+  // After that the draft is the only thing the placement screen edits, so
+  // rotating and moving still work if a commitment did not get sent.
   useEffect(() => {
-    if (state.phase !== BattleshipPhase.PLACEMENT) return;
-    if (secret || draft) return;
-    if (loading) return;
-    setDraft(randomFleet());
+    if (state.phase !== BattleshipPhase.PLACEMENT || draft || loading) return;
+    setDraft(secret?.ships ?? randomFleet());
   }, [draft, loading, secret, state.phase]);
 
-  const myShots: readonly Shot[] = state.shots[seat] ?? [];
-  const theirShots: readonly Shot[] = state.shots[foe] ?? [];
+  // Memoised because the auto-report effect below depends on them: a fresh
+  // empty array on every render would re-run it and re-send the same report.
+  const myShots = useMemo<readonly Shot[]>(() => state.shots[seat] ?? [], [seat, state.shots]);
+  const theirShots = useMemo<readonly Shot[]>(() => state.shots[foe] ?? [], [foe, state.shots]);
   const committed = state.commitments[seat] !== null;
 
   /**
@@ -98,7 +105,7 @@ export function BattleshipBoard({
   }, [dispatch, live, myShots, seat, secret, state.pending, state.phase]);
 
   const myCells = useMemo(() => {
-    const ships = secret?.ships ?? draft ?? [];
+    const ships = draft ?? secret?.ships ?? [];
     const map = new Map<number, number>();
     ships.forEach((ship, index) => {
       for (const c of shipCells(ship) ?? []) map.set(c, index);
@@ -112,7 +119,7 @@ export function BattleshipBoard({
   // -- placement ------------------------------------------------------------
 
   if (state.phase === BattleshipPhase.PLACEMENT) {
-    const ships = secret?.ships ?? draft ?? [];
+    const ships = draft ?? secret?.ships ?? [];
     return (
       <View>
         <Label variant="title2">{playText.battleship.placeTitle}</Label>
@@ -130,7 +137,12 @@ export function BattleshipBoard({
               const ship = myCells.get(index);
               return ship === undefined ? 'water' : ship === selected ? 'selectedShip' : 'ship';
             }}
-            describe={(index) => cellName(index)}
+            describe={(index) => {
+              const ship = myCells.get(index);
+              return ship === undefined
+                ? cellName(index)
+                : `${cellName(index)}, ${playText.battleship.ships[ship] ?? ''}`;
+            }}
             onPress={
               committed
                 ? undefined
@@ -308,7 +320,22 @@ export function BattleshipBoard({
             if (shot) return shot.sunk !== null ? 'sunk' : shot.hit ? 'hit' : 'miss';
             return myCells.has(index) ? 'ship' : 'water';
           }}
-          describe={(index) => cellName(index)}
+          describe={(index) => {
+            const shot = shotAt(myShots, index);
+            if (shot) {
+              const outcome =
+                shot.sunk !== null
+                  ? playText.battleship.sunk(playText.battleship.ships[shot.sunk] ?? '')
+                  : shot.hit
+                  ? playText.battleship.hit
+                  : playText.battleship.miss;
+              return `${cellName(index)}, ${outcome}`;
+            }
+            const ship = myCells.get(index);
+            return ship === undefined
+              ? cellName(index)
+              : `${cellName(index)}, ${playText.battleship.ships[ship] ?? ''}`;
+          }}
         />
       </BoardSurface>
 
@@ -356,13 +383,15 @@ function Sea({
             size={size}
             onPress={onPress ? () => onPress(index) : undefined}
             accessibilityLabel={describe(index)}
-            style={{ padding: 1 }}
+            // A single point of gutter: the grid is ten squares across a phone,
+            // so anything from the spacing scale would leave no square at all.
+            style={{ padding: GUTTER }}
           >
             <View
               style={{
                 flex: 1,
                 alignSelf: 'stretch',
-                borderRadius: 2,
+                borderRadius: CELL_RADIUS,
                 backgroundColor: fill[kind],
                 opacity: kind === 'miss' ? 0.4 : 1,
               }}

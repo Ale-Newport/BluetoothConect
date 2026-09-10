@@ -4,7 +4,18 @@ import { useNavigation, useRoute, type RouteProp } from '@react-navigation/nativ
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ConnectionState } from '@airlink/core';
 import { strings } from '@airlink/config';
-import { Avatar, Button, EmptyState, Gap, Label, Row, Screen, useTheme } from '../../ui/index.js';
+import {
+  Avatar,
+  Button,
+  EmptyState,
+  Gap,
+  Label,
+  Row,
+  Screen,
+  StatusDot,
+  useTheme,
+  type StatusTone,
+} from '../../ui/index.js';
 import { selectPeer, selectPendingPairings, useAppStore, type PeerView } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
 import { PulsingDot } from './controls.js';
@@ -230,8 +241,8 @@ export function ConnectSheet(): React.JSX.Element {
 
         <Gap size="xl" />
 
-        {/* One block that says exactly where we are. A live region so a screen
-            reader hears the connection move rather than having to go looking. */}
+        {/* One block that says exactly where we are. The live region is for
+            Android; iOS is told by the announcement above. */}
         <View
           accessible
           accessibilityLiveRegion="polite"
@@ -248,7 +259,10 @@ export function ConnectSheet(): React.JSX.Element {
           }}
         >
           <Row gap="sm">
-            {stage === 'connecting' || stage === 'securing' ? <PulsingDot /> : null}
+            {/* A dot in every stage, not only while working: the same anatomy
+                as every other status in the app, and the words beside it stay
+                where they are instead of sliding sideways when it appears. */}
+            {stage === 'connecting' || stage === 'securing' ? <PulsingDot /> : <StatusDot tone={dotTone(stage)} />}
             <View style={{ flex: 1 }}>
               <Label variant="callout" tone={stage === 'connected' ? 'connected' : 'primary'}>
                 {status.title}
@@ -275,6 +289,18 @@ export function ConnectSheet(): React.JSX.Element {
       </View>
     </Screen>
   );
+}
+
+/** The dot beside the status line at rest. While working it pulses instead. */
+function dotTone(stage: Stage): StatusTone {
+  switch (stage) {
+    case 'connected':
+      return 'connected';
+    case 'failed':
+      return 'warning';
+    default:
+      return 'disconnected';
+  }
 }
 
 /** What the user is told at each stage. Never a code, never a transport name. */

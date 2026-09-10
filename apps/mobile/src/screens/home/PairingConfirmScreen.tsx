@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View } from 'react-native';
+import { AccessibilityInfo, View } from 'react-native';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { formatSasCode } from '@airlink/core';
@@ -127,6 +127,24 @@ export function PairingConfirmScreen(): React.JSX.Element {
   }, [answer, pairing]);
 
   const close = useCallback(() => navigation.goBack(), [navigation]);
+
+  /**
+   * Say the outcome out loud.
+   *
+   * Answering swaps the two buttons for a waiting line, or the whole screen for
+   * a result. VoiceOver announces neither: it just loses the element it was on.
+   * So the one thing the user was waiting to hear is spoken.
+   */
+  useEffect(() => {
+    if (answer === 'none') return;
+    const said =
+      answer === 'confirmed'
+        ? homeCopy.pairingWaiting
+        : answer === 'refused'
+          ? `${homeCopy.pairingRefusedTitle}. ${homeCopy.pairingRefusedBody}`
+          : `${strings.connection.failed}. ${homeCopy.connectFailedBody}`;
+    AccessibilityInfo.announceForAccessibility(said);
+  }, [answer]);
 
   /** Why "They match" cannot be pressed yet, or null when it can. */
   const waitReason = client === null ? homeCopy.startingUp : armed ? null : homeCopy.compareFirst;

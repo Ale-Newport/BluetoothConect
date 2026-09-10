@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { useWindowDimensions, View } from 'react-native';
+import { AppState, useWindowDimensions, View } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import QRCode from 'react-native-qrcode-svg';
@@ -61,14 +61,27 @@ export function MyCodeScreen(): React.JSX.Element {
 
   const rebuild = useCallback(() => setIssuedAt(Date.now()), []);
 
-  // Rebuild while the screen is open, and again the moment it comes back into
-  // view - a phone that spent ten minutes in a pocket must not wake showing an
-  // expired code.
+  /**
+   * Rebuild while the screen is open, and again the moment it comes back.
+   *
+   * "Comes back" means two different things and both have to be handled. Focus
+   * covers navigating here. The AppState listener covers the case the interval
+   * cannot: iOS suspends JS timers while the app is in the background, so a
+   * phone that sat in a pocket for ten minutes wakes with a timer that has not
+   * fired and a code that expired eight minutes ago. Without this the screen
+   * would hand a friend a dead code and blame their camera for it.
+   */
   useFocusEffect(
     useCallback(() => {
       rebuild();
       const timer = setInterval(rebuild, REFRESH_INTERVAL_MS);
-      return () => clearInterval(timer);
+      const subscription = AppState.addEventListener('change', (state) => {
+        if (state === 'active') rebuild();
+      });
+      return () => {
+        clearInterval(timer);
+        subscription.remove();
+      };
     }, [rebuild]),
   );
 

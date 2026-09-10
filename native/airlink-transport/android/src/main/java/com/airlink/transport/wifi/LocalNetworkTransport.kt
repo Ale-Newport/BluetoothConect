@@ -286,7 +286,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         }
         server = listening
 
-        control.execute { watchLocalNetwork() }
+        onControl { watchLocalNetwork() }
         log("info", "listening on port ${listening.port}")
     }
 
@@ -303,7 +303,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         val listening = server
         server = null
 
-        control.execute {
+        onControl {
             stopAdvertisingInternal()
             stopDiscoveryInternal()
             listening?.stop()
@@ -320,14 +320,14 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         if (networkCallback != null) return
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                control.execute {
+                onControl {
                     localNetwork = network
                     events?.availabilityChanged(kind, true, UnavailableReason.NONE)
                 }
             }
 
             override fun onLost(network: Network) {
-                control.execute {
+                onControl {
                     if (localNetwork == network) localNetwork = null
                     if (!hasUsableLocalNetwork()) {
                         // Wi-Fi being switched off mid-session is a state event,
@@ -388,7 +388,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         }
         val instanceName = "AirLink-$suffix"
 
-        control.execute {
+        onControl {
             stopAdvertisingInternal()
 
             val info = NsdServiceInfo().apply {
@@ -406,14 +406,14 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
 
             val registration = object : NsdManager.RegistrationListener {
                 override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-                    control.execute {
+                    onControl {
                         registeredServiceName = serviceInfo.serviceName
                         log("info", "advertising as ${serviceInfo.serviceName} on port ${tcpServer.port}")
                     }
                 }
 
                 override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                    control.execute {
+                    onControl {
                         registrationListener = null
                         registeredServiceName = null
                         log("error", "advertising failed: ${nsdError(errorCode)}")
@@ -422,11 +422,11 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 }
 
                 override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
-                    control.execute { registeredServiceName = null }
+                    onControl { registeredServiceName = null }
                 }
 
                 override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                    control.execute {
+                    onControl {
                         registeredServiceName = null
                         log("warn", "unregister failed: ${nsdError(errorCode)}")
                     }
@@ -446,7 +446,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     override fun stopAdvertising() {
-        control.execute { stopAdvertisingInternal() }
+        onControl { stopAdvertisingInternal() }
     }
 
     private fun stopAdvertisingInternal() {
@@ -470,16 +470,16 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         if (!hasLocalNetworkPermission()) throw AirLinkError.PermissionDenied(kind)
         val serviceType = normaliseServiceType(config.bonjourServiceType)
 
-        control.execute {
-            if (discoveryListener != null) return@execute
+        onControl {
+            if (discoveryListener != null) return@onControl
 
             val listener = object : NsdManager.DiscoveryListener {
                 override fun onDiscoveryStarted(regType: String) {
-                    control.execute { log("info", "discovering $regType") }
+                    onControl { log("info", "discovering $regType") }
                 }
 
                 override fun onStartDiscoveryFailed(failedType: String, errorCode: Int) {
-                    control.execute {
+                    onControl {
                         discoveryListener = null
                         log("error", "discovery failed to start: ${nsdError(errorCode)}")
                         events?.availabilityChanged(kind, false, UnavailableReason.UNKNOWN)
@@ -487,19 +487,19 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 }
 
                 override fun onStopDiscoveryFailed(failedType: String, errorCode: Int) {
-                    control.execute { log("warn", "discovery failed to stop: ${nsdError(errorCode)}") }
+                    onControl { log("warn", "discovery failed to stop: ${nsdError(errorCode)}") }
                 }
 
                 override fun onDiscoveryStopped(stoppedType: String) {
-                    control.execute { discoveryListener = null }
+                    onControl { discoveryListener = null }
                 }
 
                 override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                    control.execute { handleServiceFound(serviceInfo) }
+                    onControl { handleServiceFound(serviceInfo) }
                 }
 
                 override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                    control.execute { handleServiceLost(serviceInfo.serviceName) }
+                    onControl { handleServiceLost(serviceInfo.serviceName) }
                 }
             }
 
@@ -513,7 +513,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     override fun stopDiscovery() {
-        control.execute { stopDiscoveryInternal() }
+        onControl { stopDiscoveryInternal() }
     }
 
     private fun stopDiscoveryInternal() {
@@ -625,22 +625,22 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     private inner class ServiceTracker(private val name: String) : NsdManager.ServiceInfoCallback {
 
         override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
-            control.execute {
+            onControl {
                 forget()
                 log("warn", "could not track $name: ${nsdError(errorCode)}")
             }
         }
 
         override fun onServiceUpdated(serviceInfo: NsdServiceInfo) {
-            control.execute { publishResolved(serviceInfo) }
+            onControl { publishResolved(serviceInfo) }
         }
 
         override fun onServiceLost() {
-            control.execute { handleServiceLost(name) }
+            onControl { handleServiceLost(name) }
         }
 
         override fun onServiceInfoCallbackUnregistered() {
-            control.execute { forget() }
+            onControl { forget() }
         }
 
         /** Must run on the control thread. */
@@ -659,14 +659,14 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
 
         val listener = object : NsdManager.ResolveListener {
             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                control.execute {
+                onControl {
                     log("debug", "resolve failed for ${serviceInfo.serviceName}: ${nsdError(errorCode)}")
                     finishResolve(generation)
                 }
             }
 
             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                control.execute {
+                onControl {
                     publishResolved(serviceInfo)
                     finishResolve(generation)
                 }
@@ -777,19 +777,19 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     // -- links ----------------------------------------------------------------
 
     override fun connect(endpointId: String, timeoutMs: Int, completion: (Result<String>) -> Unit) {
-        control.execute {
+        onControl {
             if (!started) {
                 deliver(completion, Result.failure(AirLinkError.NotStarted()))
-                return@execute
+                return@onControl
             }
             val endpoint = endpoints[endpointId]
             if (endpoint == null) {
                 deliver(completion, Result.failure(AirLinkError.UnknownEndpoint(endpointId)))
-                return@execute
+                return@onControl
             }
             if (links.size >= MAX_LINKS) {
                 deliver(completion, Result.failure(AirLinkError.Failed("too many open links")))
-                return@execute
+                return@onControl
             }
 
             val budget = timeoutMs.coerceIn(1_000, 60_000)
@@ -813,7 +813,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 bindToLocalNetwork(candidate)
             }
         } catch (e: IOException) {
-            control.execute {
+            onControl {
                 deliver(
                     completion,
                     Result.failure(
@@ -827,17 +827,17 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             }
             return
         } catch (t: Throwable) {
-            control.execute {
+            onControl {
                 deliver(completion, Result.failure(AirLinkError.Failed("connect failed: ${t.javaClass.simpleName}")))
             }
             return
         }
 
-        control.execute {
+        onControl {
             if (!started) {
                 closeQuietly(socket)
                 deliver(completion, Result.failure(AirLinkError.NotStarted()))
-                return@execute
+                return@onControl
             }
             val linkId = adopt(socket, endpointId, incoming = false)
             deliver(completion, Result.success(linkId))
@@ -870,13 +870,13 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         // us; it is a transport-scoped id, never an identity. The handshake in
         // TypeScript decides who this actually is.
         val endpointId = "${socket.inetAddress?.hostAddress ?: "?"}:${socket.port}"
-        control.execute {
+        onControl {
             if (!started) {
                 // stop() ran between the accept and this hop. Nothing else can
                 // close this socket now, and one nobody owns stays open until
                 // the process dies.
                 closeQuietly(socket)
-                return@execute
+                return@onControl
             }
             adopt(socket, endpointId, incoming = true)
         }
@@ -930,19 +930,19 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     override fun disconnect(linkId: String, reason: String) {
-        control.execute {
-            val record = links[linkId] ?: return@execute
+        onControl {
+            val record = links[linkId] ?: return@onControl
             events?.linkState(linkId, LinkState.CLOSING, reason)
             record.link.close(reason)
         }
     }
 
     override fun send(linkId: String, data: ByteArray, reliable: Boolean, completion: (Result<Unit>) -> Unit) {
-        control.execute {
+        onControl {
             val record = links[linkId]
             if (record == null) {
                 deliver(completion, Result.failure(AirLinkError.UnknownLink(linkId)))
-                return@execute
+                return@onControl
             }
             if (data.size > FramedTcp.MAX_DATAGRAM_BYTES) {
                 // Never truncate. The fragmentation layer above owns splitting.
@@ -950,7 +950,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                     completion,
                     Result.failure(AirLinkError.PayloadTooLarge(data.size, FramedTcp.MAX_DATAGRAM_BYTES)),
                 )
-                return@execute
+                return@onControl
             }
             record.link.send(data, reliable) { result ->
                 deliver(
@@ -980,6 +980,36 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     // -- helpers --------------------------------------------------------------
+
+    /**
+     * Runs one piece of work on the control thread, and contains anything it
+     * throws.
+     *
+     * EVERY hop onto this thread goes through here rather than through
+     * `control.execute` directly, and that is not defensive decoration. NSD
+     * delivers its callbacks on this executor too, and the framework getters
+     * this class calls from inside them - `setAttribute`, `getAttributes`,
+     * `getHostAddresses` - all throw on a record the platform dislikes. A
+     * `ScheduledThreadPoolExecutor` wraps every task in a future, so a throw
+     * there is not merely fatal-or-not: it is SWALLOWED, with no log line and
+     * no clue why discovery stopped working. Catching it here is what turns
+     * that into a diagnostic the developer-mode log can show.
+     */
+    private fun onControl(block: () -> Unit) {
+        try {
+            control.execute {
+                try {
+                    block()
+                } catch (t: Throwable) {
+                    log("error", "control task threw: ${t.javaClass.simpleName}")
+                }
+            }
+        } catch (_: Throwable) {
+            // RejectedExecutionException: the executor is shutting down. A task
+            // that cannot be scheduled is not worth an exception to the caller.
+            log("warn", "control task dropped, transport is shutting down")
+        }
+    }
 
     /**
      * Hands a result to a caller's completion, on the control thread.

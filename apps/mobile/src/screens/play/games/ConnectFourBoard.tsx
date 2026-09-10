@@ -51,7 +51,7 @@ export function ConnectFourBoard({
 
       <BoardSurface size={board}>
         <View style={{ flexDirection: 'row', gap }}>
-          {Array.from({ length: CONNECT_FOUR_COLS }, (_, column) => {
+          {Array.from({ length: CONNECT_FOUR_COLS }, (_unusedColumn, column) => {
             const free = landingRow(state.board, column);
             const playable = free >= 0 && myTurn && live && !finished;
             return (
@@ -71,7 +71,7 @@ export function ConnectFourBoard({
                   pressed ? { opacity: 0.7 } : null,
                 ]}
               >
-                {Array.from({ length: CONNECT_FOUR_ROWS }, (_, row) => {
+                {Array.from({ length: CONNECT_FOUR_ROWS }, (_unusedRow, row) => {
                   const index = row * CONNECT_FOUR_COLS + column;
                   const mark = state.board[index] ?? 0;
                   const owner = mark === 0 ? null : state.players[mark - 1] ?? null;

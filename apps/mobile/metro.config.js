@@ -57,6 +57,13 @@ const config = {
       path.resolve(workspaceRoot, 'node_modules'),
     ],
     unstable_enableSymlinks: true,
+    /**
+     * Package exports ON, which is React Native 0.87's own default.
+     *
+     * Some of React Native's own packages - @react-native/asset-utils among
+     * them - declare a `main` that does not exist and rely entirely on their
+     * `exports` map, so with exports off they cannot be resolved at all.
+     */
     unstable_enablePackageExports: true,
     disableHierarchicalLookup: false,
     resolveRequest: (context, moduleName, platform) => {

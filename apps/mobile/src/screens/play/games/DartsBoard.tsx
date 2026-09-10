@@ -173,7 +173,7 @@ export function DartsBoard({
             cx={centre}
             cy={centre}
             r={((R_DOUBLE_INNER + R_DOUBLE_OUTER) / 2) * scale}
-            color={theme.colors.accentMuted}
+            color={theme.colors.textTertiary}
             style="stroke"
             strokeWidth={(R_DOUBLE_OUTER - R_DOUBLE_INNER) * scale}
           />
@@ -181,7 +181,7 @@ export function DartsBoard({
             cx={centre}
             cy={centre}
             r={((R_TREBLE_INNER + R_TREBLE_OUTER) / 2) * scale}
-            color={theme.colors.accentMuted}
+            color={theme.colors.textTertiary}
             style="stroke"
             strokeWidth={(R_TREBLE_OUTER - R_TREBLE_INNER) * scale}
           />

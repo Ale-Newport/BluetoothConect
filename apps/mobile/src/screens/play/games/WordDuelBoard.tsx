@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, type GestureResponderEvent } from 'react-native';
 import { Button, Label, haptic, useTheme } from '../../../ui/index.js';
 import { BoardSurface, Hint, PlayerBar } from '../boardKit.js';
@@ -39,6 +39,9 @@ interface Feedback {
   readonly at: number;
 }
 
+/** How long a word - or a refusal - stays under the grid. */
+const FEEDBACK_MS = 1600;
+
 export function WordDuelBoard({
   state,
   dispatch,
@@ -62,6 +65,14 @@ export function WordDuelBoard({
 
   const iAmDone = state.finishedBy.includes(local);
   const canPlay = live && !iAmDone;
+
+  // A refusal that never leaves reads as a permanent state rather than an
+  // answer to what was just traced.
+  useEffect(() => {
+    if (!feedback) return;
+    const timer = setTimeout(() => setFeedback(null), FEEDBACK_MS);
+    return () => clearTimeout(timer);
+  }, [feedback]);
 
   const totals = useMemo(() => wordDuelScores(state), [state]);
   const mine = useMemo(

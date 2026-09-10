@@ -3,7 +3,7 @@ import { View } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useShallow } from 'zustand/react/shallow';
-import { TransferDirection } from '@airlink/core';
+import { TransferDirection, TransferState } from '@airlink/core';
 import { strings } from '@airlink/config';
 import {
   Button,
@@ -119,15 +119,23 @@ export function ShareScreen(): React.JSX.Element {
   );
 
   /**
-   * A retry needs three things to be true at once, and all three are checked
-   * here rather than inside the row: the file has to have been ours to begin
-   * with, the copy we sent from has to still be on disk as far as we know, and
-   * the person has to be back in range.
+   * A retry needs four things to be true at once, and all four are checked here
+   * rather than inside the row: the file has to have been ours to begin with,
+   * it has to have actually gone wrong, the copy we sent from has to still be
+   * on disk as far as we know, and the person has to be back in range.
+   *
+   * The second of those is easy to forget and the worst to get wrong. A send
+   * that SUCCEEDED is terminal like any other, so without it the app puts "Try
+   * again" beside "Sent" - which reads as though something failed, and sends
+   * the file a second time for anybody who believes it. A transfer the other
+   * person declined is excluded for a different reason: they answered, and a
+   * one-tap way to ask them again is not a feature.
    */
   const connectedKeys = useMemo(() => new Set(connected.map((peer) => peer.key)), [connected]);
   const canRetry = useCallback(
     (record: TransferRecord): boolean =>
       record.direction === TransferDirection.OUTGOING &&
+      (record.state === TransferState.FAILED || record.state === TransferState.CANCELLED) &&
       record.localPath !== null &&
       connectedKeys.has(record.peerKey),
     [connectedKeys],
@@ -139,12 +147,17 @@ export function ShareScreen(): React.JSX.Element {
 
   const nothingAtAll = transfers.length === 0;
 
+  // Two separate reasons, and the button says which one applies. `centre` is
+  // null for the first moment after launch, while the radios are still coming
+  // up; opening the sheet then would offer a Send that could not send.
+  const cannotSend = !centre ? shareStrings.notReadyYet : !recipient ? shareStrings.connectFirst : null;
+
   const sendButton = (
     <Button
       title={shareStrings.sendSomething}
       onPress={openCompose}
-      disabled={!recipient}
-      disabledReason={shareStrings.connectFirst}
+      disabled={cannotSend !== null}
+      {...(cannotSend ? { disabledReason: cannotSend } : {})}
     />
   );
 

@@ -169,11 +169,13 @@ export function progressLine(record: TransferRecord): string {
  *
  * Null while there is nothing honest to say - a paused transfer has no rate,
  * and quoting the last one it managed would be a countdown that never counts
- * down. The rate itself is MEASURED throughput from the protocol, never the
- * transport's nominal figure.
+ * down. Verifying is the other case: every byte is already here, so the
+ * estimator would report the transfer rate next to "0s left" for as long as the
+ * hash takes. The rate itself is MEASURED throughput from the protocol, never
+ * the transport's nominal figure.
  */
 export function rateLine(record: TransferRecord): string | null {
-  if (record.paused || !isMoving(record)) return null;
+  if (record.paused || record.state !== TransferState.TRANSFERRING) return null;
   if (record.bytesPerSecond === null || record.bytesPerSecond <= 0) return shareStrings.estimating;
   const rate = shareStrings.perSecond(formatBytes(record.bytesPerSecond));
   return record.etaMs === null ? shareStrings.rateOnly(rate) : shareStrings.rateAndEta(rate, formatDuration(record.etaMs));
@@ -210,10 +212,14 @@ function asProgress(record: TransferRecord): TransferProgress {
  * the attack. Rendering order is a display concern, so it is fixed here, at the
  * one point where a peer's string becomes something a person reads.
  *
+ * The set is every bidi control, not just the obvious ones: U+061C ARABIC
+ * LETTER MARK does the same job as U+200F from a different block, and a filter
+ * that catches four of the five is a filter with a documented way past it.
+ *
  * Note this is for DISPLAY only. The name never becomes a path: `diskNameFor`
  * derives a fresh one, and the file lands in a directory named by transfer id.
  */
-const UNSAFE_DISPLAY = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\u00AD\uFEFF]/g;
+const UNSAFE_DISPLAY = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\u00AD\u061C\u180E\uFEFF]/g;
 
 export function safeDisplayName(filename: string): string {
   const cleaned = filename.replace(UNSAFE_DISPLAY, '').trim();

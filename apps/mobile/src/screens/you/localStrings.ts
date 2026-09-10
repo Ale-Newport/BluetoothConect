@@ -59,6 +59,18 @@ export const local = {
     blockBody: `They will not be able to connect to this device again, and they are removed from your friends. You can undo this in Friends.`,
     blocked: 'Blocked',
     showSafetyNumber: 'Show safety number',
+    /**
+     * A failed mutation, said specifically.
+     *
+     * `strings.common.error` on its own tells someone that something went
+     * wrong without saying what, or whether the thing they asked for happened.
+     * On a screen whose whole subject is who this device trusts, that is the
+     * one thing they need to know.
+     */
+    removeFailedTitle: (name: string): string => `${name} could not be removed.`,
+    blockFailedTitle: (name: string): string => `${name} could not be blocked.`,
+    unblockFailedTitle: (name: string): string => `${name} could not be unblocked.`,
+    actionFailedBody: 'Nothing was changed. Try again.',
   },
 
   myCode: {
@@ -103,7 +115,7 @@ export const local = {
     rejectNotAirlinkBody: 'It might be a link or a ticket. Ask your friend to open Show my QR code.',
     rejectUnreadable: `That code couldn't be read.`,
     rejectUnreadableBody: 'Try again with the code filling more of the screen.',
-    rejectNewer: 'That code needs a newer version of AirLink.',
+    rejectNewer: `That code needs a newer version of ${brand.name}.`,
     rejectNewerBody: 'Update both phones when you are next online.',
     rejectExpired: 'That code has expired.',
     rejectExpiredBody: 'Ask your friend to show their code again - codes only last a few minutes.',
@@ -144,7 +156,6 @@ export const local = {
     overviewTitle: 'Security',
     overviewLead: 'Every conversation is encrypted end to end, on the device, with keys that never leave it.',
     overviewPickFriend: 'Pick a friend to compare safety numbers with.',
-    matchTitle: 'If these match, you are safe',
     compareHint: 'Read them out loud, or hold the two phones side by side.',
     pairedOn: (date: string): string => `Friends since ${date}`,
     unknownFriendTitle: 'Not a friend yet',
@@ -163,6 +174,7 @@ export const local = {
     nameUnchanged: 'Nothing to save yet.',
     nameSaved: 'Saved',
     nameSaveFailed: 'That name could not be saved.',
+    nameSaveFailedBody: 'Your old name is still in place. Try again.',
     nameHint: 'This is what friends nearby see. It is only ever sent to the phone next to you.',
     avatarNone: 'Initials',
     clearConversation: 'Clear a conversation',
@@ -172,8 +184,8 @@ export const local = {
     clearAll: 'Clear all history',
     clearAllTitle: 'Clear everything?',
     clearAllBody: 'Every message in every conversation is deleted from this device, and it cannot be undone. Your friends and your files are kept.',
-    cleared: 'Cleared',
     clearFailed: 'Nothing could be cleared.',
+    clearFailedBody: 'Your messages are still on this device. Try again.',
     nothingToClear: 'There are no messages on this device yet.',
     noConversations: 'No conversations yet',
     noConversationsBody: 'Once you have chatted with someone, you can clear it here.',

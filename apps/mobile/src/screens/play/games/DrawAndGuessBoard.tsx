@@ -14,7 +14,6 @@ import {
   currentWord,
   drawingIsFinished,
   type DrawAndGuessState,
-  type Stroke,
 } from '../gameTypes.js';
 
 /**
@@ -46,6 +45,15 @@ type BrushWidth = (typeof BRUSH_WIDTHS)[number];
  * not otherwise use looks like it came from somewhere else.
  */
 const PALETTE_KEYS = ['text', 'accent', 'connected', 'warning', 'danger'] as const;
+/**
+ * How far the finger must travel before a point is kept, in grid units.
+ *
+ * A touch stream delivers a point per frame, which is both far more detail than
+ * a drawing needs and a re-render per frame. Eight units is about three screen
+ * pixels: invisible in the line, and it keeps a long stroke inside the
+ * protocol's point cap instead of being truncated by it.
+ */
+const MIN_POINT_GAP = 8;
 
 export function DrawAndGuessBoard({
   state,
@@ -92,7 +100,9 @@ export function DrawAndGuessBoard({
       const points = wetPoints.current;
       const lastX = points[points.length - 2];
       const lastY = points[points.length - 1];
-      if (lastX === x && lastY === y) return;
+      if (lastX !== undefined && lastY !== undefined) {
+        if (Math.abs(lastX - x) < MIN_POINT_GAP && Math.abs(lastY - y) < MIN_POINT_GAP) return;
+      }
       // The protocol caps a stroke; going over would have the reducer refuse
       // the whole thing, so the stroke is simply broken here instead.
       if (points.length >= MAX_POINTS_PER_STROKE * 2) return;
@@ -363,7 +373,7 @@ function Swatch({
         style={{
           width: selected ? 30 : 24,
           height: selected ? 30 : 24,
-          borderRadius: 15,
+          borderRadius: theme.radius.pill,
           backgroundColor: color,
           borderWidth: selected ? 2 : 0,
           borderColor: theme.colors.background,

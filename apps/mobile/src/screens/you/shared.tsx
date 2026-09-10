@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type StyleProp,
   type TextStyle,
@@ -127,7 +128,6 @@ export function NavRow({
 
 /** A card of rows with hairlines between them. The iOS grouped-list shape. */
 export function Group({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }): React.JSX.Element {
-  const theme = useTheme();
   const items = React.Children.toArray(children).filter(Boolean);
   return (
     <Card style={[{ paddingVertical: 0 }, style]}>
@@ -255,6 +255,17 @@ export function TextField({
 // Modals
 // ---------------------------------------------------------------------------
 
+/**
+ * The share of the screen a sheet's choices may occupy before they scroll.
+ *
+ * A sheet grows with its content, and a caller cannot know how much content it
+ * has: the conversation picker in Settings has one row per conversation. Left
+ * uncapped, a long list pushes the sheet past the top of the screen - which
+ * takes the scrim with it, and the scrim is the tap that closes the sheet. That
+ * is a modal with no way out, so the list is capped and scrolls instead.
+ */
+const SHEET_CONTENT_FRACTION = 0.55;
+
 /** A bottom sheet of choices. Used where a route would be overkill. */
 export function Sheet({
   visible,
@@ -271,6 +282,7 @@ export function Sheet({
 }): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <Pressable
@@ -300,7 +312,18 @@ export function Sheet({
               {subtitle}
             </Label>
           ) : null}
-          <View style={{ marginTop: theme.spacing.md }}>{children}</View>
+          {/*
+            `flexGrow: 0` so a short sheet still hugs its content rather than
+            filling the screen; `maxHeight` so a long one scrolls rather than
+            growing over the scrim that closes it.
+          */}
+          <ScrollView
+            style={{ flexGrow: 0, maxHeight: height * SHEET_CONTENT_FRACTION, marginTop: theme.spacing.md }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {children}
+          </ScrollView>
         </View>
       </Pressable>
     </Modal>

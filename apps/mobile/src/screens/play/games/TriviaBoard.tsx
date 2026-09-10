@@ -32,6 +32,11 @@ import {
 /** How long a question is allowed to stay open. Well inside the wire limit. */
 const QUESTION_WINDOW_MS = 20_000;
 const TICK_MS = 100;
+/**
+ * When the bar starts to press. Amber rather than red on purpose: running low
+ * on time is a nudge, not the failure the danger colour is reserved for.
+ */
+const URGENT_MS = 5_000;
 
 export function TriviaBoard({
   state,
@@ -90,7 +95,7 @@ export function TriviaBoard({
           {playText.trivia.question(state.position + 1, state.total)}
         </Label>
         {state.revealed ? null : (
-          <Label variant="caption" tone={remainingMs < 5000 ? 'danger' : 'tertiary'}>
+          <Label variant="caption" tone={remainingMs < URGENT_MS ? 'accent' : 'tertiary'}>
             {playText.trivia.secondsLeft(Math.ceil(remainingMs / 1000))}
           </Label>
         )}
@@ -113,7 +118,8 @@ export function TriviaBoard({
           style={{
             width: `${state.revealed ? 100 : (remainingMs / QUESTION_WINDOW_MS) * 100}%`,
             height: 3,
-            backgroundColor: remainingMs < 5000 && !state.revealed ? theme.colors.warning : theme.colors.accent,
+            backgroundColor:
+              remainingMs < URGENT_MS && !state.revealed ? theme.colors.warning : theme.colors.accent,
           }}
         />
       </View>

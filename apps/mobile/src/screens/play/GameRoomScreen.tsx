@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
@@ -55,15 +55,40 @@ export function GameRoomScreen(): React.JSX.Element {
   const room = useGameRoom(params);
   const entry = room.entry ?? findGame(params.gameId) ?? null;
 
-  const leave = useCallback(() => {
-    room.leave();
-    navigation.goBack();
-  }, [navigation, room]);
+  /**
+   * Telling the other phone we have gone happens on the way OUT, whichever way
+   * that is.
+   *
+   * A swipe back is as much a "leave" as the button is, and it never touches
+   * the button's handler - so the notice and the row update hang off the
+   * navigator's own removal event instead. The ref is what keeps that listener
+   * subscribed once: the room view is rebuilt on every render by design.
+   */
+  const leaveRef = useRef(room.leave);
+  leaveRef.current = room.leave;
+  /**
+   * A rematch replaces this screen with the next game, which is a removal like
+   * any other - but telling the peer we left, moments after inviting them to
+   * play again, would land as "X left the game" on top of the invitation.
+   */
+  const rematching = useRef(false);
+
+  useEffect(
+    () =>
+      navigation.addListener('beforeRemove', () => {
+        if (rematching.current) return;
+        leaveRef.current();
+      }),
+    [navigation],
+  );
+
+  const leave = useCallback(() => navigation.goBack(), [navigation]);
 
   const goToRematch = useCallback(
     (next: { gameSessionId: string; isHost: boolean } | null) => {
       if (!next) return;
       haptic('impactLight');
+      rematching.current = true;
       // `replace`, not `navigate`: the finished game must not be sitting behind
       // the new one for a back gesture to land on.
       navigation.replace('GameRoom', {

@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { Modal, Pressable, View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -24,7 +25,13 @@ import {
 import { selectConnected, useAppStore, type PeerView } from '../../state/index.js';
 import type { RootStackParams, TabParams } from '../../navigation/routes.js';
 import { useOptionalClient } from './useOptionalClient.js';
-import { GameTile, availabilityFor, newGameSessionId, peerKeyForPeerId } from './catalogue.js';
+import {
+  GameTile,
+  availabilityFor,
+  bestAvailabilityFor,
+  newGameSessionId,
+  peerKeyForPeerId,
+} from './catalogue.js';
 import { playText } from './strings.js';
 
 /**
@@ -56,6 +63,7 @@ type PlayNavigation = CompositeNavigationProp<
 export function PlayScreen(): React.JSX.Element {
   const theme = useTheme();
   const navigation = useNavigation<PlayNavigation>();
+  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const client = useOptionalClient();
 
@@ -111,10 +119,12 @@ export function PlayScreen(): React.JSX.Element {
     [open, soloPeer],
   );
 
+  // The tab has no navigation header, so the title has to clear the notch itself.
+  const topPadding = { paddingTop: insets.top + theme.spacing.xl };
+
   if (connected.length === 0) {
     return (
-      <Screen scroll>
-        <Gap size="xxl" />
+      <Screen scroll style={topPadding}>
         <Label variant="largeTitle">{strings.play.title}</Label>
         <EmptyState
           icon="🎲"
@@ -130,8 +140,7 @@ export function PlayScreen(): React.JSX.Element {
 
   return (
     <>
-      <Screen scroll>
-        <Gap size="xxl" />
+      <Screen scroll style={topPadding}>
         <Label variant="largeTitle">{strings.play.title}</Label>
         <Gap size="lg" />
 
@@ -156,12 +165,7 @@ export function PlayScreen(): React.JSX.Element {
               key={entry.definition.id}
               entry={entry}
               width={tileWidth}
-              availability={availabilityFor(
-                client,
-                soloPeer?.key ?? connected[0]?.key ?? null,
-                entry,
-                soloPeer?.displayName ?? connected[0]?.displayName ?? '',
-              )}
+              availability={bestAvailabilityFor(client, connected, entry)}
               onPress={() => choose(entry)}
             />
           ))}

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, type GestureResponderEvent } from 'react-native';
 import { Canvas, Circle, Line, Rect, select, vec } from '@shopify/react-native-skia';
 import { useTheme } from '../../../ui/index.js';
@@ -29,6 +29,8 @@ import { AIR_HOCKEY, airHockeyView, type AirHockeyState } from '../gameTypes.js'
 const MAX_TABLE_WIDTH = 320;
 /** One input per simulation tick. Anything faster is bytes nobody reads. */
 const INPUT_INTERVAL_MS = 33;
+/** How often the face-off number is redrawn. Four times a second reads as live. */
+const COUNTDOWN_TICK_MS = 250;
 
 interface HockeyGeometry {
   readonly puckX: number;
@@ -114,7 +116,38 @@ export function AirHockeyTable({
   const parts = signal.split(':');
   const scores: [number, number] = [Number(parts[0] ?? 0), Number(parts[1] ?? 0)];
 
-  const countdownMs = Math.max(0, state.serveAt - elapsedMs);
+  /**
+   * The face-off clock.
+   *
+   * The authoritative deadline is `state.serveAt`, measured in the
+   * simulation's own milliseconds - but that clock only reaches React when
+   * something discrete happens, so reading it directly would show a number
+   * that never moved. So the pause is timed locally instead, restarted
+   * whenever the score changes (a goal) or the game begins, from the game's own
+   * published constants. Both phones therefore count the same pause down at
+   * the same rate, and nothing about the simulation depends on this number.
+   */
+  const [countdownMs, setCountdownMs] = useState(() => Math.max(0, state.serveAt - elapsedMs));
+  const opened = useRef(false);
+
+  useEffect(() => {
+    const total = opened.current ? AIR_HOCKEY.GOAL_PAUSE_MS : AIR_HOCKEY.FACE_OFF_MS;
+    opened.current = true;
+    const until = Date.now() + total;
+    setCountdownMs(total);
+    const timer = setInterval(() => {
+      const left = until - Date.now();
+      if (left > 0) {
+        setCountdownMs(left);
+        return;
+      }
+      setCountdownMs(0);
+      clearInterval(timer);
+    }, COUNTDOWN_TICK_MS);
+    return () => clearInterval(timer);
+    // Restarted by a goal: `signal` carries the score, so a change in it is
+    // exactly the moment a new pause begins.
+  }, [signal]);
 
   const input = useMemo(
     () =>

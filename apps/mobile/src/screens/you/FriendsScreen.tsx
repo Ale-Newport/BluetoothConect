@@ -101,7 +101,10 @@ export function FriendsScreen(): React.JSX.Element {
               client.trustStore.remove(friend.peerId);
               haptic('warning');
             } catch {
-              Alert.alert(strings.common.error);
+              // Naming the friend and saying nothing changed is the whole
+              // point: on a screen about who this device trusts, "something
+              // went wrong" leaves the user unsure whether it happened.
+              Alert.alert(local.friends.removeFailedTitle(friend.displayName), local.friends.actionFailedBody);
             }
             refresh();
           },
@@ -123,7 +126,7 @@ export function FriendsScreen(): React.JSX.Element {
               client.trustStore.block(friend.peerId);
               haptic('warning');
             } catch {
-              Alert.alert(strings.common.error);
+              Alert.alert(local.friends.blockFailedTitle(friend.displayName), local.friends.actionFailedBody);
             }
             refresh();
           },
@@ -149,12 +152,12 @@ export function FriendsScreen(): React.JSX.Element {
   );
 
   const unblock = useCallback(
-    (peerId: string) => {
+    (peer: { peerId: string; displayName: string }) => {
       try {
-        client.trustStore.unblock(peerId);
+        client.trustStore.unblock(peer.peerId);
         haptic('success');
       } catch {
-        Alert.alert(strings.common.error);
+        Alert.alert(local.friends.unblockFailedTitle(peer.displayName), local.friends.actionFailedBody);
       }
       refresh();
     },
@@ -235,7 +238,7 @@ export function FriendsScreen(): React.JSX.Element {
                   </Label>
                 }
                 accessibilityHint={strings.profile.unblock}
-                onPress={() => unblock(peer.peerId)}
+                onPress={() => unblock(peer)}
               />
             ))}
           </Group>

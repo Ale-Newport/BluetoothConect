@@ -181,23 +181,23 @@ class HotspotHost(private val context: Context) {
      * both want the fast path and neither should tear down the other's hotspot.
      */
     fun start(completion: (Result<HotspotCredentials>) -> Unit) {
-        control.post {
+        onControl {
             val existing = credentials
             if (existing != null && reservation != null) {
                 deliver(completion, Result.success(existing))
-                return@post
+                return@onControl
             }
             if (pending != null) {
                 // Only one soft AP request may be in flight; a second would race
                 // the first for the single reservation the platform hands out.
                 deliver(completion, Result.failure(AirLinkError.Busy("Starting a hotspot")))
-                return@post
+                return@onControl
             }
 
             val manager = wifiManager
             if (manager == null || !hasWifiHardware()) {
                 deliver(completion, Result.failure(AirLinkError.Unsupported("Starting a hotspot")))
-                return@post
+                return@onControl
             }
             for (permission in Permissions.hotspotPermissions()) {
                 if (!Permissions.isGranted(context, permission)) {
@@ -210,7 +210,7 @@ class HotspotHost(private val context: Context) {
                             ),
                         ),
                     )
-                    return@post
+                    return@onControl
                 }
             }
 
@@ -227,22 +227,22 @@ class HotspotHost(private val context: Context) {
 
             val callback = object : WifiManager.LocalOnlyHotspotCallback() {
                 override fun onStarted(started: WifiManager.LocalOnlyHotspotReservation?) {
-                    control.post {
+                    onControl {
                         if (started == null) {
                             settle(Result.failure(AirLinkError.Failed("the hotspot started without a reservation")))
-                            return@post
+                            return@onControl
                         }
                         if (pending == null) {
                             // We already timed out, or someone called stop(). Do
                             // not leave a radio running that nobody will use.
                             closeQuietly(started)
-                            return@post
+                            return@onControl
                         }
                         val extracted = credentialsOf(started)
                         if (extracted == null) {
                             closeQuietly(started)
                             settle(Result.failure(AirLinkError.Failed("could not read the hotspot credentials")))
-                            return@post
+                            return@onControl
                         }
                         reservation = started
                         credentials = extracted
@@ -252,7 +252,7 @@ class HotspotHost(private val context: Context) {
                 }
 
                 override fun onStopped() {
-                    control.post {
+                    onControl {
                         val wasRunning = reservation != null
                         reservation = null
                         credentials = null
@@ -267,7 +267,7 @@ class HotspotHost(private val context: Context) {
                 }
 
                 override fun onFailed(reason: Int) {
-                    control.post {
+                    onControl {
                         val detail = hotspotError(reason)
                         log("error", "hotspot failed: $detail")
                         settle(Result.failure(AirLinkError.Failed("could not start the hotspot: $detail")))
@@ -293,7 +293,7 @@ class HotspotHost(private val context: Context) {
 
     /** Idempotent. Safe to call when nothing is running, and safe to call twice. */
     fun stop() {
-        control.post {
+        onControl {
             val running = reservation != null
             reservation?.let { closeQuietly(it) }
             reservation = null

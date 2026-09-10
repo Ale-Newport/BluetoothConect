@@ -55,6 +55,9 @@ const GLYPH: readonly string[] = ['', '♙', '♘', '♗', '♖', '♕', '♔', 
 /** An absolutely-positioned overlay filling its square. */
 const FILL = { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 } as const;
 
+/** How many of each piece type a side starts with, indexed 1-6. */
+const START_COUNT: readonly number[] = [0, 8, 2, 2, 2, 1, 1];
+
 /** Which way up the board is drawn for this player. */
 function viewIndex(index: number, flipped: boolean): number {
   return flipped ? 63 - index : index;
@@ -297,7 +300,6 @@ function Captured({
   square: number;
 }): React.JSX.Element | null {
   const theme = useTheme();
-  const START: readonly number[] = [0, 8, 2, 2, 2, 1, 1];
 
   const counts = new Array<number>(13).fill(0);
   for (const piece of state.board) counts[piece] = (counts[piece] ?? 0) + 1;
@@ -306,7 +308,7 @@ function Captured({
     const out: string[] = [];
     for (let type = 1; type <= 6; type++) {
       const code = color === 0 ? type : type + 6;
-      const gone = (START[type] ?? 0) - (counts[code] ?? 0);
+      const gone = (START_COUNT[type] ?? 0) - (counts[code] ?? 0);
       for (let i = 0; i < gone; i++) out.push(GLYPH[code] as string);
     }
     return out;

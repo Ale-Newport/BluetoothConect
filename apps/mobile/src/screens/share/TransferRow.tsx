@@ -2,7 +2,7 @@ import React from 'react';
 import { Pressable, View } from 'react-native';
 import { TransferState } from '@airlink/core';
 import { Label, StatusDot, haptic, useTheme } from '../../ui/index.js';
-import { FileTile, ProgressBar, RowAction, TILE_SIZE } from './controls.js';
+import { FileTile, ProgressBar, ROW_MIN_HEIGHT, RowAction, SUMMARY_TILE_SIZE, TILE_SIZE } from './controls.js';
 import {
   groupOf,
   isIncoming,
@@ -29,8 +29,6 @@ import type { TransferRecord } from './transferCenter.js';
  * explanation and a stale progress bar under it would be a lie about the past.
  */
 
-/** Matches `ListRow` in the design system, so a file row lines up with a peer row. */
-const ROW_MIN_HEIGHT = 56;
 /** The status dot sits on a footnote line, a shade under the 8pt default. */
 const DOT_SIZE = 6;
 
@@ -42,7 +40,13 @@ export interface TransferRowActions {
   onRetry(record: TransferRecord): void;
 }
 
-export function TransferRow({
+/**
+ * Memoised, because the centre republishes several times a second while a
+ * transfer runs and it hands out the SAME record object for anything that has
+ * not changed. Without this, one moving file re-renders every other row in the
+ * list on every tick; with it, only the row that moved does any work.
+ */
+export const TransferRow = React.memo(function TransferRowView({
   record,
   canRetry,
   actions,
@@ -136,7 +140,7 @@ export function TransferRow({
       {body}
     </Pressable>
   );
-}
+});
 
 function RowEndAction({
   record,
@@ -220,7 +224,7 @@ export function FileSummary({
   const theme = useTheme();
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}>
-      <FileTile kind={kindOf(mimeType, filename)} previewUri={previewUri} size={56} />
+      <FileTile kind={kindOf(mimeType, filename)} previewUri={previewUri} size={SUMMARY_TILE_SIZE} />
       <View style={{ flex: 1 }}>
         <Label variant="headline" numberOfLines={2}>
           {filename}

@@ -1,3 +1,4 @@
+import { findGame } from '@airlink/games';
 import type { GameRenderer } from '../contract.js';
 import { AirHockeyTable } from './AirHockeyTable.js';
 import { BattleshipBoard } from './BattleshipBoard.js';
@@ -53,6 +54,17 @@ const RENDERERS: Readonly<Record<string, GameRenderer<unknown>>> = {
   'air-hockey': draws(AirHockeyTable),
   pool: draws(PoolTable),
 };
+
+/**
+ * A key here that is not a real game would show as a permanently disabled tile
+ * with an honest-sounding but completely wrong reason, which is the hardest
+ * kind of mistake to notice. So it fails at module load in development instead.
+ */
+if (__DEV__) {
+  for (const id of Object.keys(RENDERERS)) {
+    if (!findGame(id)) throw new Error(`games/index: "${id}" is not a game in the catalogue`);
+  }
+}
 
 export function rendererFor(gameId: string): GameRenderer<unknown> | null {
   return RENDERERS[gameId] ?? null;

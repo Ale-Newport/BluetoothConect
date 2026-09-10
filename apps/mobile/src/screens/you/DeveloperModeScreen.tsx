@@ -144,16 +144,29 @@ export function DeveloperModeScreen(): React.JSX.Element {
     }, [client, refresh]),
   );
 
-  const bugReport = useMemo(
-    () => buildBugReport(snapshot, token, log),
-    [log, snapshot, token],
-  );
+  /**
+   * The raw snapshot as text, computed once per snapshot.
+   *
+   * It is rendered in the card at the bottom AND it is the bulk of the
+   * pasteboard payload, so without this memo a full JSON walk of the
+   * diagnostics tree ran twice on every render - and a render happens on every
+   * single client event. That is a busy radio making the screen you opened to
+   * watch the radio stutter.
+   */
+  const rawSnapshot = useMemo(() => stringifyForBugReport(snapshot), [snapshot]);
 
+  /**
+   * Assembled on the tap, not on every render.
+   *
+   * Joining three hundred log lines into one string is cheap once and wasteful
+   * three hundred times, and nothing needs the result until a finger lands on
+   * the button.
+   */
   const copyAll = useCallback(() => {
-    const ok = copyText(bugReport);
+    const ok = copyText(buildBugReport(rawSnapshot, token, log));
     setCopied(ok ? 'ok' : 'failed');
     haptic(ok ? 'success' : 'error');
-  }, [bugReport]);
+  }, [log, rawSnapshot, token]);
 
   const turnOff = useCallback(() => {
     useAppStore.getState().setDeveloperMode(false);
@@ -258,16 +271,7 @@ export function DeveloperModeScreen(): React.JSX.Element {
         ) : (
           <View style={{ gap: theme.spacing.xs }}>
             {log.map((line) => (
-              <Text
-                key={line.id}
-                selectable
-                style={[
-                  theme.typography.mono as TextStyle,
-                  { color: line.bad ? theme.colors.danger : theme.colors.textSecondary },
-                ]}
-              >
-                {`${clockOf(line.at)}  ${line.text}`}
-              </Text>
+              <LogRow key={line.id} at={line.at} text={line.text} bad={line.bad} />
             ))}
           </View>
         )}
@@ -277,12 +281,14 @@ export function DeveloperModeScreen(): React.JSX.Element {
         <Label variant="caption" tone="tertiary" style={{ flex: 1 }}>
           {`${local.developer.entries(log.length)} · ${local.developer.logNativeNote}`}
         </Label>
-        <Button
-          title={local.developer.clearLog}
-          variant="ghost"
-          onPress={() => setLog([])}
-          disabled={log.length === 0}
-        />
+        {/*
+          Absent rather than disabled-without-a-reason. The card above already
+          says "Nothing has happened yet", so a greyed-out Clear beside it would
+          be a control that neither works nor explains itself.
+        */}
+        {log.length === 0 ? null : (
+          <Button title={local.developer.clearLog} variant="ghost" onPress={() => setLog([])} />
+        )}
       </Row>
 
       {/* -- raw ---------------------------------------------------------- */}
@@ -293,7 +299,7 @@ export function DeveloperModeScreen(): React.JSX.Element {
           selectable
           style={[theme.typography.mono as TextStyle, { color: theme.colors.textSecondary }]}
         >
-          {stringifyForBugReport(snapshot)}
+          {rawSnapshot}
         </Text>
       </Card>
 
@@ -309,6 +315,38 @@ export function DeveloperModeScreen(): React.JSX.Element {
 // ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
+
+/**
+ * One line of the activity log.
+ *
+ * Memoised on purpose. Every client event prepends a line, which hands React a
+ * brand-new array and would otherwise re-render all three hundred `Text` nodes
+ * for the sake of one - during a connection storm, which is exactly when this
+ * screen is being read. The props are three primitives, so the comparison is
+ * free and every existing line bails out before rendering.
+ */
+const LogRow = React.memo(function LogRow({
+  at,
+  text,
+  bad,
+}: {
+  at: number;
+  text: string;
+  bad: boolean;
+}): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <Text
+      selectable
+      style={[
+        theme.typography.mono as TextStyle,
+        { color: bad ? theme.colors.danger : theme.colors.textSecondary },
+      ]}
+    >
+      {`${clockOf(at)}  ${text}`}
+    </Text>
+  );
+});
 
 function TransportList({ transports }: { transports: Record<string, unknown> | null }): React.JSX.Element {
   const rows = asArray(transports?.transports);
@@ -476,15 +514,11 @@ function clockOf(at: number): string {
  * Plain text, not JSON-in-a-string: it has to survive being pasted into a notes
  * app on a plane and read by a human hours later.
  */
-function buildBugReport(
-  snapshot: Record<string, unknown>,
-  token: string,
-  log: readonly LogLine[],
-): string {
+function buildBugReport(rawSnapshot: string, token: string, log: readonly LogLine[]): string {
   const lines = [
     `${local.developer.advertisingToken}: ${token}`,
     '',
-    stringifyForBugReport(snapshot),
+    rawSnapshot,
     '',
     `--- ${local.developer.logSection} (${local.developer.entries(log.length)}) ---`,
     ...log.map((line) => `${clockOf(line.at)}  ${line.text}`),

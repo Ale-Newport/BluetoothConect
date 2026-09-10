@@ -112,7 +112,9 @@ export function SettingsScreen(): React.JSX.Element {
       setSaved(true);
       haptic('success');
     } catch {
-      Alert.alert(local.settings.nameSaveFailed, strings.common.error);
+      // The specific sentence goes in the body, not `strings.common.error`:
+      // what the user needs to know is that their old name still stands.
+      Alert.alert(local.settings.nameSaveFailed, local.settings.nameSaveFailedBody);
     }
   }, [client, dirty, draftEmoji, nameUsable, normalised]);
 
@@ -131,7 +133,7 @@ export function SettingsScreen(): React.JSX.Element {
                 client.db.messages.clearConversation(conversation.id);
                 haptic('warning');
               } catch {
-                Alert.alert(local.settings.clearFailed, strings.common.error);
+                Alert.alert(local.settings.clearFailed, local.settings.clearFailedBody);
               }
               refresh();
             },
@@ -158,7 +160,7 @@ export function SettingsScreen(): React.JSX.Element {
             }
             haptic('warning');
           } catch {
-            Alert.alert(local.settings.clearFailed, strings.common.error);
+            Alert.alert(local.settings.clearFailed, local.settings.clearFailedBody);
           }
           refresh();
         },
