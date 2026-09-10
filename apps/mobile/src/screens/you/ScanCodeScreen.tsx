@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Linking, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, Linking, Platform, View } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
@@ -39,6 +39,12 @@ import { ScannerCamera } from './ScannerCamera.js';
  * The distinction the copy keeps is the one that matters: a code that is stale,
  * unreadable or simply not ours is a mishap, and a code whose signature does not
  * verify is not - the second is the only one that says "do not add this device".
+ *
+ * The decoding itself is deliberately not a native detector; see
+ * `docs/adr-001-qr-scanning.md` and the note in `ScannerCamera`. The one thing
+ * it changes here is timing: a code is found within a few hundred milliseconds
+ * rather than instantly, which is why the screen says "Looking for a code…"
+ * rather than sitting silent.
  */
 
 /**

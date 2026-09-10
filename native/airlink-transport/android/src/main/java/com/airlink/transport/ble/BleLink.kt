@@ -247,8 +247,8 @@ internal class BleLink(
                 // discarding a reliable datagram while reporting it sent would
                 // break the contract's "reliable sends arrive in order and
                 // without duplication; loss is signalled, never silent" in the
-                // worst possible way: as a message that vanishes with nothing
-                // above it any the wiser.
+                // worst possible way: as a message that vanishes while its
+                // sender is told it was sent.
                 val victim = removeOldestRealtime()
                 packetsDropped++
                 if (victim != null) {
@@ -277,6 +277,11 @@ internal class BleLink(
     /**
      * The oldest queued best-effort datagram, removed. Null when everything
      * waiting is reliable and must therefore be left exactly where it is.
+     *
+     * It can never pick the datagram currently on the radio: [pump] takes that
+     * one off the queue before handing it to the sender, so anything still in
+     * here is provably unsent and dropping it cannot duplicate or reorder
+     * anything.
      */
     private fun removeOldestRealtime(): Outbound? {
         val iterator = outbound.iterator()

@@ -39,6 +39,9 @@ export const chatCopy = {
   openChat: (name: string): string => `Open your chat with ${name}`,
   unreadCount: (count: number): string => (count === 1 ? '1 unread message' : `${count} unread messages`),
 
+  /** How this device refers to its own owner in a quoted reply. */
+  you: 'You',
+
   /** Screen-reader labels around a bubble. */
   messageFrom: (name: string): string => `${name} said`,
   messageFromYou: 'You said',

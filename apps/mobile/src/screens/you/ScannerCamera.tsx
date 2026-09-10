@@ -1,148 +1,99 @@
-import React, { useCallback } from 'react';
-import { View, type ViewStyle } from 'react-native';
-import { Camera, type CameraDevice } from 'react-native-vision-camera';
-import { useBarcodeScannerOutput } from 'react-native-vision-camera-barcode-scanner';
+import React, { useCallback, useRef } from 'react';
+import { View } from 'react-native';
+import {
+  Camera,
+  isScannedCode,
+  useObjectOutput,
+  type CameraDevice,
+  type ScannedObject,
+  type ScannedObjectType,
+} from 'react-native-vision-camera';
 import { useTheme } from '../../ui/index.js';
 
 /**
  * The camera surface, and nothing else.
  *
- * Kept in its own file for one reason: everything in here talks to a native
- * module, and the screen around it has to keep working - explaining permissions,
- * explaining a missing camera, showing a result - whether or not this ever
- * renders. Mounting it is the LAST thing the screen does, once permission is
- * granted and a real device exists.
+ * Kept in its own file for two reasons. The first is that everything in here
+ * talks to a native module, and the screen around it has to keep working -
+ * explaining permissions, explaining a missing camera, showing a result -
+ * whether or not this ever renders. The second is harder: `useObjectOutput`
+ * throws where the platform has no object-detection output, and a hook cannot
+ * be called conditionally. Isolating it means the caller decides not to MOUNT
+ * this, rather than catching a render-time exception it cannot recover from.
+ *
+ * So: mounting this is the LAST thing the screen does, once the platform
+ * supports it, permission is granted, and a real camera exists.
+ *
+ * WHY THERE IS NO ML KIT HERE. The obvious dependency,
+ * react-native-vision-camera-barcode-scanner, is backed by Google ML Kit, which
+ * ships x86_64-only simulator slices and forces EXCLUDED_ARCHS = arm64 onto the
+ * whole app - making the app impossible to run in a simulator on any Apple
+ * Silicon Mac. Vision Camera's own object output does the same job natively,
+ * with nothing to exclude an architecture for. See docs/adr-001-qr-scanning.md.
  */
-
-/** Only QR. Scanning every format would happily read the barcode on a boarding pass. */
-const FORMATS = ['qr-code'] as const;
-
-export function ScannerCamera({
-  device,
-  isActive,
-  onCode,
-  onError,
-}: {
-  device: CameraDevice;
-  isActive: boolean;
-  /** The raw string off the code. Validation belongs to the strict parser, not here. */
-  onCode: (value: string) => void;
-  onError: (error: Error) => void;
-}): React.JSX.Element {
-  const theme = useTheme();
-
-  const handleBarcodes = useCallback(
-    (barcodes: { readonly rawValue: string | undefined }[]) => {
-      for (const barcode of barcodes) {
-        const value = barcode.rawValue;
-        // One code per frame is all we act on. A frame with two AirLink codes in
-        // it is somebody's screenshot collage, not two friends.
-        if (typeof value === 'string' && value.length > 0) {
-          onCode(value);
-          return;
-        }
-      }
-    },
-    [onCode],
-  );
-
-  const output = useBarcodeScannerOutput({
-    barcodeFormats: [...FORMATS],
-    onBarcodeScanned: handleBarcodes,
-    onError,
-  });
-
-  return (
-    <View style={{ flex: 1, overflow: 'hidden', borderRadius: theme.radius.lg, backgroundColor: theme.colors.scrim }}>
-      <Camera
-        style={{ flex: 1 }}
-        device={device}
-        isActive={isActive}
-        outputs={[output]}
-        onError={onError}
-      />
-      <Viewfinder />
-    </View>
-  );
-}
 
 /**
- * The frame that tells someone where to point.
+ * Only QR.
  *
- * Four corners rather than a full rectangle: it reads as a target without
- * covering the picture, and it is the shape every camera app has trained people
- * to recognise.
+ * Reading every format would happily lock onto the barcode on a boarding pass,
+ * which is precisely the situation this app is used in. The module-level
+ * constant keeps the array identity stable across renders, so the native output
+ * is not reconfigured on every frame.
  */
-function Viewfinder(): React.JSX.Element {
+const QR_ONLY: ScannedObjectType[] = ['qr'];
+
+export interface ScannerCameraProps {
+  readonly device: CameraDevice;
+  /** Paused while a result is on screen, so it cannot re-fire behind a sheet. */
+  readonly isActive: boolean;
+  /** Fires once per distinct code. The screen decides what to do with it. */
+  readonly onCode: (value: string) => void;
+  /** The camera failed to start. The screen shows a way forward. */
+  readonly onError: () => void;
+}
+
+export function ScannerCamera({ device, isActive, onCode, onError }: ScannerCameraProps): React.JSX.Element {
   const theme = useTheme();
-  // Three points of stroke: thinner disappears against a busy tray table.
-  const thickness = 3;
-  const arm = theme.spacing.xxl;
-  const base: ViewStyle = {
-    position: 'absolute',
-    width: arm,
-    height: arm,
-    borderColor: theme.colors.onAccent,
-  };
+  /**
+   * The same code is reported on every frame it stays in view, which at 30 fps
+   * would call onCode thirty times a second and push thirty screens.
+   */
+  const lastValue = useRef<string | null>(null);
+
+  const handleScanned = useCallback(
+    (objects: ScannedObject[]) => {
+      if (!isActive) return;
+      for (const object of objects) {
+        if (!isScannedCode(object)) continue;
+        // A damaged or partially-visible code decodes to nothing. Keep looking.
+        const value = object.value;
+        if (!value) continue;
+        if (value === lastValue.current) return;
+        lastValue.current = value;
+        onCode(value);
+        return;
+      }
+    },
+    [isActive, onCode],
+  );
+
+  const objectOutput = useObjectOutput({ types: QR_ONLY, onObjectsScanned: handleScanned });
 
   return (
     <View
-      pointerEvents="none"
       style={{
-        position: 'absolute',
-        top: theme.spacing.xxl,
-        bottom: theme.spacing.xxl,
-        left: theme.spacing.xxl,
-        right: theme.spacing.xxl,
+        flex: 1,
+        overflow: 'hidden',
+        borderRadius: theme.radius.lg,
+        backgroundColor: theme.colors.surfaceElevated,
       }}
     >
-      <View
-        style={[
-          base,
-          {
-            top: 0,
-            left: 0,
-            borderTopWidth: thickness,
-            borderLeftWidth: thickness,
-            borderTopLeftRadius: theme.radius.md,
-          },
-        ]}
-      />
-      <View
-        style={[
-          base,
-          {
-            top: 0,
-            right: 0,
-            borderTopWidth: thickness,
-            borderRightWidth: thickness,
-            borderTopRightRadius: theme.radius.md,
-          },
-        ]}
-      />
-      <View
-        style={[
-          base,
-          {
-            bottom: 0,
-            left: 0,
-            borderBottomWidth: thickness,
-            borderLeftWidth: thickness,
-            borderBottomLeftRadius: theme.radius.md,
-          },
-        ]}
-      />
-      <View
-        style={[
-          base,
-          {
-            bottom: 0,
-            right: 0,
-            borderBottomWidth: thickness,
-            borderRightWidth: thickness,
-            borderBottomRightRadius: theme.radius.md,
-          },
-        ]}
+      <Camera
+        device={device}
+        isActive={isActive}
+        outputs={[objectOutput]}
+        style={{ flex: 1 }}
+        onError={onError}
       />
     </View>
   );

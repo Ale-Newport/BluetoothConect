@@ -216,18 +216,7 @@ internal class BleScanner(
             ""
         }.take(BleWire.MAX_NAME_BYTES)
 
-        val endpoint = DiscoveredEndpoint(
-            transport = TransportKind.BLE,
-            // The MAC address is a transport-scoped handle and nothing more.
-            // Most modern peers advertise a resolvable private address that
-            // rotates every fifteen minutes, so this is emphatically NOT an
-            // identity - the cryptographic one only exists after the handshake,
-            // two layers above this file.
-            endpointId = address,
-            name = name,
-            token = if (token.isEmpty()) "" else Base64.encodeToString(token, Base64.NO_WRAP),
-            rssi = result.rssi,
-        )
+        val encodedToken = if (token.isEmpty()) "" else Base64.encodeToString(token, Base64.NO_WRAP)
 
         val now = SystemClock.elapsedRealtime()
         val existing = sightings[address]
@@ -240,13 +229,42 @@ internal class BleScanner(
                 val oldest = sightings.keys.firstOrNull()
                 if (oldest != null) sightings.remove(oldest)
             }
+            val endpoint = DiscoveredEndpoint(
+                transport = TransportKind.BLE,
+                // The MAC address is a transport-scoped handle and nothing more.
+                // Most modern peers advertise a resolvable private address that
+                // rotates every fifteen minutes, so this is emphatically NOT an
+                // identity - the cryptographic one only exists after the
+                // handshake, two layers above this file.
+                endpointId = address,
+                name = name,
+                token = encodedToken,
+                rssi = result.rssi,
+            )
             sightings[address] = Sighting(endpoint, now, now)
             onDiscovered(endpoint)
             return
         }
 
         existing.lastSeenMs = now
-        val changed = existing.endpoint.name != endpoint.name || existing.endpoint.token != endpoint.token
+
+        // MERGED, never replaced. An advertisement is a partial view of a peer:
+        // an iPhone carries a name and no token, an Android phone carries a
+        // token and no name, and the identity read that feeds enrich() carries
+        // both. Overwriting a field with the nothing this particular sighting
+        // happened to contain would erase a name we learned by connecting - and
+        // erase it again ten times a second, for as long as the peer is in
+        // range.
+        val previous = existing.endpoint
+        val endpoint = DiscoveredEndpoint(
+            transport = TransportKind.BLE,
+            endpointId = address,
+            name = if (name.isNotEmpty()) name else previous.name,
+            token = if (encodedToken.isNotEmpty()) encodedToken else previous.token,
+            rssi = result.rssi,
+        )
+
+        val changed = previous.name != endpoint.name || previous.token != endpoint.token
         existing.endpoint = endpoint
         if (changed || now - existing.announcedMs >= reannounceIntervalMs) {
             existing.announcedMs = now

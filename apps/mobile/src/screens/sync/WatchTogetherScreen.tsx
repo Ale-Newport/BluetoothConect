@@ -90,7 +90,7 @@ const LOAD_TIMEOUT_MS = 20_000;
 export function WatchTogetherScreen(): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
+  const { width, height: windowHeight } = useWindowDimensions();
   const route = useRoute<RouteProp<RootStackParams, 'WatchTogether'>>();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
   const peerKey = route.params.peerKey;
@@ -129,6 +129,11 @@ export function WatchTogetherScreen(): React.JSX.Element {
    */
   const linkHold = inPlayer && !api.linkUp;
   const controlsEnabled = inPlayer && api.linkUp;
+
+  const setHold = media.setHold;
+  useEffect(() => {
+    setHold(linkHold);
+  }, [linkHold, setHold]);
 
   const everPlayed = useRef(false);
   useEffect(() => {
@@ -231,9 +236,11 @@ export function WatchTogetherScreen(): React.JSX.Element {
   useEffect(() => {
     if (!session || !descriptor || !api.linkUp) return;
     if (api.outcome !== null || api.invite !== null || api.finished) return;
-    // MATCHING means the question is already out; anything else means a session
-    // is running or has run, and neither wants another query.
-    if (api.watchState !== WatchState.IDLE) return;
+    // Ask only from a standing start. MATCHING means the question is already
+    // out, READY means it was answered, and the rest mean a session is running.
+    // ENDED counts as a standing start: the last film is over and this is a new
+    // one, which is exactly what [Watch something else] leaves behind.
+    if (api.watchState !== WatchState.IDLE && api.watchState !== WatchState.ENDED) return;
     const key = `${descriptor.contentId}:${descriptor.durationMs}:${askNonce}`;
     if (askedRef.current === key) return;
     askedRef.current = key;
@@ -361,6 +368,7 @@ export function WatchTogetherScreen(): React.JSX.Element {
       api.clearFinished();
       api.clearOutcome();
       askedRef.current = null;
+      everPlayed.current = false;
       resetFile();
     },
     onDone: () => navigation.goBack(),
@@ -389,13 +397,22 @@ export function WatchTogetherScreen(): React.JSX.Element {
   });
 
   const previewHeight = Math.round(((width - theme.spacing.lg * 2) * 9) / 16);
-  const previewRect: ViewStyle = {
+  /**
+   * Where the picture lives: a 16:9 window while you are setting up, the whole
+   * screen once you are watching.
+   *
+   * Every key is present in both shapes on purpose. The two are the SAME view
+   * with a different frame, so what changes is a style diff and not a remount -
+   * and a style that dropped a key between the two would leave the old value
+   * behind.
+   */
+  const surface: ViewStyle = {
     position: 'absolute',
-    top: insets.top + TOP_BAR_HEIGHT + theme.spacing.sm,
-    left: theme.spacing.lg,
-    right: theme.spacing.lg,
-    height: previewHeight,
-    borderRadius: theme.radius.lg,
+    top: inPlayer ? 0 : insets.top + TOP_BAR_HEIGHT + theme.spacing.sm,
+    left: inPlayer ? 0 : theme.spacing.lg,
+    right: inPlayer ? 0 : theme.spacing.lg,
+    height: inPlayer ? windowHeight : previewHeight,
+    borderRadius: inPlayer ? 0 : theme.radius.lg,
     overflow: 'hidden',
     backgroundColor: cinema.background,
   };
@@ -419,14 +436,14 @@ export function WatchTogetherScreen(): React.JSX.Element {
         from disk at the exact moment two people are trying to start together.
       */}
       {video ? (
-        <View style={inPlayer ? StyleSheet.absoluteFill : previewRect}>
+        <View style={surface}>
           <Video
             ref={media.videoRef}
             source={{ uri: video.uri }}
             style={StyleSheet.absoluteFill}
             resizeMode="contain"
             controls={false}
-            paused={media.paused || linkHold}
+            paused={media.paused}
             rate={media.rate}
             selectedTextTrack={selectedTextTrack}
             progressUpdateInterval={POSITION_TICK_MS}
@@ -634,7 +651,8 @@ function currentStage(input: {
   if (input.outcome === SetupOutcome.NO_ANSWER) return { kind: 'noAnswer' };
   if (!input.linkUp) return { kind: 'offline' };
   if (input.watchState === WatchState.READY) return { kind: 'ready' };
-  // IDLE here means the query effect is about to run: the question is on its
-  // way, and saying so is more honest than a blank panel for one frame.
+  // IDLE (or ENDED, after a previous film) means the query effect is about to
+  // run: the question is on its way, and saying so is more honest than a blank
+  // panel for one frame.
   return { kind: 'checking' };
 }

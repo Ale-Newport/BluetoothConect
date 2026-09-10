@@ -50,6 +50,9 @@ const LONG_TRANSFER_MS = 60_000;
  */
 const BULKY_BYTES = 8 * 1000 * 1000;
 
+/** Leading tile and avatar size in this sheet's choice rows. */
+const ROW_TILE = 40;
+
 type Props = NativeStackScreenProps<RootStackParams, 'ShareCompose'>;
 
 export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Element {
@@ -190,15 +193,15 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
               title={strings.share.choosePhoto}
               accessibilityLabel={shareStrings.choosePhotoLabel}
               disabled={picking}
-              left={<FileTile kind={FileKind.IMAGE} size={40} />}
+              left={<FileTile kind={FileKind.IMAGE} size={ROW_TILE} />}
               onPress={() => void choose(pickPhoto)}
             />
-            <RowSeparator inset={40 + theme.spacing.md} />
+            <RowSeparator inset={ROW_TILE + theme.spacing.md} />
             <ChoiceRow
               title={strings.share.chooseFile}
               accessibilityLabel={shareStrings.chooseFileLabel}
               disabled={picking}
-              left={<FileTile kind={FileKind.DOCUMENT} size={40} />}
+              left={<FileTile kind={FileKind.DOCUMENT} size={ROW_TILE} />}
               onPress={() => void choose(pickDocument)}
             />
             {picking ? (
@@ -219,14 +222,14 @@ export function ShareComposeScreen({ route, navigation }: Props): React.JSX.Elem
         <Card style={{ paddingVertical: theme.spacing.xs }}>
           {connected.map((peer, index) => (
             <View key={peer.key}>
-              {index > 0 ? <RowSeparator inset={40 + theme.spacing.md} /> : null}
+              {index > 0 ? <RowSeparator inset={ROW_TILE + theme.spacing.md} /> : null}
               <ChoiceRow
                 role="radio"
                 title={peer.displayName}
                 subtitle={peer.quality ?? strings.home.connected}
                 selected={peer.key === recipientKey}
                 accessibilityLabel={shareStrings.recipientLabel(peer.displayName)}
-                left={<Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={40} />}
+                left={<Avatar name={peer.displayName} peerId={peer.peerId} emoji={peer.avatarEmoji} size={ROW_TILE} />}
                 onPress={() => setRecipientKey(peer.key)}
               />
             </View>

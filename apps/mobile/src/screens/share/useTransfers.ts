@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { useClient } from '../../client/ClientProvider.js';
+import type { AirLinkClient } from '../../client/AirLinkClient.js';
 import { transferCenterFor, type TransferCenter, type TransferRecord } from './transferCenter.js';
 
 /**
@@ -26,12 +27,19 @@ import { transferCenterFor, type TransferCenter, type TransferRecord } from './t
  * resolves. Until it does, every caller has to handle null by disabling the
  * control and saying why.
  */
-export function useTransferCenter(): TransferCenter | null {
+function useOptionalClient(): AirLinkClient | null {
   try {
-    return transferCenterFor(useClient());
+    return useClient();
   } catch {
     return null;
   }
+}
+
+export function useTransferCenter(): TransferCenter | null {
+  const client = useOptionalClient();
+  // One centre per client, held for the client's lifetime, so a transfer keeps
+  // running while the user is in a game and survives this screen unmounting.
+  return client ? transferCenterFor(client) : null;
 }
 
 /**

@@ -485,12 +485,30 @@ internal class FramedTcpServer(
     @Throws(IOException::class)
     fun start(requestedPort: Int) {
         if (running.get()) return
-        // Bound to the wildcard address on purpose: on Wi-Fi Direct the group
-        // owner's interface does not exist yet when the group is forming, and
-        // on a shared network we may be reachable on more than one interface.
-        val socket = ServerSocket(requestedPort, BACKLOG)
-        socket.reuseAddress = true
-        socket.soTimeout = ACCEPT_POLL_MS
+        // Created unbound so that SO_REUSEADDR can be set BEFORE the bind, which
+        // is the only time it has any effect. It matters for the Wi-Fi Direct
+        // group owner, which rebinds one fixed port every time a group forms: a
+        // socket left in TIME_WAIT from the previous session would otherwise
+        // refuse the bind, and the peer has no way to learn a different port.
+        val socket = ServerSocket()
+        try {
+            socket.reuseAddress = true
+            // Bound to the wildcard address on purpose: on Wi-Fi Direct the
+            // group owner's interface does not exist yet when the group is
+            // forming, and on a shared network we may be reachable on more than
+            // one interface.
+            socket.bind(InetSocketAddress(requestedPort), BACKLOG)
+            socket.soTimeout = ACCEPT_POLL_MS
+        } catch (e: IOException) {
+            // The port is taken, which is a real outcome for the Wi-Fi Direct
+            // group owner's fixed port. Close before rethrowing: an unbound
+            // socket left behind is a file descriptor nobody will ever reclaim.
+            try {
+                socket.close()
+            } catch (_: IOException) {
+            }
+            throw e
+        }
         serverSocket = socket
         port = socket.localPort
         running.set(true)

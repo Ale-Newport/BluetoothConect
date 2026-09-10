@@ -8,7 +8,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
+import com.airlink.transport.Permissions
 import com.airlink.transport.TransportAvailability
+import com.airlink.transport.TransportKind
 import com.airlink.transport.UnavailableReason
 
 /**
@@ -26,14 +28,15 @@ internal class BleAvailability(context: Context) {
     private val appContext: Context = context.applicationContext
 
     /**
-     * Set by the bridge once it has actually put the OS permission dialog in
-     * front of the user.
+     * Set by the bridge if it wants to force "we have asked" for this session.
      *
-     * Android cannot distinguish "denied" from "never asked" without an
-     * Activity to call `shouldShowRequestPermissionRationale` on, and this
-     * layer has none. The two need different UI - one offers a prompt, the
-     * other has to send the user to Settings - so the bridge remembers which
-     * happened and tells us. Until it does we assume the friendlier of the two.
+     * Android cannot distinguish "denied" from "never asked" from a permission
+     * check alone: `shouldShowRequestPermissionRationale` needs an Activity,
+     * which this layer has none of, and it answers false both before the first
+     * request and after "don't ask again". The durable answer lives in the
+     * record [Permissions] writes just before each dialog goes up, and that is
+     * what [permissionReason] reads. This flag only ever overrides it upwards,
+     * for a caller that knows it has already prompted.
      */
     @Volatile
     var permissionsRequested: Boolean = false
@@ -174,6 +177,29 @@ internal class BleAvailability(context: Context) {
             false
         }
 
+    /**
+     * Why a missing permission is missing, in the terms the permission screen
+     * acts on: "never asked" gets a button that prompts, "denied" gets one that
+     * opens Settings, and getting the two the wrong way round leaves the user
+     * pressing a button that does nothing.
+     *
+     * The distinction is not derivable from the permission itself, so it comes
+     * from [Permissions] - the shared matrix in the parent package, which
+     * records each request in SharedPreferences before the dialog is shown so
+     * the answer survives the process being killed with one on screen. Asking
+     * it rather than duplicating the logic here is what keeps this transport's
+     * answer identical to the one `getCapabilities` gives for the same
+     * permissions a moment later.
+     */
+    private fun permissionReason(): UnavailableReason {
+        if (permissionsRequested) return UnavailableReason.PERMISSION_DENIED
+        val reason = Permissions.reasonFor(Permissions.transportState(appContext, null, TransportKind.BLE))
+        // NONE would mean "granted", which contradicts the caller having found
+        // a permission missing - a race with a grant landing mid-check. The
+        // recoverable answer is the safe one either way.
+        return if (reason == UnavailableReason.NONE) UnavailableReason.PERMISSION_NOT_REQUESTED else reason
+    }
+
     // -- the answer -----------------------------------------------------------
 
     fun availability(): TransportAvailability {
@@ -193,11 +219,7 @@ internal class BleAvailability(context: Context) {
         if (missing.isNotEmpty()) {
             return TransportAvailability(
                 available = false,
-                reason = if (permissionsRequested) {
-                    UnavailableReason.PERMISSION_DENIED
-                } else {
-                    UnavailableReason.PERMISSION_NOT_REQUESTED
-                },
+                reason = permissionReason(),
                 detail = "AirLink needs permission to find and connect to nearby devices.",
             )
         }

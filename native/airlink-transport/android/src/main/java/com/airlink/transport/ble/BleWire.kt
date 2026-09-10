@@ -204,8 +204,9 @@ internal object BleWire {
     const val MAX_NAME_BYTES: Int = 48
 
     /**
-     * The read-only identity characteristic: the same two fields the
-     * advertisement carries, plus the one thing that cannot be advertised.
+     * The read-only identity characteristic: the token the advertisement
+     * carries, plus the two things that will not fit in one - the opt-in
+     * display name and the L2CAP PSM.
      *
      *      0        1        2        3        4                  5 + tokLen
      *      +--------+--------+--------+--------+--------+=========+=========+

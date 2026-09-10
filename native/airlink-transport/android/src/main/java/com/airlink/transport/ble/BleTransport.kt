@@ -18,6 +18,7 @@ import com.airlink.transport.TransportConfiguration
 import com.airlink.transport.TransportEventSink
 import com.airlink.transport.TransportKind
 import com.airlink.transport.UnavailableReason
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -190,6 +191,27 @@ class BleTransport(context: Context) : AirLinkTransport {
      */
     override fun stop() {
         if (handlerRef == null) return
+        // A teardown that throws leaves the caller unable to tear down, so this
+        // one cannot: whatever happened, the thread below still ends and the
+        // object is still reusable afterwards.
+        try {
+            stopOnHandler()
+        } catch (t: Throwable) {
+            emitLog("warn", "stop did not complete cleanly: ${t.javaClass.simpleName}")
+        }
+
+        // Quit last and from the caller's thread, so the block above has
+        // finished running on the looper we are about to end. quitSafely lets
+        // already-queued messages drain, which matters because a link's closing
+        // events are among them.
+        synchronized(this) {
+            thread?.quitSafely()
+            thread = null
+            handlerRef = null
+        }
+    }
+
+    private fun stopOnHandler() {
         onHandler("stop") {
             if (!started) return@onHandler
             started = false
@@ -212,17 +234,8 @@ class BleTransport(context: Context) : AirLinkTransport {
             wantsDiscovery = false
             advertisedToken = null
             advertisedName = ""
+            radioDown = false
             emitLog("info", "BLE transport stopped")
-        }
-
-        // Quit last and from the caller's thread, so the block above has
-        // finished running on the looper we are about to end. quitSafely lets
-        // already-queued messages drain, which matters because a link's closing
-        // events are among them.
-        synchronized(this) {
-            thread?.quitSafely()
-            thread = null
-            handlerRef = null
         }
     }
 
@@ -280,11 +293,11 @@ class BleTransport(context: Context) : AirLinkTransport {
             // anything else, and an endpoint id has been round-tripped through
             // JavaScript by the time it comes back to us. Normalising here means
             // "aa:bb:.." opens a link instead of reporting an unknown endpoint,
-            // and it keeps the connections map keyed the same way the addresses
-            // coming out of the scanner are.
-            val endpointId = endpointId.uppercase(Locale.ROOT)
+            // and it keeps this map keyed exactly the way the addresses coming
+            // out of the scanner are.
+            val address = endpointId.uppercase(Locale.ROOT)
 
-            val existing = connections[endpointId]
+            val existing = connections[address]
             if (existing != null) {
                 // A second connect to a peer we are already talking to returns
                 // the link we already have rather than opening a second one:
@@ -294,7 +307,7 @@ class BleTransport(context: Context) : AirLinkTransport {
                 if (open != null && open.isOpen) {
                     completion(Result.success(existing.linkId))
                 } else {
-                    completion(Result.failure(BleErrors.failed("already connecting to $endpointId")))
+                    completion(Result.failure(BleErrors.failed("already connecting to $address")))
                 }
                 return@post
             }
@@ -308,13 +321,17 @@ class BleTransport(context: Context) : AirLinkTransport {
                 return@post
             }
 
-            val device = try {
-                radio.adapter?.getRemoteDevice(endpointId)
-            } catch (_: Throwable) {
-                // getRemoteDevice throws IllegalArgumentException for anything
-                // that is not a Bluetooth address - including a perfectly valid
-                // endpoint id from another transport.
+            // Checked before it is used, because an endpoint id from another
+            // transport is a perfectly ordinary thing to be handed here and
+            // `getRemoteDevice` answers it with an exception.
+            val device = if (!BluetoothAdapter.checkBluetoothAddress(address)) {
                 null
+            } else {
+                try {
+                    radio.adapter?.getRemoteDevice(address)
+                } catch (_: Throwable) {
+                    null
+                }
             }
             if (device == null) {
                 completion(Result.failure(BleErrors.unknownEndpoint(endpointId)))
@@ -355,7 +372,7 @@ class BleTransport(context: Context) : AirLinkTransport {
                     }
                 },
             )
-            connections[endpointId] = connection
+            connections[address] = connection
             connection.start(budget)
         }
     }
@@ -513,10 +530,18 @@ class BleTransport(context: Context) : AirLinkTransport {
      * state machine in TypeScript, which owns the backoff and the session that
      * survives the gap.
      */
+    private var radioDown = false
+
     private fun onAdapterState(state: Int) {
         when (state) {
             BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                 if (!started) return
+                // TURNING_OFF and OFF both arrive, in that order. The work below
+                // belongs to the first of them - by OFF the stack is gone - and
+                // repeating it would emit a second availability event for a
+                // change that happened once.
+                if (radioDown) return
+                radioDown = true
                 emitLog("info", "Bluetooth is switching off; closing everything cleanly")
 
                 scanner?.stop()
@@ -530,6 +555,7 @@ class BleTransport(context: Context) : AirLinkTransport {
             }
 
             BluetoothAdapter.STATE_ON -> {
+                radioDown = false
                 if (!started) return
                 emitLog("info", "Bluetooth is back; restoring discovery and advertising")
                 val uuids = configuration

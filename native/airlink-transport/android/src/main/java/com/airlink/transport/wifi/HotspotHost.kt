@@ -184,25 +184,26 @@ class HotspotHost(private val context: Context) {
         control.post {
             val existing = credentials
             if (existing != null && reservation != null) {
-                completion(Result.success(existing))
+                deliver(completion, Result.success(existing))
                 return@post
             }
             if (pending != null) {
                 // Only one soft AP request may be in flight; a second would race
                 // the first for the single reservation the platform hands out.
-                completion(Result.failure(AirLinkError.Busy("Starting a hotspot")))
+                deliver(completion, Result.failure(AirLinkError.Busy("Starting a hotspot")))
                 return@post
             }
 
             val manager = wifiManager
             if (manager == null || !hasWifiHardware()) {
-                completion(Result.failure(AirLinkError.Unsupported("Starting a hotspot")))
+                deliver(completion, Result.failure(AirLinkError.Unsupported("Starting a hotspot")))
                 return@post
             }
             for (permission in Permissions.hotspotPermissions()) {
                 if (!Permissions.isGranted(context, permission)) {
                     // A missing permission is a REASON, never an unhandled throw.
-                    completion(
+                    deliver(
+                        completion,
                         Result.failure(
                             AirLinkError.Failed(
                                 "AirLink does not have permission to start a Wi-Fi hotspot on this device.",
@@ -319,6 +320,18 @@ class HotspotHost(private val context: Context) {
         timeout = null
         val completion = pending ?: return
         pending = null
+        deliver(completion, result)
+    }
+
+    /**
+     * This thread is the one the platform delivers soft-AP callbacks on. A
+     * completion that threw would take the process down from inside a system
+     * callback, so it is contained here.
+     */
+    private fun deliver(
+        completion: (Result<HotspotCredentials>) -> Unit,
+        result: Result<HotspotCredentials>,
+    ) {
         try {
             completion(result)
         } catch (t: Throwable) {

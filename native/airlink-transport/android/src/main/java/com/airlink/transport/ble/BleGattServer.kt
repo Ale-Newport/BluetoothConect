@@ -316,7 +316,7 @@ internal class BleGattServer(
      * The two 31-byte structures, built in one place because the split between
      * them is load bearing. See the budget arithmetic in [BleWire].
      */
-    private fun advertiseData(ids: BleWire.ServiceUuids): Pair<AdvertiseData, AdvertiseData> {
+    private fun buildAdvertiseData(ids: BleWire.ServiceUuids): Pair<AdvertiseData, AdvertiseData> {
         val advertisement = AdvertiseData.Builder()
             // The service UUID has to be in the advertisement itself, not the
             // scan response: it is what every scan filter matches on, and a
@@ -353,7 +353,7 @@ internal class BleGattServer(
         stopAdvertising()
         wantsAdvertising = true
 
-        val (advertiseData, scanResponse) = advertiseData(ids)
+        val (advertiseData, scanResponse) = buildAdvertiseData(ids)
 
         val parameters = AdvertisingSetParameters.Builder()
             // Legacy mode, deliberately. Extended advertising is invisible to
@@ -439,7 +439,7 @@ internal class BleGattServer(
                 host.log("warn", "startAdvertisingSet failed with status $status; falling back")
                 val ids = uuids
                 if (wantsAdvertising && ids != null) {
-                    val (advertisement, scanResponse) = advertiseData(ids)
+                    val (advertisement, scanResponse) = buildAdvertiseData(ids)
                     startLegacyAdvertising(advertisement, scanResponse)
                 }
             }
@@ -524,6 +524,12 @@ internal class BleGattServer(
          * The shorter of the two waits: this peer has subscribed but has not
          * read our identity yet, so we do not know whether it is the kind of
          * peer that upgrades. See [awaitFastPath].
+         *
+         * A separate object from [l2capGrace] even though the two do the same
+         * thing, because `Handler.removeCallbacks` matches on identity: folding
+         * them into one would make cancelling the short wait also cancel the
+         * long one it was just promoted to, and the link would open on GATT the
+         * instant the identity read landed.
          */
         val identityGrace = Runnable { if (!opened) openOverGatt(this@ServerPeer) }
 

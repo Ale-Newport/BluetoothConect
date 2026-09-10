@@ -779,16 +779,16 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     override fun connect(endpointId: String, timeoutMs: Int, completion: (Result<String>) -> Unit) {
         control.execute {
             if (!started) {
-                completion(Result.failure(AirLinkError.NotStarted()))
+                deliver(completion, Result.failure(AirLinkError.NotStarted()))
                 return@execute
             }
             val endpoint = endpoints[endpointId]
             if (endpoint == null) {
-                completion(Result.failure(AirLinkError.UnknownEndpoint(endpointId)))
+                deliver(completion, Result.failure(AirLinkError.UnknownEndpoint(endpointId)))
                 return@execute
             }
             if (links.size >= MAX_LINKS) {
-                completion(Result.failure(AirLinkError.Failed("too many open links")))
+                deliver(completion, Result.failure(AirLinkError.Failed("too many open links")))
                 return@execute
             }
 
@@ -814,7 +814,8 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             }
         } catch (e: IOException) {
             control.execute {
-                completion(
+                deliver(
+                    completion,
                     Result.failure(
                         if (e is java.net.SocketTimeoutException) {
                             AirLinkError.Timeout("connecting to $endpointId")
@@ -827,7 +828,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
             return
         } catch (t: Throwable) {
             control.execute {
-                completion(Result.failure(AirLinkError.Failed("connect failed: ${t.javaClass.simpleName}")))
+                deliver(completion, Result.failure(AirLinkError.Failed("connect failed: ${t.javaClass.simpleName}")))
             }
             return
         }
@@ -835,11 +836,11 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         control.execute {
             if (!started) {
                 closeQuietly(socket)
-                completion(Result.failure(AirLinkError.NotStarted()))
+                deliver(completion, Result.failure(AirLinkError.NotStarted()))
                 return@execute
             }
             val linkId = adopt(socket, endpointId, incoming = false)
-            completion(Result.success(linkId))
+            deliver(completion, Result.success(linkId))
         }
     }
 
@@ -940,18 +941,20 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         control.execute {
             val record = links[linkId]
             if (record == null) {
-                completion(Result.failure(AirLinkError.UnknownLink(linkId)))
+                deliver(completion, Result.failure(AirLinkError.UnknownLink(linkId)))
                 return@execute
             }
             if (data.size > FramedTcp.MAX_DATAGRAM_BYTES) {
                 // Never truncate. The fragmentation layer above owns splitting.
-                completion(
+                deliver(
+                    completion,
                     Result.failure(AirLinkError.PayloadTooLarge(data.size, FramedTcp.MAX_DATAGRAM_BYTES)),
                 )
                 return@execute
             }
             record.link.send(data, reliable) { result ->
-                completion(
+                deliver(
+                    completion,
                     result.fold(
                         onSuccess = { Result.success(Unit) },
                         onFailure = { Result.failure(AirLinkError.Failed(it.message ?: "send failed")) },
@@ -977,6 +980,22 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     }
 
     // -- helpers --------------------------------------------------------------
+
+    /**
+     * Hands a result to a caller's completion, on the control thread.
+     *
+     * This thread is also the one NSD delivers its callbacks on, so a completion
+     * that threw would take the process down from inside a system callback. It
+     * is contained here; the promise on the JavaScript side is settled either
+     * way, which is the part that matters.
+     */
+    private fun <T> deliver(completion: (Result<T>) -> Unit, result: Result<T>) {
+        try {
+            completion(result)
+        } catch (t: Throwable) {
+            log("error", "a completion threw: ${t.javaClass.simpleName}")
+        }
+    }
 
     /**
      * NSD wants "_airlink._tcp"; some releases hand the type back with a

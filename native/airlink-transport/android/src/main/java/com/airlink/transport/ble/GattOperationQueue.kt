@@ -103,6 +103,29 @@ internal class GattOperationQueue(
     private var consecutiveTimeouts: Int = 0
     private var shutDown: Boolean = false
 
+    /**
+     * Operations we gave up on, per kind, whose callback the stack still owes
+     * us.
+     *
+     * Without this, timing an operation out and starting the next one of the
+     * SAME kind - two consecutive characteristic writes, the overwhelmingly
+     * common case - leaves the queue one step out of phase the instant the late
+     * callback lands: [complete] matches on kind alone, so the dead write's
+     * status completes the live write, the live write is reported as sent when
+     * the radio never accepted it, and its own callback later completes the one
+     * after that. A silent, self-sustaining lie about delivery, which is exactly
+     * what the datagram contract above forbids.
+     *
+     * So a late callback consumes its ghost instead of the operation in flight.
+     * The cost, when the stack has genuinely dropped the callback rather than
+     * merely delayed it, is that the NEXT operation of that kind swallows the
+     * ghost and times out too - one extra 10s timeout on a connection that has
+     * already missed one, on the way to the wedge detector tearing it down.
+     * Losing a link and reconnecting is a state change the layer above handles;
+     * a datagram reported as delivered that never left the phone is not.
+     */
+    private val abandoned = HashMap<GattOpKind, Int>()
+
     /** Fires when the in-flight operation has not called back in time. */
     private val timeoutRunnable = Runnable { onTimeout() }
 
@@ -136,6 +159,16 @@ internal class GattOperationQueue(
      * an MTU request and lose the datagram.
      */
     fun complete(kind: GattOpKind, status: Int, value: ByteArray?) {
+        // A callback we already gave up waiting for is claimed by its own ghost
+        // before anything in flight can be mistaken for its owner. See
+        // [abandoned].
+        val ghosts = abandoned[kind] ?: 0
+        if (ghosts > 0) {
+            if (ghosts == 1) abandoned.remove(kind) else abandoned[kind] = ghosts - 1
+            log("debug", "late $kind callback for an operation already timed out; ignored")
+            return
+        }
+
         val entry = inFlight
         if (entry == null) {
             log("debug", "late $kind callback with nothing in flight; ignored")
@@ -159,6 +192,9 @@ internal class GattOperationQueue(
     fun abort(reason: String) {
         shutDown = true
         handler.removeCallbacks(timeoutRunnable)
+        // Nothing will be issued again, so a stale callback has nothing left to
+        // be confused with and the bookkeeping can go.
+        abandoned.clear()
         val entry = inFlight
         inFlight = null
         entry?.let { deliver(it, GattOutcome.failure(reason)) }
@@ -230,6 +266,9 @@ internal class GattOperationQueue(
     private fun onTimeout() {
         val entry = inFlight ?: return
         inFlight = null
+        // The stack still owes us this operation's callback and may yet deliver
+        // it. Recorded so it cannot be mistaken for the next one's.
+        abandoned[entry.kind] = (abandoned[entry.kind] ?: 0) + 1
         consecutiveTimeouts++
         log("warn", "${entry.label} timed out after ${BleTuning.GATT_OPERATION_TIMEOUT_MS}ms")
         deliver(entry, GattOutcome.failure("${entry.label} timed out"))

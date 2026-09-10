@@ -515,29 +515,29 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
             val p2p = manager
             val open = channel
             if (p2p == null || open == null || !started) {
-                completion(Result.failure(AirLinkError.NotStarted()))
+                deliver(completion, Result.failure(AirLinkError.NotStarted()))
                 return@post
             }
             if (!p2pLikelyEnabled()) {
-                completion(Result.failure(AirLinkError.RadioOff(kind)))
+                deliver(completion, Result.failure(AirLinkError.RadioOff(kind)))
                 return@post
             }
             if (!hasNearbyPermission()) {
-                completion(Result.failure(AirLinkError.PermissionDenied(kind)))
+                deliver(completion, Result.failure(AirLinkError.PermissionDenied(kind)))
                 return@post
             }
             if (pending != null) {
                 // One negotiation at a time: the framework has a single p2p
                 // state machine and a second connect would cancel the first.
-                completion(Result.failure(AirLinkError.Busy("A Wi-Fi Direct connection")))
+                deliver(completion, Result.failure(AirLinkError.Busy("A Wi-Fi Direct connection")))
                 return@post
             }
             if (links.size >= MAX_LINKS) {
-                completion(Result.failure(AirLinkError.Failed("too many open links")))
+                deliver(completion, Result.failure(AirLinkError.Failed("too many open links")))
                 return@post
             }
             if (!peers.containsKey(endpointId)) {
-                completion(Result.failure(AirLinkError.UnknownEndpoint(endpointId)))
+                deliver(completion, Result.failure(AirLinkError.UnknownEndpoint(endpointId)))
                 return@post
             }
 
@@ -778,28 +778,13 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     private fun resolvePending(linkId: String) {
         val request = pending ?: return
         clearPending()
-        settle(request, Result.success(linkId))
+        deliver(request.completion, Result.success(linkId))
     }
 
     private fun failPending(error: Throwable) {
         val request = pending ?: return
         clearPending()
-        settle(request, Result.failure(error))
-    }
-
-    /**
-     * These completions run on the control thread, which is also a broadcast
-     * receiver's thread and the p2p framework's callback thread. A completion
-     * that threw would take the process down from inside a system callback, so
-     * it is contained here - the promise on the JavaScript side is settled
-     * either way.
-     */
-    private fun settle(request: PendingConnect, result: Result<String>) {
-        try {
-            request.completion(result)
-        } catch (t: Throwable) {
-            log("error", "connect completion threw: ${t.javaClass.simpleName}")
-        }
+        deliver(request.completion, Result.failure(error))
     }
 
     private fun clearPending() {
@@ -852,17 +837,19 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         control.post {
             val record = links[linkId]
             if (record == null) {
-                completion(Result.failure(AirLinkError.UnknownLink(linkId)))
+                deliver(completion, Result.failure(AirLinkError.UnknownLink(linkId)))
                 return@post
             }
             if (data.size > FramedTcp.MAX_DATAGRAM_BYTES) {
-                completion(
+                deliver(
+                    completion,
                     Result.failure(AirLinkError.PayloadTooLarge(data.size, FramedTcp.MAX_DATAGRAM_BYTES)),
                 )
                 return@post
             }
             record.link.send(data, reliable) { result ->
-                completion(
+                deliver(
+                    completion,
                     result.fold(
                         onSuccess = { Result.success(Unit) },
                         onFailure = { Result.failure(AirLinkError.Failed(it.message ?: "send failed")) },
@@ -888,6 +875,22 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
     }
 
     // -- helpers --------------------------------------------------------------
+
+    /**
+     * Hands a result to a caller's completion, on the control thread.
+     *
+     * That thread is also a broadcast receiver's thread and the p2p framework's
+     * callback thread, so a completion that threw would take the process down
+     * from inside a system callback. It is contained here; the promise on the
+     * JavaScript side is settled either way, which is the part that matters.
+     */
+    private fun <T> deliver(completion: (Result<T>) -> Unit, result: Result<T>) {
+        try {
+            completion(result)
+        } catch (t: Throwable) {
+            log("error", "a completion threw: ${t.javaClass.simpleName}")
+        }
+    }
 
     /** A socket we decided not to adopt. Never worth an exception. */
     private fun closeQuietly(socket: Socket) {

@@ -29,6 +29,11 @@ import type { TransferRecord } from './transferCenter.js';
  * explanation and a stale progress bar under it would be a lie about the past.
  */
 
+/** Matches `ListRow` in the design system, so a file row lines up with a peer row. */
+const ROW_MIN_HEIGHT = 56;
+/** The status dot sits on a footnote line, a shade under the 8pt default. */
+const DOT_SIZE = 6;
+
 export interface TransferRowActions {
   /** Answer an incoming offer. Opens the sheet - never accepts in place. */
   onReview(record: TransferRecord): void;
@@ -62,7 +67,7 @@ export function TransferRow({
         alignItems: 'flex-start',
         gap: theme.spacing.md,
         paddingVertical: theme.spacing.md,
-        minHeight: 56,
+        minHeight: ROW_MIN_HEIGHT,
       }}
     >
       <FileTile kind={kindOf(record.mimeType, name)} size={TILE_SIZE} />
@@ -73,7 +78,7 @@ export function TransferRow({
         </Label>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs, marginTop: theme.spacing.xs }}>
-          <StatusDot tone={statusTone(record)} size={6} />
+          <StatusDot tone={statusTone(record)} size={DOT_SIZE} />
           <Label variant="footnote" tone={statusTextTone(record)} numberOfLines={2} style={{ flex: 1 }}>
             {summaryLine(record)}
           </Label>
