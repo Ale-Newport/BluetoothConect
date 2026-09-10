@@ -62,6 +62,7 @@ export function DrawAndGuessBoard({
   players,
   nameFor,
   live,
+  disabledReason,
   width,
 }: GameRendererProps<DrawAndGuessState>): React.JSX.Element {
   const theme = useTheme();
@@ -232,7 +233,7 @@ export function DrawAndGuessBoard({
               onPress={() => dispatch('undo', null)}
               disabled={!live || state.strokes.length === 0}
               disabledReason={
-                !live ? playText.room.waitingForLink : state.strokes.length === 0 ? playText.drawAndGuess.nothingToUndo : undefined
+                disabledReason ?? (state.strokes.length === 0 ? playText.drawAndGuess.nothingToUndo : undefined)
               }
             />
             <Button
@@ -242,7 +243,7 @@ export function DrawAndGuessBoard({
               onPress={() => dispatch('clear', null)}
               disabled={!live || state.strokes.length === 0}
               disabledReason={
-                !live ? playText.room.waitingForLink : state.strokes.length === 0 ? playText.drawAndGuess.nothingToUndo : undefined
+                disabledReason ?? (state.strokes.length === 0 ? playText.drawAndGuess.nothingToUndo : undefined)
               }
             />
           </View>
@@ -251,7 +252,7 @@ export function DrawAndGuessBoard({
             variant="ghost"
             onPress={() => dispatch('endRound', null)}
             disabled={!live}
-            disabledReason={live ? undefined : playText.room.waitingForLink}
+            disabledReason={disabledReason ?? undefined}
           />
         </View>
       ) : (
@@ -283,7 +284,7 @@ export function DrawAndGuessBoard({
               onPress={send}
               disabled={!live || solved || guess.trim().length === 0}
               disabledReason={
-                !live ? playText.room.waitingForLink : solved ? playText.drawAndGuess.solved : undefined
+                disabledReason ?? (solved ? playText.drawAndGuess.solved : undefined)
               }
             />
           </View>

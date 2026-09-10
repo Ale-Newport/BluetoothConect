@@ -88,6 +88,7 @@ export function PoolTable({
   turn,
   lastAction,
   live,
+  disabledReason,
   width,
 }: GameRendererProps<PoolState>): React.JSX.Element {
   const theme = useTheme();
@@ -316,13 +317,16 @@ export function PoolTable({
       <Label variant="footnote" tone="secondary" align="center">
         {replaying
           ? playText.pool.rolling
-          : state.ballInHand && turn === local
-          ? playText.pool.ballInHand
-          : myShot
-          ? view.onEight
-            ? playText.pool.onEight
-            : playText.pool.yourShot
-          : playText.room.notYourTurn}
+          : // A finished table is not "not your turn", and a dropped link is
+            // not either. Both say what they actually are.
+            disabledReason ??
+            (state.ballInHand && turn === local
+              ? playText.pool.ballInHand
+              : myShot
+              ? view.onEight
+                ? playText.pool.onEight
+                : playText.pool.yourShot
+              : playText.room.notYourTurn)}
       </Label>
 
       {myShot ? <Hint text={playText.pool.aimHint} /> : null}

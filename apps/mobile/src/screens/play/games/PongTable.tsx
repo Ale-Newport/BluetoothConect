@@ -63,6 +63,7 @@ export function PongTable({
   players,
   nameFor,
   live,
+  disabledReason,
   frames,
   width,
 }: GameRendererProps<PongState>): React.JSX.Element {
@@ -243,7 +244,7 @@ export function PongTable({
         <PaddleButton title={playText.pong.down} live={live} onDown={() => push(1)} onUp={() => push(0)} />
       </View>
 
-      {live ? null : <Hint text={playText.room.waitingForLink} />}
+      {disabledReason ? <Hint text={disabledReason} /> : null}
     </View>
   );
 }

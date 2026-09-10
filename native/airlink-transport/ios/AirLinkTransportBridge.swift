@@ -151,26 +151,45 @@ import UIKit
 
             var granted: [String] = []
             var denied: [String] = []
+            var pending: [String] = []
+            var needsSettings = false
+
             for name in transportNames {
                 guard let kind = TransportKind(rawValue: name), let transport = self.transports[kind] else {
                     denied.append(name)
                     continue
                 }
                 let state = transport.availability()
-                if state.available || state.reason == .permissionNotRequested {
+                if state.available {
                     granted.append(name)
-                } else {
+                    continue
+                }
+                switch state.reason {
+                case .permissionNotRequested:
+                    // NOT granted. iOS decides asynchronously - the manager sits
+                    // in .unknown until the user answers the prompt - and
+                    // reporting it as granted made a first launch claim a
+                    // permission it had not actually been given, so the app went
+                    // on to advertise and scan and silently did neither.
+                    pending.append(name)
+                case .permissionDenied:
+                    denied.append(name)
+                    needsSettings = true
+                default:
                     denied.append(name)
                 }
             }
+
+            // A pending transport is neither granted nor refused. Reporting it
+            // as denied would be just as wrong as reporting it granted, so it is
+            // reported as denied WITHOUT requiresSettings: the caller shows
+            // "try again" rather than sending the user to Settings for a prompt
+            // they have not seen yet.
             resolve([
-                "granted": denied.isEmpty,
+                "granted": denied.isEmpty && pending.isEmpty,
                 "granted_transports": granted,
-                "denied_transports": denied,
-                "requiresSettings": denied.contains { name in
-                    guard let kind = TransportKind(rawValue: name), let t = self.transports[kind] else { return false }
-                    return t.availability().reason == .permissionDenied
-                },
+                "denied_transports": denied + pending,
+                "requiresSettings": needsSettings,
             ])
         }
     }

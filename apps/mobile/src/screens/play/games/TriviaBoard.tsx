@@ -45,6 +45,7 @@ export function TriviaBoard({
   players,
   nameFor,
   live,
+  disabledReason,
 }: GameRendererProps<TriviaState>): React.JSX.Element {
   const theme = useTheme();
 
@@ -71,9 +72,13 @@ export function TriviaBoard({
   }, [state.position, state.revealed]);
 
   const expired = remainingMs <= 0;
+  // Once the countdown has run out the screen has told the user their time is
+  // up, so the options go with it. Leaving them tappable would score an answer
+  // the screen had already refused to accept.
+  const closed = answered || state.revealed || expired || !live;
 
   const answer = (choice: number): void => {
-    if (answered || state.revealed || !live) return;
+    if (closed) return;
     const elapsedMs = Math.min(MAX_ANSWER_MS, Math.max(0, Math.round(Date.now() - shownAt.current)));
     dispatch('answer', { choice, elapsedMs });
   };
@@ -145,8 +150,8 @@ export function TriviaBoard({
               key={index}
               accessibilityRole="button"
               accessibilityLabel={option}
-              accessibilityState={{ selected: chosen, disabled: answered || state.revealed || !live }}
-              disabled={answered || state.revealed || !live}
+              accessibilityState={{ selected: chosen, disabled: closed }}
+              disabled={closed}
               onPress={() => answer(index)}
               style={({ pressed }) => [
                 {
@@ -185,7 +190,7 @@ export function TriviaBoard({
             title={playText.trivia.nextQuestion}
             onPress={() => dispatch('next', {})}
             disabled={!live}
-            disabledReason={live ? undefined : playText.room.waitingForLink}
+            disabledReason={disabledReason ?? undefined}
           />
         ) : (
           <Hint text={playText.trivia.hostAdvances} />
@@ -197,7 +202,7 @@ export function TriviaBoard({
           title={playText.trivia.closeQuestion}
           onPress={() => dispatch('next', {})}
           disabled={!live}
-          disabledReason={live ? undefined : playText.room.waitingForLink}
+          disabledReason={disabledReason ?? undefined}
         />
       ) : expired ? (
         <Hint text={playText.trivia.timeUp} />

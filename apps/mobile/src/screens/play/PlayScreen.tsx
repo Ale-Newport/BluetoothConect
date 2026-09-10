@@ -1,7 +1,12 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect, useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
+import {
+  useFocusEffect,
+  useIsFocused,
+  useNavigation,
+  type CompositeNavigationProp,
+} from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useShallow } from 'zustand/react/shallow';
@@ -17,6 +22,7 @@ import {
   Gap,
   Label,
   ListRow,
+  Row,
   Screen,
   SectionHeading,
   StatusDot,
@@ -32,6 +38,7 @@ import {
   newGameSessionId,
   peerKeyForPeerId,
 } from './catalogue.js';
+import { useInviteCentre, useNextInvite, type GameInviteRecord } from './inviteCentre.js';
 import { playText } from './strings.js';
 
 /**
@@ -72,6 +79,47 @@ export function PlayScreen(): React.JSX.Element {
 
   const [resumable, setResumable] = useState<readonly GameSessionRow[]>([]);
   const [pendingGame, setPendingGame] = useState<GameCatalogueEntry | null>(null);
+
+  /**
+   * Somebody asking to play.
+   *
+   * The invitation is asked about here because this is the tab it belongs to,
+   * and only while this tab is actually in front - `useIsFocused` is false with
+   * a game room open above it, and a sheet appearing behind a board nobody can
+   * see would be a question the user never gets to answer.
+   */
+  const isFocused = useIsFocused();
+  const inviteCentre = useInviteCentre();
+  const invite = useNextInvite();
+
+  /**
+   * A rematch accepted inside the room is already open, so its invitation is
+   * spent even though this centre never saw the answer. Anything whose row has
+   * moved past "invited" is therefore forgotten rather than offered again.
+   */
+  useEffect(() => {
+    if (!invite || !client || !inviteCentre) return;
+    let state: string | null = null;
+    try {
+      state = client.db.games.get(invite.sessionId)?.state ?? null;
+    } catch {
+      state = null;
+    }
+    if (state !== null && state !== 'invited') inviteCentre.forget(invite.sessionId);
+  }, [client, invite, inviteCentre]);
+
+  const acceptInvite = useCallback(
+    (record: GameInviteRecord) => {
+      if (!inviteCentre?.accept(record.sessionId)) return;
+      navigation.navigate('GameRoom', {
+        peerKey: record.peerKey,
+        gameId: record.gameId,
+        gameSessionId: record.sessionId,
+        isHost: record.isHost,
+      });
+    },
+    [inviteCentre, navigation],
+  );
 
   /**
    * The saved-games shelf is read on focus rather than subscribed to.
@@ -119,22 +167,63 @@ export function PlayScreen(): React.JSX.Element {
     [open, soloPeer],
   );
 
+  const resume = useCallback(
+    (row: GameSessionRow, peerKey: string) => {
+      navigation.navigate('GameRoom', {
+        peerKey,
+        gameId: row.gameId,
+        gameSessionId: row.id,
+        isHost: row.hostPeerId === profile?.peerId,
+      });
+    },
+    [navigation, profile?.peerId],
+  );
+
   // The tab has no navigation header, so the title has to clear the notch itself.
   const topPadding = { paddingTop: insets.top + theme.spacing.xl };
 
+  /**
+   * An invitation is offered whichever half of this screen is showing.
+   *
+   * A friend who connected to US is not necessarily in the nearby list yet - an
+   * incoming link is keyed by the endpoint it arrived on - so the empty state
+   * and the grid can both be on screen when somebody asks to play.
+   */
+  const inviteSheet = (
+    <InviteSheet
+      invite={isFocused ? invite : null}
+      onAccept={acceptInvite}
+      onDecline={(record) => inviteCentre?.decline(record.sessionId)}
+    />
+  );
+
   if (connected.length === 0) {
     return (
-      <Screen scroll style={topPadding}>
-        <Label variant="largeTitle">{strings.play.title}</Label>
-        <EmptyState
-          icon="🎲"
-          title={playText.tabs.nobodyTitle}
-          body={playText.tabs.nobodyBody}
-          action={
-            <Button title={playText.tabs.goHome} onPress={() => navigation.navigate('Home')} />
-          }
-        />
-      </Screen>
+      <>
+        <Screen scroll style={topPadding}>
+          <Label variant="largeTitle">{strings.play.title}</Label>
+          <Gap size="lg" />
+          {/* Half-played games belong here MORE than anywhere else: a friend
+              who just walked out of range is exactly when "you have a chess
+              game going with Maria" is worth seeing. The rows say they are not
+              connected and do not open. */}
+          <ResumeShelf
+            rows={resumable}
+            myPeerId={profile?.peerId ?? null}
+            client={client}
+            onResume={resume}
+          />
+          <EmptyState
+            icon="🎲"
+            title={playText.tabs.nobodyTitle}
+            body={playText.tabs.nobodyBody}
+            action={
+              <Button title={playText.tabs.goHome} onPress={() => navigation.navigate('Home')} />
+            }
+          />
+        </Screen>
+        {inviteSheet}
+      </>
     );
   }
 
@@ -148,14 +237,7 @@ export function PlayScreen(): React.JSX.Element {
           rows={resumable}
           myPeerId={profile?.peerId ?? null}
           client={client}
-          onResume={(row, peerKey) =>
-            navigation.navigate('GameRoom', {
-              peerKey,
-              gameId: row.gameId,
-              gameSessionId: row.id,
-              isHost: row.hostPeerId === profile?.peerId,
-            })
-          }
+          onResume={resume}
         />
 
         <SectionHeading>{playText.tabs.allGames}</SectionHeading>
@@ -183,7 +265,83 @@ export function PlayScreen(): React.JSX.Element {
           if (entry) open(entry, peer);
         }}
       />
+
+      {inviteSheet}
     </>
+  );
+}
+
+/**
+ * "Maria invited you to play Chess."
+ *
+ * The one thing on this screen that interrupts, because it is a question with a
+ * deadline: the other phone stops asking after forty-five seconds. Declining
+ * says so out loud, so their screen stops waiting instead of timing out.
+ *
+ * There is no way to dismiss this without answering it, deliberately - both
+ * answers are one tap, and both tell the other person something.
+ */
+function InviteSheet({
+  invite,
+  onAccept,
+  onDecline,
+}: {
+  invite: GameInviteRecord | null;
+  onAccept: (invite: GameInviteRecord) => void;
+  onDecline: (invite: GameInviteRecord) => void;
+}): React.JSX.Element {
+  const theme = useTheme();
+
+  return (
+    <Modal
+      visible={invite !== null}
+      transparent
+      animationType="slide"
+      onRequestClose={() => {
+        if (invite) onDecline(invite);
+      }}
+    >
+      <View style={{ flex: 1, backgroundColor: theme.colors.scrim }} />
+      <View
+        style={[
+          {
+            backgroundColor: theme.colors.surface,
+            borderTopLeftRadius: theme.radius.xl,
+            borderTopRightRadius: theme.radius.xl,
+            padding: theme.spacing.lg,
+            paddingBottom: theme.spacing.xxl,
+          },
+          theme.shadows.sheet,
+        ]}
+      >
+        <Row gap="md">
+          <Avatar name={invite?.peerName ?? ''} peerId={invite?.peerId ?? null} size={44} />
+          <View style={{ flex: 1 }}>
+            <Label variant="title2" numberOfLines={2}>
+              {invite ? strings.play.invitedYou(invite.peerName, invite.gameName) : ''}
+            </Label>
+          </View>
+        </Row>
+        <Gap size="lg" />
+        <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
+          <Button
+            title={strings.play.decline}
+            variant="secondary"
+            style={{ flex: 1 }}
+            onPress={() => {
+              if (invite) onDecline(invite);
+            }}
+          />
+          <Button
+            title={strings.play.accept}
+            style={{ flex: 1 }}
+            onPress={() => {
+              if (invite) onAccept(invite);
+            }}
+          />
+        </View>
+      </View>
+    </Modal>
   );
 }
 

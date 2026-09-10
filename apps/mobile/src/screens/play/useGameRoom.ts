@@ -699,6 +699,11 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
     local: localPlayer,
     isHost,
     live,
+    disabledReason: !live
+      ? playText.room.waitingForLink
+      : phase === RoomPhase.PLAYING
+      ? null
+      : playText.room.gameFinished,
     elapsedMs: session ? (isHost ? session.simulatedMs : remoteElapsedRef.current) : 0,
     frames,
     dispatch,

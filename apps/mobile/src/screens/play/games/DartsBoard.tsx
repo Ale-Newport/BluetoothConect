@@ -55,6 +55,7 @@ export function DartsBoard({
   nameFor,
   turn,
   live,
+  disabledReason,
   width,
 }: GameRendererProps<DartsState>): React.JSX.Element {
   const theme = useTheme();
@@ -80,6 +81,12 @@ export function DartsBoard({
   const sweepValue = useRef(0);
 
   useEffect(() => {
+    // The bar is only a decision while this player can actually throw, and it
+    // cannot use the native driver (its value has to be readable from JS at the
+    // moment a finger lifts), so it is a sixty-times-a-second JavaScript
+    // animation. Running that through the opponent's whole turn would spend the
+    // thread the game is simulated on for a bar nobody can use.
+    if (!canThrow) return;
     const subscription = sweep.addListener(({ value }) => {
       sweepValue.current = value;
     });
@@ -94,7 +101,7 @@ export function DartsBoard({
       loop.stop();
       sweep.removeListener(subscription);
     };
-  }, [sweep]);
+  }, [canThrow, sweep]);
 
   const toBoard = useCallback(
     (event: GestureResponderEvent): { x: number; y: number } => {
@@ -154,7 +161,11 @@ export function DartsBoard({
 
       <View
         accessible
-        accessibilityRole="adjustable"
+        // Deliberately NOT `adjustable`: that role tells VoiceOver to offer a
+        // swipe-to-adjust gesture, and there is no increment action behind it.
+        // A role that promises an interaction the board does not implement is
+        // worse than no role - the label and the hint say what the board is and
+        // how it is used.
         accessibilityLabel={playText.darts.throwLabel}
         accessibilityHint={playText.darts.aimHint}
         style={{ width: size, height: size, alignSelf: 'center' }}
@@ -259,7 +270,7 @@ export function DartsBoard({
         {aimed ? describeHit(aimed.points, aimed.ring, aimed.sector) : lastThrowText(state)}
       </Label>
 
-      <Hint text={canThrow ? playText.darts.powerHint : playText.room.notYourTurn} />
+      <Hint text={disabledReason ?? (canThrow ? playText.darts.powerHint : playText.room.notYourTurn)} />
     </View>
   );
 }

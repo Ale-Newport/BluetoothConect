@@ -49,6 +49,7 @@ export function WordDuelBoard({
   players,
   nameFor,
   live,
+  disabledReason,
   width,
 }: GameRendererProps<WordDuelState>): React.JSX.Element {
   const theme = useTheme();
@@ -257,7 +258,7 @@ export function WordDuelBoard({
           variant="secondary"
           onPress={() => dispatch('finish', null)}
           disabled={!live}
-          disabledReason={live ? undefined : playText.room.waitingForLink}
+          disabledReason={disabledReason ?? undefined}
         />
       )}
     </View>

@@ -35,6 +35,14 @@ import {
  * how well someone can aim rather than how fast they can move.
  */
 
+/**
+ * The target's height.
+ *
+ * Big enough that the thumb cannot miss it while the eye is on the colour, and
+ * short enough that the round's times still sit on the screen underneath it.
+ */
+const PANEL_HEIGHT = 240;
+
 export function ReactionBoard({
   state,
   dispatch,
@@ -42,6 +50,7 @@ export function ReactionBoard({
   players,
   nameFor,
   live,
+  disabledReason,
 }: GameRendererProps<ReactionState>): React.JSX.Element {
   const theme = useTheme();
 
@@ -106,7 +115,13 @@ export function ReactionBoard({
 
       <View style={{ height: theme.spacing.md }} />
 
-      {phase === ReactionPhase.ARMING ? (
+      {/* A decided match is a scoreboard, not a target. Leaving the live panel
+          up would put a full-height red "Wait…" - the one alarming colour in
+          the app - directly above a card that says the game is over, and hand
+          the user a target that cannot be tapped. */}
+      {phase === ReactionPhase.OVER ? (
+        <Panel tone="idle" label={playText.room.gameOver} />
+      ) : phase === ReactionPhase.ARMING ? (
         <View style={{ gap: theme.spacing.md }}>
           <Panel tone="idle" label={playText.reaction.holdOn} />
           {iAmReady ? (
@@ -116,7 +131,7 @@ export function ReactionBoard({
               title={playText.reaction.ready}
               onPress={() => dispatch('ready', null)}
               disabled={!live}
-              disabledReason={live ? undefined : playText.room.waitingForLink}
+              disabledReason={disabledReason ?? undefined}
             />
           )}
         </View>
@@ -159,7 +174,7 @@ function Panel({ tone, label }: { tone: 'idle' | 'wait' | 'go'; label: string })
   return (
     <View
       style={{
-        height: 240,
+        height: PANEL_HEIGHT,
         borderRadius: theme.radius.xl,
         backgroundColor: background,
         alignItems: 'center',

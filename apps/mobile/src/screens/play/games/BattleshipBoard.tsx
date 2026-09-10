@@ -16,7 +16,7 @@ import {
   type Ship,
   type Shot,
 } from '../gameTypes.js';
-import { freshSalt, randomFleet, rotateShip, useFleetSecret } from './battleshipFleet.js';
+import { freshSalt, moveShip, randomFleet, rotateShip, useFleetSecret } from './battleshipFleet.js';
 
 /**
  * Battleship.
@@ -57,6 +57,7 @@ export function BattleshipBoard({
   nameFor,
   turn,
   live,
+  disabledReason,
   width,
   sessionKey,
 }: GameRendererProps<BattleshipState>): React.JSX.Element {
@@ -147,7 +148,8 @@ export function BattleshipBoard({
               committed
                 ? undefined
                 : (index) => {
-                    const next = anchorTo(ships, selected, index);
+                    // The rules' own legality check, not a second copy of it.
+                    const next = moveShip(ships, selected, Math.floor(index / SEA_SIZE), index % SEA_SIZE);
                     if (next) setDraft(next);
                     else haptic('warning');
                   }
@@ -194,7 +196,11 @@ export function BattleshipBoard({
                 dispatch('place', { commitment: [...fleetCommitment(fleet.ships, salt)] });
               }}
               disabled={!live || ships.length !== FLEET.length}
-              disabledReason={live ? undefined : playText.room.waitingForLink}
+              // A disabled control always says why: the link, the game, or a
+              // fleet that has not finished loading off this phone yet.
+              disabledReason={
+                disabledReason ?? (ships.length === FLEET.length ? undefined : playText.room.setUpFirst)
+              }
             />
           </View>
         )}
@@ -236,16 +242,19 @@ export function BattleshipBoard({
         </Label>
         <View style={{ height: theme.spacing.md }} />
         {state.cheated[foe] === true ? <Hint text={playText.battleship.cheated} tone="secondary" /> : null}
-        {revealed || !secret ? (
+        {/* "Fleet sent" is only ever said when it really has been. While the
+            fleet is still being read off the disk the board says it is
+            checking, which is what it is doing. */}
+        {revealed ? (
           <Hint text={playText.battleship.revealSent} />
-        ) : (
+        ) : secret ? (
           <Button
             title={playText.battleship.reveal}
             onPress={() => dispatch('reveal', { ships: secret.ships.map((s) => ({ ...s })), salt: [...secret.salt] })}
             disabled={!live}
-            disabledReason={live ? undefined : playText.room.waitingForLink}
+            disabledReason={disabledReason ?? undefined}
           />
-        )}
+        ) : null}
       </View>
     );
   }
@@ -339,7 +348,7 @@ export function BattleshipBoard({
         />
       </BoardSurface>
 
-      <Hint text={myTurn ? playText.battleship.fireHint : playText.room.notYourTurn} />
+      <Hint text={disabledReason ?? (myTurn ? playText.battleship.fireHint : playText.room.notYourTurn)} />
     </View>
   );
 }
@@ -410,20 +419,3 @@ function cellName(index: number): string {
   return `${String.fromCharCode(65 + row)}${col + 1}`;
 }
 
-/** Put the selected ship's anchor on a square, if the fleet still fits. */
-function anchorTo(ships: readonly Ship[], index: number, cell: number): Ship[] | null {
-  const target = ships[index];
-  if (!target) return null;
-  const next = [...ships];
-  next[index] = { ...target, row: Math.floor(cell / SEA_SIZE), col: cell % SEA_SIZE };
-  const cells = new Set<number>();
-  for (const ship of next) {
-    const occupied = shipCells(ship);
-    if (!occupied) return null;
-    for (const c of occupied) {
-      if (cells.has(c)) return null;
-      cells.add(c);
-    }
-  }
-  return next;
-}

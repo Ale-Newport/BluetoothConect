@@ -61,6 +61,7 @@ export function AirHockeyTable({
   players,
   nameFor,
   live,
+  disabledReason,
   frames,
   elapsedMs,
   width,
@@ -250,10 +251,15 @@ export function AirHockeyTable({
         </Canvas>
       </View>
 
-      {countdownMs > 0 ? (
+      {/* A board that cannot be played says so first: the local face-off clock
+          restarts on any change of score, and the WINNING goal is a change of
+          score, so it would otherwise count down to a game that is over. */}
+      {disabledReason ? (
+        <Hint text={disabledReason} />
+      ) : countdownMs > 0 ? (
         <Hint text={playText.airHockey.faceOff(Math.ceil(countdownMs / 1000))} tone="secondary" />
       ) : (
-        <Hint text={live ? playText.airHockey.dragHint : playText.room.waitingForLink} />
+        <Hint text={playText.airHockey.dragHint} />
       )}
     </View>
   );

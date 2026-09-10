@@ -371,8 +371,10 @@ function Board({ room, width }: { room: GameRoomView; width: number }): React.JS
       turn={room.turn}
       lastAction={room.lastAction}
       // A finished game is a board to look at, not to play: the renderer's own
-      // inputs go dead through the same flag that a dropped link uses.
+      // inputs go dead through the same flag that a dropped link uses - and
+      // `disabledReason` is what keeps the two apart in words.
       live={room.live && room.phase === RoomPhase.PLAYING}
+      disabledReason={room.disabledReason}
       frames={room.frames}
       elapsedMs={room.elapsedMs}
       width={width}
