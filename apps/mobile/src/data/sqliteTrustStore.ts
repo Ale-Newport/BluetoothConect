@@ -20,6 +20,21 @@ import type { PeerRepository, VerifiedVia } from '@airlink/db';
  */
 export class SqliteTrustStore implements TrustStore {
   private readonly records = new Map<string, TrustedPeer>();
+  /**
+   * Blocks, independently of friendships.
+   *
+   * `records` only ever holds peers who got past 'known' - `reload` skips the
+   * rest - so keying `isBlocked` on it alone meant blocking a STRANGER updated
+   * nothing and then reported success. The stranger is exactly who you block,
+   * and the live session was never refused because `isBlocked` went on saying
+   * false for the rest of the run.
+   *
+   * `MemoryTrustStore` in packages/core has carried this set from the start,
+   * with the comment that a row claiming to be blocked must also appear in the
+   * set "or `isBlocked` and `get` would disagree about the same peer". They
+   * disagreed here.
+   */
+  private readonly blocks = new Set<string>();
   private rev = 0;
 
   constructor(private readonly peers: PeerRepository) {
@@ -33,7 +48,9 @@ export class SqliteTrustStore implements TrustStore {
   /** Read the table into memory. Called at startup and after a bulk change. */
   reload(): void {
     this.records.clear();
+    this.blocks.clear();
     for (const row of this.peers.listAll()) {
+      if (row.trustState === 'blocked') this.blocks.add(row.peerId);
       if (row.trustState === 'known') continue;
       const method: PairingMethod =
         row.verifiedVia === 'qr' ? 'qr' : row.verifiedVia === 'sas' ? 'sas' : 'restored';
@@ -53,6 +70,7 @@ export class SqliteTrustStore implements TrustStore {
   }
 
   get(peerId: string): Uint8Array | undefined {
+    if (this.blocks.has(peerId)) return undefined;
     const record = this.records.get(peerId);
     if (!record || record.blocked) return undefined;
     return record.identityKey;
@@ -101,6 +119,7 @@ export class SqliteTrustStore implements TrustStore {
   remove(peerId: string): void {
     // Removing a friendship must not lift a block: someone the user blocked
     // stays blocked even after their friend record is gone.
+    if (this.blocks.has(peerId)) return;
     const existing = this.records.get(peerId);
     if (existing?.blocked) return;
     this.records.delete(peerId);
@@ -109,15 +128,23 @@ export class SqliteTrustStore implements TrustStore {
   }
 
   block(peerId: string): void {
+    // The set first and unconditionally: this is the part that takes effect
+    // immediately, and it must not depend on the peer already being a friend.
+    this.blocks.add(peerId);
     const existing = this.records.get(peerId);
     if (existing) {
       this.records.set(peerId, { ...existing, blocked: true });
     }
+    // `setTrust` is an UPDATE, so it persists nothing for a peer with no row.
+    // Every path that can reach a block has one - a conversation has a foreign
+    // key to `peers`, and a session writes the peer when it authenticates - but
+    // the in-memory block above is what protects the session either way.
     this.peers.setTrust(peerId, 'blocked', 'none', Date.now());
     this.rev++;
   }
 
   unblock(peerId: string): void {
+    this.blocks.delete(peerId);
     const existing = this.records.get(peerId);
     if (existing) {
       // Unblocking restores the friendship it interrupted, rather than silently
@@ -131,7 +158,7 @@ export class SqliteTrustStore implements TrustStore {
   }
 
   isBlocked(peerId: string): boolean {
-    return this.records.get(peerId)?.blocked ?? false;
+    return this.blocks.has(peerId) || (this.records.get(peerId)?.blocked ?? false);
   }
 
   /** Bump the last-seen time. Cheap, and called every time a friend appears. */

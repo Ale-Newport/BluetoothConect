@@ -17,6 +17,7 @@ import {
   TransportKind,
   TypedEmitter,
   fromBase64,
+  isValidDiscoveryId,
   toBase64,
   type AdvertisementRecord,
   type ConnectOptions,
@@ -119,6 +120,18 @@ const LINK_STATE_BY_NAME: Record<string, LinkState> = {
   closing: LinkState.CLOSING,
   closed: LinkState.CLOSED,
   failed: LinkState.FAILED,
+};
+
+/**
+ * What a suppressed transport reports. `noLocalNetwork` is the same reason
+ * `LocalNetworkTransport.evaluate()` returns when NWPathMonitor sees no usable
+ * interface, so the UI cannot tell this apart from a genuinely absent network -
+ * which is the point.
+ */
+const SUPPRESSED_AVAILABILITY: TransportAvailability = {
+  available: false,
+  reason: 'noLocalNetwork' as TransportUnavailableReason,
+  detail: 'Switched off in Developer Mode.',
 };
 
 class NativeLink implements Link {
@@ -249,6 +262,22 @@ class NativeTransport implements Transport {
   readonly profile: TransportProfile;
 
   private availabilityState: TransportAvailability;
+  /**
+   * Developer Mode's "pretend this radio is not here".
+   *
+   * The iOS Simulator has no Bluetooth radio, so the ONLY way to see what the
+   * app does with no Wi-Fi is to take the local network away - and turning the
+   * Mac's Wi-Fi off takes it away from both simulators at once, kills the
+   * host's own network, and does nothing at all on an Ethernet-connected Mac.
+   *
+   * This is deliberately NOT a filter over `all()`: a transport that vanishes
+   * from the list exercises a code path no phone ever takes. Instead
+   * availability reports false with a real reason, which is exactly what
+   * `LocalNetworkTransport.evaluate()` does when NWPathMonitor sees no usable
+   * interface. The UI, the registry and the session teardown then run the same
+   * logic they run on a real device.
+   */
+  private suppressed = false;
 
   constructor(
     readonly kind: TransportKind,
@@ -260,7 +289,25 @@ class NativeTransport implements Transport {
   }
 
   async availability(): Promise<TransportAvailability> {
+    if (this.suppressed) return SUPPRESSED_AVAILABILITY;
     return this.availabilityState;
+  }
+
+  /**
+   * @internal Developer Mode only. Emits the same event a real radio change
+   * does, so every listener reacts identically.
+   */
+  setSuppressed(on: boolean): void {
+    if (this.suppressed === on) return;
+    this.suppressed = on;
+    this.events.emit('availabilityChanged', {
+      availability: on ? SUPPRESSED_AVAILABILITY : this.availabilityState,
+    });
+  }
+
+  /** @internal */
+  get isSuppressed(): boolean {
+    return this.suppressed;
   }
 
   /** @internal */
@@ -268,6 +315,10 @@ class NativeTransport implements Transport {
     this.availabilityState = available
       ? { available: true }
       : { available: false, reason: (reason || 'unknown') as TransportUnavailableReason };
+    // While suppressed the native layer is still reporting reality - the Wi-Fi
+    // is genuinely there - and it must not be allowed to contradict the
+    // override, or the radio would flicker back on at the next path change.
+    if (this.suppressed) return;
     this.events.emit('availabilityChanged', { availability: this.availabilityState });
   }
 
@@ -276,6 +327,7 @@ class NativeTransport implements Transport {
       this.kind,
       toBase64(record.token),
       record.displayName ?? '',
+      record.discoveryId ?? '',
     );
   }
 
@@ -369,6 +421,45 @@ export class NativeTransportHost {
   /** Every transport this build and this device actually support. */
   all(): Transport[] {
     return [...this.transports.values()];
+  }
+
+  /**
+   * Developer Mode: take a transport away, or give it back.
+   *
+   * Reporting unavailable is not enough on its own. Two simulators talk to each
+   * other over the host Mac's loopback, so an ALREADY OPEN TCP link keeps
+   * carrying traffic no matter what availability says - the peer would stay
+   * connected and the test would prove nothing. So discovery and advertising
+   * stop and every open link on that transport is closed, which is what
+   * happens when a phone really does leave the network.
+   */
+  async setSuppressed(kind: TransportKind, on: boolean): Promise<void> {
+    const transport = this.transports.get(kind);
+    if (!transport) return;
+    transport.setSuppressed(on);
+    if (!on) return;
+
+    // Best effort and in this order: stop being findable, then drop what is
+    // already up. A throw here would leave the radio half-off.
+    try {
+      await transport.stopDiscovery();
+    } catch {
+      // Already stopped, or never started.
+    }
+    try {
+      await transport.stopAdvertising();
+    } catch {
+      // Same.
+    }
+    for (const link of [...this.links.values()]) {
+      if (link.transport !== kind) continue;
+      await link.close('switched off in Developer Mode');
+    }
+  }
+
+  /** @internal Which transports Developer Mode is currently holding down. */
+  suppressedKinds(): TransportKind[] {
+    return [...this.transports.entries()].filter(([, t]) => t.isSuppressed).map(([kind]) => kind);
   }
 
   get(kind: TransportKind): Transport | undefined {
@@ -506,6 +597,7 @@ function toDiscoveredPeer(event: {
   endpointId: string;
   name: string;
   token: string;
+  discoveryId?: string;
   rssi: number;
 }): DiscoveredPeer {
   const now = Date.now();
@@ -514,6 +606,11 @@ function toDiscoveredPeer(event: {
     transport: event.transport as TransportKind,
     ...(event.name ? { advertisedName: event.name } : {}),
     ...(event.token ? { advertisementToken: fromBase64(event.token) } : {}),
+    // Validated rather than trusted: this value decides whether an
+    // advertisement is treated as our own, so a peer that could put an
+    // arbitrary string here could make itself invisible. `isValidDiscoveryId`
+    // in @airlink/core is the one definition of the shape.
+    ...(isValidDiscoveryId(event.discoveryId) ? { discoveryId: event.discoveryId } : {}),
     ...(event.rssi !== 0 ? { rssi: event.rssi } : {}),
     discoveredAt: now,
     lastSeenAt: now,

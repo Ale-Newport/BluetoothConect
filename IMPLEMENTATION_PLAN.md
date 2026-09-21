@@ -186,7 +186,7 @@ These are written down so the product never promises them.
 | 1 | Monorepo, protocol, crypto, transport contract, MockTransport, database | **done** |
 | 2 | Reliability, connection state machine, clock sync, PeerSession | **done** |
 | 3 | Game engine, runtimes, conformance suite | **done** |
-| 4 | The 12 games | **done** — 485 tests |
+| 4 | The games | **done** — 28 games, 837 tests |
 | 5 | Native BLE, iOS and Android | **done** — iOS compiles; Android unbuilt, see below |
 | 6 | Local network, peer-to-peer Wi-Fi, Wi-Fi Direct, hotspot handoff | **done** |
 | 7 | Transport negotiation, upgrade and downgrade | **done** |
@@ -272,6 +272,39 @@ explicit that five reliable features beat twenty mediocre ones. The core —
 discover, connect, chat, play, share, sync — comes first. The schema is in place
 so adding it later is a feature module and a screen, not a migration.
 
+### Stabilisation pass
+
+A round of testing on two physical phones found six defects that no amount of
+reading had — a device listing itself, "Unknown Device" rows, a connected friend
+reappearing with a Connect button, an invitation that never arrived, flaky
+connection, and game boards that scrolled out from under a finger.
+[`STABILITY_AUDIT.md`](STABILITY_AUDIT.md) has the root causes with citations.
+The shape of the answer:
+
+- **Peer identity.** A persistent `installationId` (already present as
+  `deviceId`) and a per-run `discoveryId` broadcast on every transport. One
+  `isSelf`, used by every radio, replacing three self-checks that could drift.
+- **`NearbyRegistry` with resolution states.** One row per physical device,
+  merged on identity then discovery id then endpoint then token. A sighting with
+  no identity is held for a few seconds and then discarded rather than shown.
+- **One handle namespace.** A session is re-keyed onto its peer id the moment
+  the handshake produces one, duplicates for one person are collapsed, and a
+  simultaneous dial is decided by comparing installation ids — before either
+  user is shown a six-digit code.
+- **A reconnect driver.** `RECONNECTING` had no driver and no timeout, so a
+  session that lost its radio waited for a link nobody was going to supply.
+- **Reliable invitations.** An `inviteId`, a `GAME_INVITE_ACK` sent on every
+  receipt, bounded exponential retry, and a global `GameInviteManager` mounted
+  beside the navigator rather than lazily by the Play tab — which is why an
+  invitation used to be delivered to no listener at all.
+- **`GameShell`.** A fixed, non-scrolling scene with the back gesture disabled
+  and an explicit Exit, and renderers given a height budget as well as a width.
+- **State versioning.** Actions carry the version they expect; a snapshot now
+  carries the sequence vector too, so a missed move repairs rather than jamming
+  the session for the rest of the game.
+- **Sixteen more games**, every one of them turn-, tap- or choice-based, with
+  metadata the catalogue uses to lead with what the current link can carry.
+
 ### Android build status
 
 There is **no Android SDK and no Android Studio on this machine**, so Android
@@ -295,6 +328,19 @@ iPhone and Android both open AirLink
   → they send a photo
   → they play a multiplayer game
   → one walks away; the session reconnects when they return
+```
+
+And, added after the stabilisation pass, the half of it that is about what must
+NOT happen:
+
+```
+neither phone ever lists itself
+no row says "Unknown Device"
+each peer appears exactly once, on however many radios it is visible
+a connected friend never shows a Connect button again
+A picks a game -> B sees the invitation, on whatever screen B is looking at
+A move made on either phone appears on the other
+rematch works, exit works, and the AirLink session survives both
 ```
 
 `scripts/` contains a harness that runs the whole of this against simulated

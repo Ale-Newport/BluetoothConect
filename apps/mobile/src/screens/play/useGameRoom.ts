@@ -12,6 +12,7 @@ import {
   GameMode,
   GameSession,
   GameStatusKind,
+  RejectionReason,
   SnapshotInterpolator,
   findGame,
   type GameAction,
@@ -29,7 +30,9 @@ import type { FrameFeed, GameDispatch } from './contract.js';
 import { playText } from './strings.js';
 import {
   GAME_MESSAGE_TYPES,
+  INVITE_LIFETIME_MS,
   MessageType,
+  decodeAck,
   decodeEvent,
   decodeInvite,
   decodeSnapshot,
@@ -72,8 +75,10 @@ import { lerpFor } from './realtime.js';
 export const RoomPhase = {
   /** Building the session; nothing is on screen yet. */
   PREPARING: 'preparing',
-  /** The invite is out and we are waiting for the other phone. */
+  /** The invite is going out; nothing has come back yet. */
   INVITING: 'inviting',
+  /** The other phone acknowledged receipt. A person is now looking at it. */
+  DELIVERED: 'delivered',
   /** Nobody answered inside the window. Offer to ask again. */
   UNANSWERED: 'unanswered',
   /** They said not now. */
@@ -150,8 +155,10 @@ export interface GameRoomParams {
 }
 
 /** How long to keep asking before admitting nobody is answering. */
-const INVITE_WINDOW_MS = 45_000;
-const INVITE_REPEAT_MS = 3_000;
+const INVITE_WINDOW_MS = INVITE_LIFETIME_MS;
+/** First gap between retries. Doubles each time, up to the ceiling below. */
+const INVITE_RETRY_BASE_MS = 1_000;
+const INVITE_RETRY_MAX_MS = 8_000;
 /** Snapshots from the host of a realtime game: roughly fifteen a second. */
 const SNAPSHOT_INTERVAL_MS = 66;
 /**
@@ -167,6 +174,8 @@ const SNAPSHOT_INTERVAL_MS = 66;
 const SNAPSHOT_KEEPALIVE_MS = 1_000;
 /** Render this far behind the newest snapshot so there is always one to aim at. */
 const INTERPOLATION_DELAY_MS = 120;
+/** At most one "send me the board" per second, however many moves are missed. */
+const RESYNC_INTERVAL_MS = 1_000;
 
 export function useGameRoom(params: GameRoomParams): GameRoomView {
   const { peerKey, gameId, gameSessionId, isHost } = params;
@@ -189,6 +198,16 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
   const [phase, setPhase] = useState<RoomPhase>(RoomPhase.PREPARING);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
   const [incomingRematch, setIncomingRematch] = useState<GameInvite | null>(null);
+  /**
+   * The id of the asking currently in flight.
+   *
+   * A ref rather than state because the retry loop and the message handler both
+   * need it and neither should cause a render by touching it. It changes only
+   * when a NEW invitation is sent, which is what makes an acknowledgement for a
+   * previous one - a rematch that was declined, an invite that timed out -
+   * identifiable as stale and ignorable.
+   */
+  const inviteIdRef = useRef<string>('');
   const [connection, setConnection] = useState<ConnectionState>(
     () => client.peer(peerKey)?.session.state ?? ConnectionState.DISCONNECTED,
   );
@@ -214,6 +233,54 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
   );
 
   const bumpBoard = useCallback(() => forceRender((n) => n + 1), []);
+
+  /**
+   * When we last asked for the position, so a stream of unappliable moves
+   * produces one request rather than one per move.
+   */
+  const resyncRequestedAt = useRef(0);
+
+  /**
+   * Set when a move of OURS may never have reached the other phone.
+   *
+   * Two ways that happens, and neither of them looks like an error at the time:
+   * `trySend` returns false because the session was not usable at that instant,
+   * and the reliable channel gives up after its eight attempts and emits
+   * `deliveryFailed`. In both cases the action has ALREADY been applied to this
+   * device's board, so the two are now genuinely apart - and the side that
+   * knows is this one, because the other side has simply seen nothing.
+   *
+   * The receiving side's own guard - asking for the board when an action
+   * arrives out of order - cannot help here: nothing arrives. Somebody has to
+   * notice the silence, and it has to be the sender.
+   */
+  const divergedRef = useRef(false);
+
+  /**
+   * "I have missed something - send me the board."
+   *
+   * A guest asks the host. The host is the authority, so it does not ask: it
+   * simply publishes what it has, which repairs the guest that could not keep
+   * up. Either way the exchange is bounded to one a second.
+   */
+  const requestResync = useCallback(() => {
+    const now = Date.now();
+    if (now - resyncRequestedAt.current < RESYNC_INTERVAL_MS) return;
+    resyncRequestedAt.current = now;
+    const game = sessionRef.current;
+    const peer = client.peer(peerKey);
+    if (!peer || !game) return;
+    if (isHost) {
+      trySendRealtime(
+        peer.session,
+        MessageType.GAME_STATE,
+        encodeSnapshot(gameSessionId, game.snapshotEnvelope()),
+        `sync:${gameSessionId}`,
+      );
+    } else {
+      trySend(peer.session, MessageType.GAME_SYNC_REQUEST, { s: gameSessionId });
+    }
+  }, [client, gameSessionId, isHost, peerKey]);
 
   // -- persistence ----------------------------------------------------------
 
@@ -337,7 +404,7 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
       if (message.type === MessageType.GAME_STATE) {
         const snapshot = decodeSnapshot(message.raw);
         if (!snapshot || snapshot.sessionId !== gameSessionId || !game) return;
-        remoteElapsedRef.current = snapshot.elapsedMs;
+        remoteElapsedRef.current = snapshot.envelope.elapsedMs;
         const interpolator = interpolatorRef.current;
         if (interpolator) {
           /**
@@ -355,7 +422,7 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
            *
            * A snapshot we cannot decode is dropped; another is along shortly.
            */
-          if (!game.applySnapshot(snapshot.state)) return;
+          if (!game.applySnapshotEnvelope(snapshot.envelope)) return;
           interpolator.push(game.currentState as unknown, message.receivedAt);
           const settled = game.status;
           if (settled.kind !== GameStatusKind.IN_PROGRESS) {
@@ -365,8 +432,23 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
           }
           return;
         }
-        // Turn-based resync after a reconnect: a guest trusts the host.
-        if (game.applySnapshot(snapshot.state)) bumpBoard();
+        // Turn-based resync after a reconnect, or after a move went missing.
+        // The envelope carries the sequence counters as well as the board, so
+        // this genuinely un-jams a guest rather than merely redrawing it.
+        if (game.applySnapshotEnvelope(snapshot.envelope)) {
+          resyncRequestedAt.current = 0;
+          bumpBoard();
+        }
+        return;
+      }
+
+      // "Your invitation reached a listener." Not an answer - a receipt - and
+      // the thing that finally lets this screen say something true.
+      if (message.type === MessageType.GAME_INVITE_ACK) {
+        const acked = decodeAck(message.value);
+        if (acked && acked === inviteIdRef.current) {
+          setPhase((current) => (current === RoomPhase.INVITING ? RoomPhase.DELIVERED : current));
+        }
         return;
       }
 
@@ -382,7 +464,13 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
 
       switch (message.type) {
         case MessageType.GAME_ACCEPT:
-          setPhase((current) => (current === RoomPhase.INVITING || current === RoomPhase.UNANSWERED ? RoomPhase.PLAYING : current));
+          setPhase((current) =>
+            current === RoomPhase.INVITING ||
+            current === RoomPhase.DELIVERED ||
+            current === RoomPhase.UNANSWERED
+              ? RoomPhase.PLAYING
+              : current,
+          );
           setRowState(client, gameSessionId, 'active');
           break;
 
@@ -393,17 +481,35 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
 
         case MessageType.GAME_LEAVE:
         case MessageType.GAME_END:
+          /*
+           * They have gone, so the game is over - and it has to be RECORDED as
+           * over, which it never used to be. The row stayed 'active' for the
+           * rest of the flight and kept offering to resume a game the other
+           * person had already closed. `abandon` refuses a game that already
+           * finished, so a leave arriving just after a checkmate cannot
+           * overwrite the real result.
+           */
+          if (game && remotePlayer && game.abandon(remotePlayer)) {
+            try {
+              client.db.games.abandon(gameSessionId, remotePlayer, Date.now());
+            } catch {
+              // A history row that will not write must not stop the screen
+              // telling the user what happened.
+            }
+            finishedWrittenRef.current = true;
+          }
           setPhase((current) => (current === RoomPhase.ENDED ? current : RoomPhase.LEFT));
           break;
 
         case MessageType.GAME_SYNC_REQUEST: {
           // Only the host is authoritative, so only the host answers.
           if (!isHost || !game || !handle) break;
-          trySend(handle.session, MessageType.GAME_STATE, {
-            s: gameSessionId,
-            v: game.snapshot(),
-            t: Math.round(game.simulatedMs),
-          });
+          trySendRealtime(
+            handle.session,
+            MessageType.GAME_STATE,
+            encodeSnapshot(gameSessionId, game.snapshotEnvelope()),
+            `sync:${gameSessionId}`,
+          );
           break;
         }
 
@@ -411,7 +517,21 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
           const event = decodeEvent(message.value);
           if (!event || !game || !remotePlayer) break;
           const outcome = game.applyRemote(event.action, remotePlayer);
-          if (!outcome.accepted) break;
+          if (!outcome.accepted) {
+            /*
+             * A move we cannot apply is not a move to shrug at.
+             *
+             * OUT_OF_ORDER means one earlier action never arrived, and every
+             * action after it will be rejected for the same reason - for ever,
+             * because nothing was ever going to fill the gap. The board looked
+             * alive and silently accepted nothing. So: ask for the position.
+             * A guest asks the host; the host, which is authoritative, simply
+             * sends its own. DUPLICATE is the reliability layer doing its job
+             * and is ignored.
+             */
+            if (outcome.reason === RejectionReason.OUT_OF_ORDER && handle) requestResync();
+            break;
+          }
           lastActionRef.current = outcome.applied.action;
           persistAction(outcome.applied.action, event.action);
           const status = game.status;
@@ -427,58 +547,136 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
           break;
       }
     },
-    [bumpBoard, client, gameId, gameSessionId, handle, isHost, persistAction, persistOutcome, remotePlayer],
+    [bumpBoard, client, gameId, gameSessionId, handle, isHost, persistAction, persistOutcome, remotePlayer, requestResync],
   );
 
   useEffect(() => {
     const session = handle?.session;
     if (!session) return;
-    return session.events.on('message', (message) => {
-      if (GAME_MESSAGE_TYPES.includes(message.type)) handleMessage(message);
-    });
-  }, [handle, handleMessage]);
+    const offs = [
+      session.events.on('message', (message) => {
+        if (GAME_MESSAGE_TYPES.includes(message.type)) handleMessage(message);
+      }),
+      /*
+       * The reliability layer giving up.
+       *
+       * It retransmits eight times and then drops the record, and until now it
+       * told nobody who could act on it: the session stays CONNECTED, `live`
+       * stays true, and the board carries on looking healthy while the two
+       * devices are permanently a move apart. Nothing in this app subscribed to
+       * this event at all.
+       */
+      session.events.on('deliveryFailed', ({ messageType }) => {
+        if (messageType !== MessageType.GAME_EVENT) return;
+        divergedRef.current = true;
+        requestResync();
+      }),
+    ];
+    return () => {
+      for (const off of offs) off();
+    };
+  }, [handle, handleMessage, requestResync]);
+
+  /**
+   * Repair as soon as there is somewhere to repair to.
+   *
+   * A move lost while the link was down cannot be fixed until it is back, so
+   * the flag waits rather than firing into a closed session. The host publishes
+   * its board because it is authoritative; a guest asks for one, which will
+   * revert the move it made - correctly, because as far as the rest of the
+   * world is concerned that move never happened.
+   */
+  useEffect(() => {
+    if (!live || !divergedRef.current) return;
+    divergedRef.current = false;
+    requestResync();
+  }, [live, requestResync]);
 
   // -- the invite -----------------------------------------------------------
 
-  const sendInvite = useCallback(() => {
-    const game = sessionRef.current;
-    if (!handle || !game) return;
-    let row: GameSessionRow | null = null;
-    try {
-      row = client.db.games.get(gameSessionId);
-    } catch {
-      row = null;
-    }
-    if (!row) return;
-    trySend(
-      handle.session,
-      MessageType.GAME_INVITE,
-      encodeInvite({
-        sessionId: gameSessionId,
-        gameId,
-        version: game.definition.protocolVersion,
-        seed: row.seed,
-        players: row.players,
-      }),
-    );
-  }, [client, gameId, gameSessionId, handle]);
+  const sendInvite = useCallback(
+    (inviteId: string, expiresAt: number) => {
+      const game = sessionRef.current;
+      if (!handle || !game) return;
+      let row: GameSessionRow | null = null;
+      try {
+        row = client.db.games.get(gameSessionId);
+      } catch {
+        row = null;
+      }
+      if (!row) return;
+      trySend(
+        handle.session,
+        MessageType.GAME_INVITE,
+        encodeInvite({
+          inviteId,
+          sessionId: gameSessionId,
+          gameId,
+          version: game.definition.protocolVersion,
+          seed: row.seed,
+          players: row.players,
+          expiresAt,
+        }),
+      );
+    },
+    [client, gameId, gameSessionId, handle],
+  );
 
+  /**
+   * Ask, and keep asking until the other phone says it heard.
+   *
+   * Retries back off - a second, then two, then four, up to eight - rather than
+   * hammering a link that is already struggling, which is the shape of the only
+   * link some of these phones have. The moment `GAME_INVITE_ACK` arrives the
+   * loop stops entirely: from then on the wait is a person deciding, not a
+   * radio, and repeating the question would be pointless.
+   *
+   * Nothing here is unbounded. The whole thing gives up at `INVITE_WINDOW_MS`,
+   * which is also the moment the invitation expires on the other phone, so both
+   * sides stop believing in it together.
+   */
   useEffect(() => {
     if (phase !== RoomPhase.INVITING || !isHost) return;
-    sendInvite();
+
+    const inviteId = newUuidLike(systemRandom).slice(0, 20);
     const started = Date.now();
-    // Repeating the invite lets a friend who was on another tab still catch it.
-    // It stops on its own, so nothing can sit here asking forever.
-    const timer = setInterval(() => {
-      if (Date.now() - started >= INVITE_WINDOW_MS) {
-        clearInterval(timer);
+    const expiresAt = started + INVITE_WINDOW_MS;
+    inviteIdRef.current = inviteId;
+
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+
+    const ask = (): void => {
+      if (cancelled) return;
+      if (Date.now() >= expiresAt) {
         setPhase(RoomPhase.UNANSWERED);
         return;
       }
-      sendInvite();
-    }, INVITE_REPEAT_MS);
-    return () => clearInterval(timer);
+      sendInvite(inviteId, expiresAt);
+      attempt += 1;
+      const delay = Math.min(INVITE_RETRY_BASE_MS * 2 ** (attempt - 1), INVITE_RETRY_MAX_MS);
+      timer = setTimeout(ask, delay);
+    };
+
+    ask();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, [isHost, phase, sendInvite]);
+
+  /**
+   * Delivered, but still unanswered.
+   *
+   * The retry loop above has stopped, so this is the only thing left keeping
+   * time. Without it a delivered-but-ignored invitation would wait for ever.
+   */
+  useEffect(() => {
+    if (phase !== RoomPhase.DELIVERED) return;
+    const timer = setTimeout(() => setPhase(RoomPhase.UNANSWERED), INVITE_WINDOW_MS);
+    return () => clearTimeout(timer);
+  }, [phase]);
 
   /**
    * A guest that walked into the room has, by definition, accepted; a host
@@ -487,10 +685,32 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
    */
   useEffect(() => {
     if (phase !== RoomPhase.PLAYING || !handle || !live) return;
-    if (isHost) sendInvite();
-    else trySend(handle.session, MessageType.GAME_ACCEPT, { s: gameSessionId });
+    if (isHost) {
+      const inviteId = inviteIdRef.current || newUuidLike(systemRandom).slice(0, 20);
+      inviteIdRef.current = inviteId;
+      sendInvite(inviteId, Date.now() + INVITE_WINDOW_MS);
+    } else {
+      trySend(handle.session, MessageType.GAME_ACCEPT, { s: gameSessionId, i: inviteIdRef.current });
+    }
     setRowState(client, gameSessionId, 'active');
   }, [client, gameSessionId, handle, isHost, live, phase, sendInvite]);
+
+  /**
+   * Tell the other phone when this one cannot play after all.
+   *
+   * A room that cannot build its board - a game this build cannot draw, a row
+   * that would not write, a peer whose session went away between accepting and
+   * opening - used to fail silently on this side while the inviting phone went
+   * on saying "Waiting for your friend" until its window closed. Nobody
+   * declined; the answer simply never came. A guest owes the host a real answer
+   * whichever way it goes.
+   */
+  useEffect(() => {
+    if (phase !== RoomPhase.UNAVAILABLE || isHost) return;
+    const peer = client.peer(peerKey);
+    if (!peer) return;
+    trySend(peer.session, MessageType.GAME_DECLINE, { s: gameSessionId, i: inviteIdRef.current });
+  }, [client, gameSessionId, isHost, peerKey, phase]);
 
   /** Ask for the current board whenever the link comes back. */
   useEffect(() => {
@@ -540,7 +760,7 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
               trySendRealtime(
                 handle.session,
                 MessageType.GAME_STATE,
-                encodeSnapshot(gameSessionId, game.snapshot(), game.simulatedMs),
+                encodeSnapshot(gameSessionId, game.snapshotEnvelope()),
                 `game:${gameSessionId}`,
               );
             }
@@ -594,6 +814,9 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
     (type, payload) => {
       const game = sessionRef.current;
       if (!game || !handle) return false;
+      // Read before applying: this is the version the other device must already
+      // be at for this action to make sense on top of it.
+      const previousVersion = game.stateVersion;
       const outcome = game.submitLocal(type, payload);
       if (!outcome.accepted) return false;
 
@@ -603,7 +826,10 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
       // Actions always travel reliably, even in a realtime game: the runtime
       // deduplicates on a per-player sequence number, so one dropped input
       // would stall every later one behind it.
-      trySend(handle.session, MessageType.GAME_EVENT, encodeEvent(gameSessionId, encoded));
+      if (!trySend(handle.session, MessageType.GAME_EVENT, encodeEvent(gameSessionId, encoded, previousVersion))) {
+        // Applied here, never sent. Repaired as soon as there is a link again.
+        divergedRef.current = true;
+      }
 
       const status = game.status;
       if (status.kind !== GameStatusKind.IN_PROGRESS) {
@@ -648,11 +874,13 @@ export function useGameRoom(params: GameRoomParams): GameRoomView {
       handle.session,
       MessageType.GAME_INVITE,
       encodeInvite({
+        inviteId: newUuidLike(systemRandom).slice(0, 20),
         sessionId: nextId,
         gameId: entry.definition.id,
         version: entry.definition.protocolVersion,
         seed,
         players,
+        expiresAt: Date.now() + INVITE_WINDOW_MS,
       }),
     );
     return { gameSessionId: nextId, isHost: true };

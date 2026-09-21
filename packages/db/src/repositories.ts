@@ -259,6 +259,23 @@ export class UserRepository {
       .prepare('UPDATE users SET display_name = ?, avatar_emoji = ?, avatar_color = ?, updated_at = ? WHERE id = ?')
       .run(displayName, avatarEmoji, avatarColor, now, 'local');
   }
+
+  /**
+   * Point the profile at a different identity key.
+   *
+   * The two halves of an identity live in different places - the key in the
+   * platform keystore, the profile row here - and they can come apart: a
+   * restore, a reinstall over an existing database, a keystore that would not
+   * open on one launch. When they do, this row keeps a peer id that is no
+   * longer ours, and everything that asks "is this message for me?" quietly
+   * says no. A game invitation naming our real peer id was discarded in silence
+   * because the profile disagreed about who we were.
+   */
+  adoptIdentity(peerId: string, identityPublic: Uint8Array, deviceId: string, now: number): void {
+    this.db
+      .prepare('UPDATE users SET peer_id = ?, identity_public = ?, device_id = ?, updated_at = ? WHERE id = ?')
+      .run(peerId, identityPublic, deviceId, now, 'local');
+  }
 }
 
 export class PeerRepository {
@@ -797,6 +814,22 @@ export class GameRepository {
     this.db
       .prepare("UPDATE game_sessions SET state = 'finished', winner_peer_id = ?, result = ?, finished_at = ?, updated_at = ? WHERE id = ?")
       .run(winnerPeerId, result, now, now, id);
+  }
+
+  /**
+   * The game ended because somebody left, not because it was played out.
+   *
+   * The schema has allowed this state since the first migration and nothing
+   * ever set it: `finish` hardcodes 'finished'. So a game its opponent walked
+   * out of stayed 'active' for ever and kept appearing on the resume shelf,
+   * offering to pick up something the other person had already closed.
+   */
+  abandon(id: string, leftBy: string, now: number): void {
+    this.db
+      .prepare(
+        "UPDATE game_sessions SET state = 'abandoned', result = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(`abandoned by ${leftBy}`, now, now, id);
   }
 
   appendEvent(gameSessionId: string, idx: number, playerPeerId: string, actionSeq: number, payload: Uint8Array, now: number): void {

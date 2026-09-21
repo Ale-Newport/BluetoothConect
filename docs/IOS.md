@@ -231,7 +231,7 @@ handshake. **A simulator is a genuine second peer.** Verified by running two of
 them side by side: they discover each other and offer to connect.
 
 So with one iPhone and one simulator on the same Wi-Fi you can cover discovery,
-pairing and the six digits, chat, all 12 games, file transfer and Watch
+pairing and the six digits, chat, all 28 games, file transfer and Watch
 Together. What still needs a second physical device:
 
 - anything BLE — discovery, GATT, L2CAP, MTU negotiation, state restoration;

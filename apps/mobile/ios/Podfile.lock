@@ -2622,7 +2622,7 @@ EXTERNAL SOURCES:
     :path: build/rncore-facades/Yoga
 
 SPEC CHECKSUMS:
-  airlink-transport: 9ba5c7d0213ba0d87e3bacf708ba08d4942088fe
+  airlink-transport: 2f39ca29acd0e552a345db9636ad4a543d4fbe8d
   boost: 8502bfdc46e2804408af2e163049ece181009af4
   DoubleConversion: 501a575c40c0b50c89685762dd3e415e6bb26fb0
   fast_float: 7c925d1cebf8328d4018d061f49377e9f887e3b4

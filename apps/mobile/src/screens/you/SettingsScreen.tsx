@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, View } from 'react-native';
+import { Alert, Linking, Switch, View } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { Conversation } from '@airlink/db';
@@ -17,6 +17,8 @@ import {
 } from '../../ui/index.js';
 import type { AirLinkClient } from '../../client/AirLinkClient.js';
 import { useClient } from '../../client/ClientProvider.js';
+import { notificationCentreFor } from '../../client/notificationCentre.js';
+import type { NotificationPermission } from '../../native/notifications.js';
 import { selectDeveloperMode, selectProfile, useAppStore } from '../../state/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
 import { ColorPalette } from '../onboarding/ColorPalette.js';
@@ -62,6 +64,77 @@ export function SettingsScreen(): React.JSX.Element {
   const [saved, setSaved] = useState(false);
   const [conversations, setConversations] = useState<readonly ClearableConversation[]>([]);
   const [picking, setPicking] = useState(false);
+
+  const notify = useMemo(() => notificationCentreFor(client), [client]);
+  const [permission, setPermission] = useState<NotificationPermission>(() => notify.permissionNow());
+
+  /**
+   * Re-read the permission every time this screen appears.
+   *
+   * It is the system's switch, not ours, and the most likely reason somebody is
+   * looking at this row is that they have just come back from changing it in
+   * iOS Settings. A cached answer would show them the old one.
+   */
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void notify.refreshPermission().then((next) => {
+        if (!cancelled) setPermission(next);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [notify]),
+  );
+
+  const notificationsSupported = permission !== 'unsupported' && notify.isAvailable();
+
+  /**
+   * The switch, and the two ways it cannot simply do what it looks like.
+   *
+   * iOS lets an app ASK once. After that, turning notifications on or off is
+   * the user's own job in Settings, and an app that pretends otherwise leaves a
+   * switch that flips back on its own. So a denied permission and a request to
+   * turn them off both open Settings, and both say why first.
+   */
+  const toggleNotifications = useCallback(
+    (wanted: boolean) => {
+      if (!notificationsSupported) return;
+      const openSettings = (): void => {
+        void Linking.openSettings().catch(() => undefined);
+      };
+      if (!wanted) {
+        Alert.alert(local.settings.notificationsTurnOffTitle, local.settings.notificationsTurnOffBody, [
+          { text: strings.common.cancel, style: 'cancel' },
+          { text: strings.permissions.openSettings, onPress: openSettings },
+        ]);
+        return;
+      }
+      if (permission === 'denied') {
+        Alert.alert(local.settings.notificationsDeniedTitle, local.settings.notificationsDeniedBody, [
+          { text: strings.common.cancel, style: 'cancel' },
+          { text: strings.permissions.openSettings, onPress: openSettings },
+        ]);
+        return;
+      }
+      void notify.requestPermission().then((next) => {
+        setPermission(next);
+        if (next === 'granted') {
+          haptic('success');
+          return;
+        }
+        // Asked and refused, in the same breath. Saying nothing here would
+        // leave a switch that sprang back with no explanation.
+        if (next === 'denied') {
+          Alert.alert(local.settings.notificationsDeniedTitle, local.settings.notificationsDeniedBody, [
+            { text: strings.common.cancel, style: 'cancel' },
+            { text: strings.permissions.openSettings, onPress: openSettings },
+          ]);
+        }
+      });
+    },
+    [notificationsSupported, notify, permission],
+  );
 
   const appVersion = useMemo(() => asString(client.diagnostics().appVersion) ?? '—', [client]);
 
@@ -233,6 +306,42 @@ export function SettingsScreen(): React.JSX.Element {
           !nameUsable ? local.settings.nameEmpty : !dirty && !saved ? local.settings.nameUnchanged : undefined
         }
       />
+
+      <Gap size="xl" />
+      <SectionHeading>{local.settings.notificationsSection}</SectionHeading>
+      <Group>
+        <NavRow
+          title={local.settings.notifications}
+          subtitle={
+            !notificationsSupported
+              ? local.settings.notificationsUnsupported
+              : permission === 'granted'
+                ? local.settings.notificationsOn
+                : permission === 'denied'
+                  ? local.settings.notificationsDenied
+                  : local.settings.notificationsOff
+          }
+          right={
+            <Switch
+              value={permission === 'granted'}
+              onValueChange={toggleNotifications}
+              disabled={!notificationsSupported}
+              // The track is the one place an area hue would fight the accent,
+              // so it takes the accent: this is a control, not a location.
+              trackColor={{ false: theme.colors.separator, true: theme.colors.accent }}
+              thumbColor={theme.colors.onAccent}
+              accessibilityLabel={local.settings.notifications}
+            />
+          }
+          // Pressing the row does what pressing the switch does, because a row
+          // with a switch on it reads as one target to a finger.
+          onPress={notificationsSupported ? () => toggleNotifications(permission !== 'granted') : undefined}
+        />
+      </Group>
+      <Gap size="xs" />
+      <Label variant="caption" tone="tertiary">
+        {local.settings.notificationsPrivacy}
+      </Label>
 
       <Gap size="xl" />
       <SectionHeading>{local.settings.historySection}</SectionHeading>

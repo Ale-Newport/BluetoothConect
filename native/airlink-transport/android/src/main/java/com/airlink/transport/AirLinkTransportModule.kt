@@ -657,12 +657,13 @@ class AirLinkTransportModule(reactContext: ReactApplicationContext) :
         transport: String,
         token: String,
         displayName: String,
+        discoveryId: String,
         promise: Promise,
     ) {
         route(promise) {
             requireStarted()
             val bytes = if (token.isEmpty()) ByteArray(0) else decodeBase64(token)
-            transportFor(transport).startAdvertising(bytes, displayName)
+            transportFor(transport).startAdvertising(bytes, displayName, discoveryId)
         }
     }
 

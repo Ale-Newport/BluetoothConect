@@ -120,6 +120,8 @@ final class BleTransport: NSObject, AirLinkTransport {
     private var wantsAdvertising = false
     private var advertisedToken = Data()
     private var advertisedName = ""
+    /// See `DiscoveredEndpoint.discoveryId`. Constant for this app run.
+    private var advertisedDiscoveryId = ""
     /// What is actually on the air, so a no-op update does not restart it.
     private var broadcastName: String?
     private var publishedPSM: CBL2CAPPSM = 0
@@ -157,13 +159,22 @@ final class BleTransport: NSObject, AirLinkTransport {
         let endpointId: String
         var name: String
         var token: String
+        /// See `DiscoveredEndpoint.discoveryId`.
+        var discoveryId: String = ""
         var rssi: Int
         var lastSeen: CFAbsoluteTime
         var lastEmitted: CFAbsoluteTime
         var lastEmittedRssi: Int
 
         var endpoint: DiscoveredEndpoint {
-            DiscoveredEndpoint(transport: .ble, endpointId: endpointId, name: name, token: token, rssi: rssi)
+            DiscoveredEndpoint(
+                transport: .ble,
+                endpointId: endpointId,
+                name: name,
+                token: token,
+                discoveryId: discoveryId,
+                rssi: rssi
+            )
         }
     }
 
@@ -366,6 +377,7 @@ final class BleTransport: NSObject, AirLinkTransport {
         wantsScanning = false
         advertisedToken = Data()
         advertisedName = ""
+        advertisedDiscoveryId = ""
         broadcastName = nil
         discovered.removeAll()
         knownPeripherals.removeAll()
@@ -377,12 +389,13 @@ final class BleTransport: NSObject, AirLinkTransport {
 
     // MARK: - Advertising
 
-    func startAdvertising(token: Data, displayName: String) throws {
+    func startAdvertising(token: Data, displayName: String, discoveryId: String) throws {
         try requireUsableRadio()
         queue.async { [self] in
             wantsAdvertising = true
             advertisedToken = token
             advertisedName = displayName
+            advertisedDiscoveryId = discoveryId
             applyAdvertisingState()
         }
     }
@@ -1181,12 +1194,18 @@ final class BleTransport: NSObject, AirLinkTransport {
 
     // MARK: - Discovery bookkeeping
 
-    private func noteDiscovery(endpointId: String, name: String, token: String, rssi: Int) {
+    private func noteDiscovery(
+        endpointId: String,
+        name: String,
+        token: String,
+        discoveryId: String = "",
+        rssi: Int
+    ) {
         let now = CFAbsoluteTimeGetCurrent()
 
         guard let previous = discovered[endpointId] else {
             let record = DiscoveryRecord(
-                endpointId: endpointId, name: name, token: token, rssi: rssi,
+                endpointId: endpointId, name: name, token: token, discoveryId: discoveryId, rssi: rssi,
                 lastSeen: now, lastEmitted: now, lastEmittedRssi: rssi
             )
             discovered[endpointId] = record
@@ -1201,11 +1220,15 @@ final class BleTransport: NSObject, AirLinkTransport {
         var record = previous
         if !name.isEmpty { record.name = name }
         if !token.isEmpty { record.token = token }
+        if !discoveryId.isEmpty { record.discoveryId = discoveryId }
         if rssi != 0 { record.rssi = rssi }
         record.lastSeen = now
         discovered[endpointId] = record
 
-        let learnedSomething = record.name != previous.name || record.token != previous.token
+        let learnedSomething =
+            record.name != previous.name
+            || record.token != previous.token
+            || record.discoveryId != previous.discoveryId
         let movedSignal = abs(record.rssi - record.lastEmittedRssi) >= Self.rssiChangeThreshold
         let stale = (now - record.lastEmitted) * 1000 >= Self.rediscoveryThrottleMs
         guard learnedSomething || movedSignal || stale else { return }
@@ -1504,11 +1527,12 @@ extension BleTransport: CBPeripheralDelegate {
             // Now we can tell JavaScript who this is. An iOS peer had nowhere to
             // put its token in the advertisement, so this is the first moment a
             // paired friend becomes recognisable.
-            if !record.token.isEmpty || !record.displayName.isEmpty {
+            if !record.token.isEmpty || !record.displayName.isEmpty || !record.discoveryId.isEmpty {
                 noteDiscovery(
                     endpointId: link.endpointId,
                     name: record.displayName,
                     token: record.token.base64EncodedString(),
+                    discoveryId: record.discoveryId,
                     rssi: link.metrics.rssi
                 )
             }
@@ -1763,7 +1787,8 @@ extension BleTransport: CBPeripheralManagerDelegate {
         let record = BleIdentityRecord.encode(
             token: advertisedToken,
             displayName: advertisedName,
-            psm: publishedPSM
+            psm: publishedPSM,
+            discoveryId: advertisedDiscoveryId
         )
         guard request.offset <= record.count else {
             peripheral.respond(to: request, withResult: .invalidOffset)

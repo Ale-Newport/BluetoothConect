@@ -232,6 +232,9 @@ export function PoolTable({
         }}
         onStartShouldSetResponder={() => myShot}
         onMoveShouldSetResponder={() => myShot}
+        // Once this board has the gesture it keeps it. A drag on a table is a
+        // move, never a scroll and never a navigation.
+        onResponderTerminationRequest={() => false}
         onResponderGrant={(event) => setDrag(toTable(event))}
         onResponderMove={(event) => setDrag(toTable(event))}
         onResponderRelease={shoot}

@@ -1,9 +1,12 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { ConnectionState, Logger } from '@airlink/core';
+import { strings } from '@airlink/config';
 import { AppPhase, useAppStore } from '../state/index.js';
 import { AirLinkClient } from './AirLinkClient.js';
 import { chatCenterFor } from '../screens/chat/chatCenter.js';
+import { inviteCentreFor } from '../screens/play/inviteCentre.js';
+import { transferCenterFor } from '../screens/share/transferCenter.js';
 import pkg from '../../package.json';
 
 /**
@@ -14,6 +17,9 @@ import pkg from '../../package.json';
  * screens.
  */
 const ClientContext = createContext<AirLinkClient | null>(null);
+
+/** One frame. Long enough to coalesce a burst of sightings, short enough to feel live. */
+const PEER_PUBLISH_INTERVAL_MS = 250;
 
 export function useClient(): AirLinkClient {
   const client = useContext(ClientContext);
@@ -28,7 +34,11 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
 
   if (!clientRef.current) {
     clientRef.current = new AirLinkClient({
-      appVersion: (pkg as { version?: string }).version ?? '0.1.0',
+      // Kept in step with MARKETING_VERSION in the Xcode project: this string
+      // is shown in the interface AND sent to the peer in the capability
+      // exchange, so a stale one makes the app disagree with the store listing
+      // and with the other phone about what it is.
+      appVersion: (pkg as { version?: string }).version ?? '1.0.0',
       platform: Platform.OS === 'ios' ? 'ios' : 'android',
       deviceModel: Platform.OS,
       /**
@@ -54,30 +64,66 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
     const instance = clientRef.current as AirLinkClient;
     let cancelled = false;
 
+    /**
+     * Rebuilding the whole list is cheap; doing it on every radio heartbeat is
+     * not.
+     *
+     * Several transports each re-announce every peer they can see every few
+     * seconds, so this used to fire many times a second, hand React a set of
+     * brand-new objects that defeated every `useShallow` in the app, and reset
+     * each row's connection state and quality from scratch. One frame's worth of
+     * coalescing turns a storm into one render, and the store keeps whatever the
+     * last event actually said.
+     */
+    let publishTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const publishPeers = (): void => {
+      const nearby = instance.nearby();
+      const previous = store.getState().peers;
+      store.getState().setPeers(
+        nearby.map((peer) => {
+          const handle = instance.peer(peer.key);
+          const held = previous.find((p) => p.key === peer.key || (peer.peerId && p.peerId === peer.peerId));
+          return {
+            key: peer.key,
+            peerId: peer.peerId,
+            // A row with no name is a real device that published none - not a
+            // half-arrived advertisement, because the registry holds those back
+            // until they resolve. So it gets an honest label rather than the
+            // word "Unknown", which read as "something is wrong".
+            displayName: peer.displayName || strings.home.newDevice,
+            avatarColor: held?.avatarColor ?? null,
+            isFriend: peer.peerId !== null,
+            nearby: true,
+            // A live session is the truth about a peer's state. Where there is
+            // none, the connection state last reported for this row is kept
+            // rather than being reset to DISCOVERED - resetting it is what made
+            // a connected friend sprout a Connect button every few seconds.
+            connection: handle?.session.state ?? (peer.connected ? ConnectionState.CONNECTED : held?.connection ?? ConnectionState.DISCOVERED),
+            quality: held?.quality ?? null,
+            lastSeenAt: peer.lastSeenAt,
+            highBandwidth: handle?.session.isHighBandwidth ?? false,
+          };
+        }),
+      );
+    };
+
+    const schedulePublish = (): void => {
+      if (publishTimer !== undefined) return;
+      publishTimer = setTimeout(() => {
+        publishTimer = undefined;
+        if (!cancelled) publishPeers();
+      }, PEER_PUBLISH_INTERVAL_MS);
+    };
+
     const subscriptions = [
-      instance.events.on('peersChanged', () => {
-        const nearby = instance.nearby();
-        store.getState().setPeers(
-          nearby.map((peer) => {
-            const handle = instance.peer(peer.key);
-            return {
-              key: peer.key,
-              peerId: peer.peerId,
-              displayName: peer.displayName || 'Unknown device',
-              avatarColor: null,
-              isFriend: peer.peerId !== null,
-              nearby: true,
-              connection: handle?.session.state ?? ConnectionState.DISCOVERED,
-              quality: null,
-              lastSeenAt: peer.lastSeenAt,
-              highBandwidth: handle?.session.isHighBandwidth ?? false,
-            };
-          }),
-        );
-      }),
+      instance.events.on('peersChanged', schedulePublish),
 
       instance.events.on('connectionChanged', ({ peerKey, state, quality }) => {
         store.getState().setConnection(peerKey, state, quality);
+        // A state change re-keys rows and pins them, so the list itself needs
+        // rebuilding - but on the next frame, alongside everything else.
+        schedulePublish();
       }),
 
       instance.events.on('pairingRequired', ({ peerKey, displayName, code }) => {
@@ -88,9 +134,11 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
         store.getState().resolvePendingPairing(peerKey);
       }),
 
-      instance.events.on('radioChanged', ({ transport, available, detail }) => {
+      instance.events.on('radioChanged', ({ transport, available, detail, reason }) => {
         if (transport === 'ble') {
-          store.getState().setRadios({ bluetoothOn: available, detail: detail || null });
+          store
+            .getState()
+            .setRadios({ bluetoothOn: available, detail: detail || null, bluetoothReason: reason });
           return;
         }
         // `wifiOn` covers SEVERAL transports - the local network and Apple
@@ -125,6 +173,17 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
           // acknowledged to the sender and then dropped - the protocol keeps
           // ids, not bodies. It is cheap, and it has to be listening first.
           chatCenterFor(instance);
+          // And for exactly the same reason: the invite centre is what listens
+          // for GAME_INVITE and acknowledges it. Built lazily by the Play tab -
+          // which is a LAZY tab - it did not exist until that tab had been
+          // opened, so an invitation arriving first was delivered to nobody and
+          // dropped, while the other phone waited forty-five seconds for an
+          // answer that had nowhere to come from.
+          inviteCentreFor(instance);
+          // And the transfer centre, for the same reason again: a file offer
+          // arriving before the Share tab has ever been opened had nowhere to
+          // land either.
+          transferCenterFor(instance);
           store.getState().setPhase(AppPhase.READY);
           // Radios come up only once there is an identity to advertise, so a
           // first launch never shows a permission prompt before the screen that
@@ -142,6 +201,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }): Rea
 
     return () => {
       cancelled = true;
+      if (publishTimer !== undefined) clearTimeout(publishTimer);
       for (const off of subscriptions) off();
       void instance.stop();
     };

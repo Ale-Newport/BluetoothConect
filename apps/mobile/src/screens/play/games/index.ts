@@ -1,6 +1,18 @@
 import { findGame } from '@airlink/games';
 import type { GameRenderer } from '../contract.js';
 import { AirHockeyTable } from './AirHockeyTable.js';
+import { CodeBreakerBoard } from './CodeBreakerBoard.js';
+import { DotsAndBoxesBoard } from './DotsAndBoxesBoard.js';
+import { GomokuBoard } from './GomokuBoard.js';
+import { MemoryDuelBoard } from './MemoryDuelBoard.js';
+import { QuickMathBoard } from './QuickMathBoard.js';
+import { QuizDuelBoard } from './QuizDuelBoard.js';
+import { ReversiBoard } from './ReversiBoard.js';
+import { SecretChoiceBoard } from './SecretChoiceBoard.js';
+import { RockPaperScissorsBoard } from './RockPaperScissorsBoard.js';
+import { SlidingPuzzleBoard } from './SlidingPuzzleBoard.js';
+import { TapRaceBoard } from './TapRaceBoard.js';
+import { WordChainBoard } from './WordChainBoard.js';
 import { BattleshipBoard } from './BattleshipBoard.js';
 import { ChessBoard } from './ChessBoard.js';
 import { ConnectFourBoard } from './ConnectFourBoard.js';
@@ -53,6 +65,39 @@ const RENDERERS: Readonly<Record<string, GameRenderer<unknown>>> = {
   pong: draws(PongTable),
   'air-hockey': draws(AirHockeyTable),
   pool: draws(PoolTable),
+
+  gomoku: draws(GomokuBoard),
+  reversi: draws(ReversiBoard),
+  'dots-and-boxes': draws(DotsAndBoxesBoard),
+  'code-breaker': draws(CodeBreakerBoard),
+  'memory-duel': draws(MemoryDuelBoard),
+  'sliding-puzzle': draws(SlidingPuzzleBoard),
+  'rock-paper-scissors': draws(RockPaperScissorsBoard),
+  'tap-race': draws(TapRaceBoard),
+  'quick-math': draws(QuickMathBoard),
+  'word-chain': draws(WordChainBoard),
+
+  /*
+   * One renderer, three games.
+   *
+   * The three quiz duels differ only in what they draw a question FROM - a
+   * flag, a country, a comparison - and share a state type, so they share a
+   * board. Three near-identical files would have been three places for the same
+   * fix to be needed.
+   */
+  'flag-duel': draws(QuizDuelBoard),
+  'capital-duel': draws(QuizDuelBoard),
+  'geography-duel': draws(QuizDuelBoard),
+
+  /*
+   * And again, for the three games where nobody wins.
+   *
+   * Same rules, three prompt banks. The board reads its bank from the game id,
+   * so a fourth pack is a data change rather than a fourth near-identical file.
+   */
+  'would-you-rather': draws(SecretChoiceBoard),
+  'most-likely-to': draws(SecretChoiceBoard),
+  'this-or-that': draws(SecretChoiceBoard),
 };
 
 /**

@@ -287,3 +287,112 @@ describe('word duel conformance', () => {
     }
   });
 });
+
+describe('finishing early', () => {
+  /**
+   * The rule that made the game unfair.
+   *
+   * A word both players find scores for neither - which is the whole point of
+   * the game - but it used to apply to the WHOLE round, so a player who
+   * finished could only sit and watch their words be cancelled one at a time by
+   * an opponent taking as long as they liked. There is no clock, so there was
+   * no end to it either.
+   */
+  function grid(seed: number) {
+    return wordDuel.createInitialState({ players: ['a', 'b'], seed, options: {} });
+  }
+
+  it('cannot have a finished player\'s words cancelled afterwards', () => {
+    const start = grid(11);
+    const context = createContext(['a', 'b'], 11);
+
+    // Find a word both players can legally submit on this grid.
+    const found = findAnyWord(start);
+    expect(found).not.toBeNull();
+    const word = found as { word: string; path: number[] };
+
+    // A submits it, then finishes.
+    let state = wordDuel.applyAction(
+      start,
+      { type: 'submit', player: 'a', seq: 0, payload: word },
+      context,
+    );
+    state = wordDuel.applyAction(state, { type: 'finish', player: 'a', seq: 1, payload: null }, context);
+    expect(state.openUntil).toBe(1);
+
+    // B then finds the same word, far too late for it to cancel anything.
+    state = wordDuel.applyAction(
+      state,
+      { type: 'submit', player: 'b', seq: 0, payload: word },
+      context,
+    );
+    state = wordDuel.applyAction(state, { type: 'finish', player: 'b', seq: 1, payload: null }, context);
+
+    const status = wordDuel.status(state);
+    // Both banked it: A because B was too late to cancel, B because they found
+    // it fairly. Neither is punished.
+    expect(status.kind).toBe(GameStatusKind.DRAW);
+  });
+
+  it('still cancels a word both players found while both were playing', () => {
+    const start = grid(11);
+    const context = createContext(['a', 'b'], 11);
+    const found = findAnyWord(start);
+    const word = found as { word: string; path: number[] };
+
+    let state = wordDuel.applyAction(start, { type: 'submit', player: 'a', seq: 0, payload: word }, context);
+    state = wordDuel.applyAction(state, { type: 'submit', player: 'b', seq: 0, payload: word }, context);
+    state = wordDuel.applyAction(state, { type: 'finish', player: 'a', seq: 1, payload: null }, context);
+    state = wordDuel.applyAction(state, { type: 'finish', player: 'b', seq: 1, payload: null }, context);
+
+    // Both found it while both were hunting, so it cancels and nobody scores.
+    expect(wordDuel.status(state).kind).toBe(GameStatusKind.DRAW);
+    expect(state.openUntil).toBe(2);
+  });
+});
+
+describe('hostile state', () => {
+  it('refuses a submission credited to somebody not in the game', () => {
+    const start = wordDuel.createInitialState({ players: ['a', 'b'], seed: 5, options: {} });
+    const encoded = wordDuel.encodeState(start) as Record<string, unknown>;
+    encoded.s = [['mallory', 'cat', [0, 1, 2]]];
+    expect(() => wordDuel.decodeState(encoded as never)).toThrow();
+  });
+
+  it('refuses a finish credited to somebody not in the game', () => {
+    const start = wordDuel.createInitialState({ players: ['a', 'b'], seed: 5, options: {} });
+    const encoded = wordDuel.encodeState(start) as Record<string, unknown>;
+    encoded.f = ['mallory'];
+    expect(() => wordDuel.decodeState(encoded as never)).toThrow();
+  });
+
+  it('round-trips the cancellation boundary', () => {
+    const start = wordDuel.createInitialState({ players: ['a', 'b'], seed: 5, options: {} });
+    const context = createContext(['a', 'b'], 5);
+    const state = wordDuel.applyAction(start, { type: 'finish', player: 'a', seq: 0, payload: null }, context);
+    const back = wordDuel.decodeState(wordDuel.encodeState(state));
+    expect(back.openUntil).toBe(state.openUntil);
+  });
+});
+
+/** Any legal word on this grid, or null if the letters happen to hold none. */
+function findAnyWord(state: ReturnType<typeof wordDuel.createInitialState>):
+  | { word: string; path: number[] }
+  | null {
+  const visit = (path: number[], letters: string): { word: string; path: number[] } | null => {
+    if (letters.length >= 3 && isWord(letters)) return { word: letters, path: [...path] };
+    if (letters.length >= 6) return null;
+    const last = path[path.length - 1] as number;
+    for (const next of neighbours(last)) {
+      if (path.includes(next)) continue;
+      const found = visit([...path, next], letters + (state.grid[next] ?? ''));
+      if (found) return found;
+    }
+    return null;
+  };
+  for (let cell = 0; cell < state.grid.length; cell++) {
+    const found = visit([cell], state.grid[cell] ?? '');
+    if (found) return found;
+  }
+  return null;
+}

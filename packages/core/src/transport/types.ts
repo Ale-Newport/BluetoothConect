@@ -57,6 +57,25 @@ export interface DiscoveredPeer {
    * friend before connecting, without broadcasting a durable identifier.
    */
   readonly advertisementToken?: Uint8Array;
+  /**
+   * Identifier of the advertising installation, stable for that app's run.
+   *
+   * This is what makes "is this me?" an exact question rather than a guess, and
+   * what lets one phone seen over Bluetooth and over Wi-Fi be recognised as one
+   * phone before either has said a word. It is not a durable identifier: it is
+   * regenerated on every launch, so it links nothing across time.
+   *
+   * Optional because a transport built before discovery ids existed will not
+   * carry one, and a peer without one is still a peer - it simply has to be
+   * resolved rather than trusted immediately.
+   */
+  readonly discoveryId?: string;
+  /** Protocol version from the advertisement, when the transport carries one. */
+  readonly protocolVersion?: number;
+  /** Persistent installation id, on the few transports that can carry one. */
+  readonly installationId?: string;
+  /** Long-term key fingerprint, when a transport can carry one. */
+  readonly publicKeyFingerprint?: string;
   /** Received signal strength, dBm, when the transport reports it. */
   readonly rssi?: number;
   readonly discoveredAt: number;
@@ -231,6 +250,13 @@ export interface AdvertisementRecord {
   readonly token: Uint8Array;
   /** Optional short display name. Included only when the user opts in. */
   readonly displayName?: string;
+  /**
+   * Per-run identifier, sixteen hex characters. See `DiscoveredPeer.discoveryId`.
+   *
+   * Every transport that can carry any payload at all should carry this one:
+   * it is eight bytes, and it is what stops a device connecting to itself.
+   */
+  readonly discoveryId?: string;
 }
 
 export type { Unsubscribe };

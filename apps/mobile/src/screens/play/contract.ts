@@ -69,6 +69,15 @@ export interface GameRendererProps<TState> {
   /** Width available to the board, already inside the screen's padding. */
   readonly width: number;
   /**
+   * Height available to the board, measured rather than assumed.
+   *
+   * Renderers used to get a width and nothing else, so a tall board simply ran
+   * off the bottom of the screen - and the scroll view that existed to cope
+   * with that is exactly what stole the touches from every drag game. A board
+   * that respects both numbers cannot overflow, so nothing needs to scroll.
+   */
+  readonly height: number;
+  /**
    * An opaque, stable id for THIS game.
    *
    * Present for one reason: Battleship. A commitment game keeps its fleet off

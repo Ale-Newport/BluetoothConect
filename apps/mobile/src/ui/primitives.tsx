@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName } from './Icon.js';
-import { avatarColorFor, initialsFor } from '@airlink/config';
+import { areaColor, areaColorMuted, avatarColorFor, initialsFor, type AreaName } from '@airlink/config';
 import { useTheme } from './theme.js';
 import { haptic } from './haptics.js';
 
@@ -60,17 +60,49 @@ export function Screen({
 
   if (scroll) {
     return (
-      <ScrollView
-        style={{ flex: 1, backgroundColor: theme.colors.background }}
-        contentContainerStyle={content}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        {children}
-      </ScrollView>
+      <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={content}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {children}
+        </ScrollView>
+        {safeTop ? <StatusBarBackdrop /> : null}
+      </View>
     );
   }
   return <View style={[{ flex: 1, backgroundColor: theme.colors.background }, content]}>{children}</View>;
+}
+
+/**
+ * A strip of background behind the status bar, for screens that scroll.
+ *
+ * A screen with no navigation header clears the notch with padding INSIDE its
+ * scrolling content, which is right at rest and wrong the moment it moves: the
+ * padding scrolls away with everything else and the cards slide up underneath
+ * the clock and the battery, both drawn on top of whatever text is there. This
+ * sits over that band and stays put, so content disappears under it instead.
+ *
+ * Touches pass straight through - it is paint, not a control.
+ */
+export function StatusBarBackdrop(): React.JSX.Element {
+  const theme = useTheme();
+  const insets = useSafeAreaInsets();
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: insets.top,
+        backgroundColor: theme.colors.background,
+      }}
+    />
+  );
 }
 
 /** Vertical spacer. Explicit beats a stray marginBottom. */
@@ -152,18 +184,50 @@ export function Label({
   );
 }
 
-/** A small uppercase section heading, as used above "NEARBY FRIENDS". */
-export function SectionHeading({ children }: { children: React.ReactNode }): React.JSX.Element {
+/** How tall the coloured rule beside a section heading is, and how wide. */
+const HEADING_RULE = { width: 3, height: 12 } as const;
+
+/**
+ * A small uppercase section heading, as used above "NEARBY FRIENDS".
+ *
+ * `hue` puts a short coloured rule in front of it - the tab's own colour on a
+ * tab screen, the category's colour above a shelf of games. It is a rule rather
+ * than coloured text on purpose: several of the hues sit around 3:1 against the
+ * light background, which is fine for a shape and not fine for type this small,
+ * so the words stay in the same grey everywhere and the colour is carried by
+ * something that is allowed to be quiet.
+ */
+export function SectionHeading({
+  children,
+  hue,
+}: {
+  children: React.ReactNode;
+  hue?: string;
+}): React.JSX.Element {
   const theme = useTheme();
   return (
-    <Text
-      style={[
-        theme.typography.caption as TextStyle,
-        { color: theme.colors.textTertiary, letterSpacing: 1.2, marginBottom: theme.spacing.sm },
-      ]}
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.spacing.sm,
+        marginBottom: theme.spacing.sm,
+      }}
     >
-      {String(children).toUpperCase()}
-    </Text>
+      {hue ? (
+        <View
+          style={{
+            width: HEADING_RULE.width,
+            height: HEADING_RULE.height,
+            borderRadius: HEADING_RULE.width / 2,
+            backgroundColor: hue,
+          }}
+        />
+      ) : null}
+      <Text style={[theme.typography.caption as TextStyle, { color: theme.colors.textTertiary, letterSpacing: 1.2 }]}>
+        {String(children).toUpperCase()}
+      </Text>
+    </View>
   );
 }
 
@@ -401,11 +465,15 @@ export function ListRow({
   );
 }
 
+/** The tinted disc behind an empty state's icon. Sized to leave the 44pt mark room. */
+const EMPTY_TILE = 88;
+
 export function EmptyState({
   icon,
   title,
   body,
   action,
+  area,
 }: {
   /**
    * A name from the drawn icon set, not a character. An empty state whose icon
@@ -416,18 +484,41 @@ export function EmptyState({
   title: string;
   body?: string;
   action?: React.ReactNode;
+  /**
+   * Which tab this empty state belongs to.
+   *
+   * Given one, the mark is drawn in that tab's hue on a disc of its muted
+   * partner, so an empty Share does not look exactly like an empty Play. The
+   * pair always comes from the same lookup rather than being passed in as two
+   * colours, because a hue on the wrong muted ground is how contrast gets lost.
+   * Left out, the mark stays the plain grey it has always been.
+   */
+  area?: AreaName;
 }): React.JSX.Element {
   const theme = useTheme();
+  const tint = area ? areaColor(theme.colors, area) : theme.colors.textSecondary;
   return (
     <View style={{ alignItems: 'center', paddingVertical: theme.spacing.xxxl, paddingHorizontal: theme.spacing.xl }}>
       <View
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
-        style={{ marginBottom: theme.spacing.lg }}
+        style={[
+          { marginBottom: theme.spacing.lg },
+          area
+            ? {
+                width: EMPTY_TILE,
+                height: EMPTY_TILE,
+                borderRadius: EMPTY_TILE / 2,
+                backgroundColor: areaColorMuted(theme.colors, area),
+                alignItems: 'center',
+                justifyContent: 'center',
+              }
+            : null,
+        ]}
       >
         {/* Decorative: the title below says the same thing in words, so
             announcing the icon as well would say it twice. */}
-        <Icon name={icon} size={44} color={theme.colors.textSecondary} />
+        <Icon name={icon} size={44} color={tint} />
       </View>
       <Label variant="headline" align="center">
         {title}

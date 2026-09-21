@@ -96,8 +96,13 @@ export interface LinkEstimate {
 /** How often resume state is written to the database while bytes are moving. */
 const PERSIST_INTERVAL_MS = 4000;
 
+/** How many un-arrived chat attachments to remember. See `expect`. */
+const EXPECTED_MEMORY = 64;
+
 export class TransferCenter {
   private readonly records = new Map<string, TransferRecord>();
+  /** Transfers a conversation has vouched for. See `expect`. */
+  private readonly expected = new Set<string>();
   private readonly bindings = new Map<string, Binding>();
   private readonly incomingStores = new Map<string, IncomingPartStore>();
   private readonly outgoingSources = new Map<string, OutgoingSource>();
@@ -491,6 +496,40 @@ export class TransferCenter {
 
   // -- protocol events -------------------------------------------------------
 
+  /**
+   * A photo or voice note sent INSIDE a conversation accepts itself.
+   *
+   * The Share tab asks before receiving a file, which is right for a file
+   * somebody pushes at you out of nowhere. It is wrong for a photo in a chat:
+   * the sender is someone this user has already paired with and is talking to,
+   * the bytes were solicited by the conversation itself, and the question would
+   * be asked on a screen the user is not looking at. The photo simply never
+   * arrived - the sender's transfer failed with "They never answered" while the
+   * receiver's bubble sat empty for ever, which is exactly what happened the
+   * first time this was tested on two devices.
+   *
+   * The offer and the chat message announcing it race, and either can win, so
+   * this handles both orders: accept now if the offer is already waiting, and
+   * otherwise remember the id so `onOffer` accepts it the moment it lands.
+   */
+  expect(transferId: string): void {
+    const known = this.records.get(transferId);
+    if (known && known.direction === TransferDirection.INCOMING && known.state === TransferState.OFFERED) {
+      void this.accept(transferId).catch(() => {
+        // The offer expired between arriving and being accepted. The record
+        // stays pending and the user can still answer it by hand.
+      });
+      return;
+    }
+    // Bounded: a conversation can name a file that never arrives, and this must
+    // not become a set that only grows for the lifetime of the app.
+    if (this.expected.size >= EXPECTED_MEMORY) {
+      const oldest = this.expected.values().next();
+      if (!oldest.done) this.expected.delete(oldest.value);
+    }
+    this.expected.add(transferId);
+  }
+
   private async onOffer(peerKey: string, offer: FileOffer): Promise<void> {
     const peerName = this.nameFor(peerKey);
     const known = this.records.get(offer.transferId);
@@ -520,7 +559,9 @@ export class TransferCenter {
     // resumption, not a new request. Asking a second time for the same file
     // would be the app forgetting what the user told it.
     const alreadyAccepted = known !== undefined && known.state !== TransferState.OFFERED;
-    if (resume || alreadyAccepted) {
+    // A file the conversation already vouched for needs no question asked.
+    const vouchedFor = this.expected.delete(offer.transferId);
+    if (resume || alreadyAccepted || vouchedFor) {
       try {
         await this.accept(offer.transferId);
       } catch {

@@ -403,7 +403,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
      * are reported with an empty token and the user confirms the first meeting,
      * exactly as they would on a fresh BLE pairing.
      */
-    override fun startAdvertising(token: ByteArray, displayName: String) {
+    override fun startAdvertising(token: ByteArray, displayName: String, discoveryId: String) {
         log("debug", "Wi-Fi Direct carries no advertisement payload; nothing to publish")
     }
 
@@ -508,6 +508,19 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
                     displayNameOf(device),
                     // No advertisement payload exists on this transport.
                     "",
+                    /*
+                     * And therefore no discovery id either, which has a
+                     * consequence worth stating plainly: the presence layer
+                     * holds back any sighting it cannot identify, so a Wi-Fi
+                     * Direct peer that never turns up on another radio is never
+                     * offered to the user. That is the correct outcome. Wi-Fi
+                     * P2P reports every device in range - televisions,
+                     * printers, cars - and listing those as people to connect
+                     * to was a large part of the "Unknown Device" problem on
+                     * Android. This transport earns its place as a fast path to
+                     * a peer already known, not as a way to meet one.
+                     */
+                    "",
                     // Wi-Fi Direct does not report signal strength to apps.
                     0,
                 ),
@@ -517,7 +530,7 @@ class WifiDirectTransport(private val context: Context) : AirLinkTransport {
         peers.keys.toList().forEach { address ->
             if (address in seen) return@forEach
             val gone = peers.remove(address) ?: return@forEach
-            events?.peerLost(DiscoveredEndpoint(kind, address, displayNameOf(gone), "", 0))
+            events?.peerLost(DiscoveredEndpoint(kind, address, displayNameOf(gone), "", "", 0))
         }
     }
 

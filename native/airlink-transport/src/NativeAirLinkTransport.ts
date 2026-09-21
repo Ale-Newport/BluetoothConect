@@ -86,6 +86,18 @@ export interface NativeDiscoveredPeer {
   name: string;
   /** Base64 of the rotating advertisement token, or '' when absent. */
   token: string;
+  /**
+   * Sixteen hex characters identifying the advertising installation, stable for
+   * that app's run, or '' when the peer's build predates it.
+   *
+   * Not a durable identifier: it is regenerated on every launch, so it links
+   * nothing across time. It exists to answer two questions that had no reliable
+   * answer before it - "is this advertisement my own?", which every transport
+   * previously guessed at with a service name or a rotating token, and "is this
+   * the same phone I can already see on the other radio?", which nothing could
+   * answer at all before a handshake.
+   */
+  discoveryId: string;
   /** dBm, or 0 when the transport does not report signal strength. */
   rssi: CodegenTypes.Int32;
 }
@@ -192,8 +204,14 @@ export interface Spec extends TurboModule {
    * Advertise our presence.
    * @param token base64 of the rotating 6-byte advertisement token
    * @param displayName included only when the user has opted in; '' otherwise
+   * @param discoveryId sixteen hex characters, constant for this app run
    */
-  startAdvertising(transport: string, token: string, displayName: string): Promise<void>;
+  startAdvertising(
+    transport: string,
+    token: string,
+    displayName: string,
+    discoveryId: string,
+  ): Promise<void>;
   stopAdvertising(transport: string): Promise<void>;
 
   startDiscovery(transport: string): Promise<void>;

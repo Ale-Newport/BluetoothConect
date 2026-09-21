@@ -11,6 +11,7 @@ import {
 } from '@airlink/core';
 import type { Message, MessageKind, MessageStatus, Reaction } from '@airlink/db';
 import type { AirLinkClient, PeerHandle } from '../../client/AirLinkClient.js';
+import { transferCenterFor } from '../share/transferCenter.js';
 
 /**
  * The bridge between `ChatProtocol` and SQLite.
@@ -40,7 +41,18 @@ import type { AirLinkClient, PeerHandle } from '../../client/AirLinkClient.js';
  * own peer id here would mark our own messages read the moment the conversation
  * opened and fake a read receipt we never received.
  */
-const LOCAL_SENDER = 'local';
+export const LOCAL_SENDER = 'local';
+
+/**
+ * The id of the one direct conversation with a peer.
+ *
+ * Exported because `attachments.ts` has to find the same row when it flushes a
+ * queued photo on reconnect, and two places deriving the same id from their own
+ * template is how they eventually stop agreeing.
+ */
+export function directConversationId(peerId: string): string {
+  return `direct:${peerId}`;
+}
 
 /** Where a peer's undelivered queue is kept between launches. */
 const OUTBOX_KEY_PREFIX = 'chat.outbox.';
@@ -66,6 +78,17 @@ export interface ConversationSummary {
   readonly lastMessage: Message | null;
   readonly lastActivityAt: number;
   readonly unreadCount: number;
+}
+
+/** The file behind an image, voice or file message, as a bubble reads it. */
+export interface AttachmentFile {
+  readonly name: string;
+  readonly sizeBytes: number;
+  /** Null until the bytes are actually on this phone. */
+  readonly localPath: string | null;
+  readonly mimeType: string;
+  /** Set for voice notes and video; null for everything else. */
+  readonly durationMs: number | null;
 }
 
 /** What one conversation screen needs, read in one pass. */
@@ -184,6 +207,19 @@ export class ChatCenter {
     for (const listener of [...this.listeners]) listener();
   }
 
+  /**
+   * Something outside this class changed what chat reads.
+   *
+   * `attachments.ts` writes message and file rows of its own - a photo is a
+   * file transfer with a bubble attached to it, and the transfer half of that
+   * belongs to the Share module - so it needs a way to tell the conversation
+   * to look again. Deliberately the data version rather than the presence one:
+   * a row really did change.
+   */
+  touch(): void {
+    this.publish();
+  }
+
   // -- reading ---------------------------------------------------------------
 
   listConversations(): readonly ConversationSummary[] {
@@ -232,10 +268,28 @@ export class ChatCenter {
     return { messages, reactions, replies, hasMore: all.length >= limit };
   }
 
-  fileFor(fileId: string): { name: string; sizeBytes: number; localPath: string | null } | null {
+  /**
+   * What a bubble needs to know about the file hanging off it.
+   *
+   * `mimeType` and `durationMs` are here because a voice note draws its own
+   * bubble: it needs the length before a single byte has been played, and the
+   * duration is the one thing the file row knows that the message row does not.
+   */
+  fileFor(fileId: string): AttachmentFile | null {
     const file = this.safe(() => this.client.db.files.get(fileId));
     if (!file) return null;
-    return { name: file.name, sizeBytes: file.sizeBytes, localPath: file.localPath };
+    return {
+      name: file.name,
+      sizeBytes: file.sizeBytes,
+      localPath: file.localPath,
+      mimeType: file.mimeType,
+      durationMs: file.durationMs,
+    };
+  }
+
+  /** One message row, for a caller that has an id and needs the rest of it. */
+  messageRow(rowId: string): Message | null {
+    return this.safe(() => this.client.db.messages.get(rowId)) ?? null;
   }
 
   /**
@@ -276,7 +330,7 @@ export class ChatCenter {
 
   /** The id of the one direct conversation with a peer, creating it if needed. */
   conversationFor(peerId: string, displayName: string): string | null {
-    const id = `direct:${peerId}`;
+    const id = directConversationId(peerId);
     const existing = this.safe(() => this.client.db.conversations.get(id));
     if (existing) return existing.id;
     // `conversations.peer_id` is a foreign key into `peers`, so a conversation
@@ -602,8 +656,10 @@ export class ChatCenter {
 
   private handToProtocol(attachment: Attachment, row: Message): void {
     const body = row.body ?? '';
-    // A row with no text is an attachment the file module owns; there is
-    // nothing for the chat protocol to carry.
+    // A row with no text is a photo or a voice note, whose bytes travel on the
+    // file transfer channel rather than in a chat frame. `AttachmentCenter`
+    // watches the same sessions and flushes those rows itself; leaving the row
+    // alone here is what stops the two of them sending it twice.
     if (body.trim().length === 0) return;
     const replyToWireId = row.replyToId ? this.wireIdOf(row.replyToId) : null;
     const entry = this.safe(() =>
@@ -674,6 +730,14 @@ export class ChatCenter {
           }),
         );
       }
+
+      // Vouch for the bytes. The Share tab asks before accepting a file, which
+      // is right for something pushed at you out of nowhere and wrong for a
+      // photo in a conversation: the question would be posed on a screen this
+      // user is not looking at, so nobody ever answers it and the sender's
+      // transfer dies with "They never answered". Announcing it here is the
+      // point at which this phone knows the file belongs to a chat.
+      this.safe(() => transferCenterFor(this.client).expect(attached.fileId));
     }
 
     // A reply names its target in wire ids, and the target may be one of ours
@@ -683,7 +747,7 @@ export class ChatCenter {
     const replyExists = replyRowId ? this.safe(() => this.client.db.messages.get(replyRowId)) : null;
 
     const isActive = this.activeConversationId === conversationId;
-    const kind: MessageKind = attached ? (attached.mimeType.startsWith('image/') ? 'image' : 'file') : 'text';
+    const kind: MessageKind = attached ? kindForMime(attached.mimeType) : 'text';
 
     this.safe(() =>
       this.client.db.messages.insert({
@@ -796,6 +860,21 @@ export class ChatCenter {
     this.typingPeers.clear();
     this.listeners.clear();
   }
+}
+
+/**
+ * Which bubble a file gets, from its type alone.
+ *
+ * Audio is a voice note here rather than a generic file, which is what makes an
+ * arriving recording draw a play button instead of a paperclip. It is a guess
+ * from a MIME type - a music file sent as an attachment would get the same
+ * bubble - and that is the right way round: a play control on a song is
+ * harmless, a paperclip on a voice message is not.
+ */
+export function kindForMime(mimeType: string): MessageKind {
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('audio/')) return 'voice';
+  return 'file';
 }
 
 /** The protocol's ladder, in the words the database stores. */

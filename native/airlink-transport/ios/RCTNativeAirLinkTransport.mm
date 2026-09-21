@@ -20,6 +20,15 @@
 // that works when the pod is built as a framework, the quoted form when it is
 // built as a static library - which is React Native's default. Probing for both
 // keeps this file correct either way.
+// The generated Swift header below declares our @objc classes' conformance to
+// UNUserNotificationCenterDelegate, AVAudioRecorderDelegate and
+// AVAudioPlayerDelegate. Those protocol names appear in it unqualified, so every
+// translation unit that includes the header has to have the frameworks in scope
+// FIRST or it fails with "cannot find protocol declaration" - a confusing error,
+// because the file it points at is generated and correct.
+#import <UserNotifications/UserNotifications.h>
+#import <AVFoundation/AVFoundation.h>
+
 #if __has_include(<airlink_transport/airlink_transport-Swift.h>)
 #import <airlink_transport/airlink_transport-Swift.h>
 #else
@@ -120,11 +129,13 @@ RCT_EXPORT_MODULE(NativeAirLinkTransport)
 - (void)startAdvertising:(NSString *)transport
                    token:(NSString *)token
              displayName:(NSString *)displayName
+             discoveryId:(NSString *)discoveryId
                  resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject {
   [_bridge startAdvertising:transport
                       token:token
                 displayName:displayName
+                discoveryId:discoveryId
                     resolve:^{ resolve(nil); }
                      reject:^(NSString *code, NSString *message) { reject(code, message, nil); }];
 }

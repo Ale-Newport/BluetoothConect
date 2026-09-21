@@ -150,6 +150,25 @@ export const MessageType = {
   GAME_SYNC_REQUEST: 0x36,
   GAME_INPUT: 0x37,
   GAME_LEAVE: 0x38,
+  /**
+   * "Your invitation reached a listener."
+   *
+   * Sent the instant an invite is decoded and recorded, long before a human has
+   * looked at it. Without it the inviting phone could not tell "never arrived"
+   * from "not answered yet", so it said "Waiting for your friend" for
+   * forty-five seconds either way - which was the single most confusing thing
+   * the app did.
+   */
+  GAME_INVITE_ACK: 0x39,
+  /** "I have your answer." Stops the answering phone repeating itself. */
+  GAME_RESPONSE_ACK: 0x3a,
+  /** "My board is built and I am ready to play." Sent by both sides. */
+  GAME_READY: 0x3b,
+  /** The host's word that play has begun. Nothing is drawn before this. */
+  GAME_START: 0x3c,
+  /** "Play that again." Uses the session both players are already in. */
+  GAME_REMATCH_REQUEST: 0x3d,
+  GAME_REMATCH_ACCEPT: 0x3e,
 
   // 0x40-0x4F  file transfer
   FILE_OFFER: 0x40,

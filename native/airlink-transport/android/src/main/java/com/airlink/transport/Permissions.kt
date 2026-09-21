@@ -276,7 +276,9 @@ internal object Permissions {
         }
     }
 
-    private fun wasRequested(context: Context, permission: String): Boolean =
+    /** Public because the notifications module asks the same question of
+     *  POST_NOTIFICATIONS, and two records of "have we asked?" would drift. */
+    fun wasRequested(context: Context, permission: String): Boolean =
         try {
             prefs(context).getStringSet(KEY_REQUESTED, emptySet())?.contains(permission) == true
         } catch (t: Throwable) {

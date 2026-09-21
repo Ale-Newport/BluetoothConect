@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AirLink — Privacy Policy</title>
+<meta name="description" content="AirLink's privacy policy. AirLink has no servers, no accounts and no analytics, and makes no internet connections at all.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <p class="wordmark">AirLink</p>
+  <h1>Privacy Policy</h1>
+  <p class="lede">AirLink collects nothing, because there is nowhere for anything to go.</p>
+  <nav class="pages">
+    <a href="index.html">Support</a>
+    <a href="privacy.html" aria-current="page">Privacy Policy</a>
+  </nav>
+  <p class="meta">Last updated: <strong>20 September 2026</strong>. Applies to the AirLink iPhone app.</p>
+</header>
+
+<main>
+
+  <!-- OWNER EDIT: delete this box once every EDIT ME marker below has been replaced. -->
+  <p class="edit-note">
+    <strong>Before publishing:</strong> replace every <span class="edit-me">EDIT ME</span> marker on this page
+    and on the support page, then delete this box. See <code>README.md</code> for the full list.
+  </p>
+
+  <h2>The short version</h2>
+
+  <div class="callout">
+    <p>
+      AirLink has <strong>no servers, no accounts, no analytics, no advertising, no tracking
+      and no third-party SDKs</strong>. It makes <strong>no internet connections at all</strong> —
+      not to us, not to anyone. Your messages, photos, voice messages, files, games and keys
+      exist only on your phone and on the phone of the person you are talking to, and they
+      are end-to-end encrypted on the way between the two. We never receive any of it, so
+      there is nothing for us to sell, lose, hand over or be breached of. Delete the app and
+      the data is gone.
+    </p>
+  </div>
+
+  <h2>1. Who this is about</h2>
+
+  <!-- OWNER EDIT: your name (or trading name) and the support address. The
+       address must match `supportEmail` in packages/config/src/brand.ts. -->
+  <p>
+    AirLink is an iPhone app published by <span class="edit-me">EDIT ME — your name</span>
+    ("we", "us"). This policy explains what happens to information when you use it. You can
+    reach us at <a href="mailto:support@example.invalid"><span class="edit-me">EDIT ME — support@example.invalid</span></a>
+    about anything on this page.
+  </p>
+
+  <h2>2. We do not collect any data</h2>
+
+  <p>
+    We collect no personal data, and no data of any other kind, from this app. Specifically:
+  </p>
+
+  <ul>
+    <li>There is <strong>no account</strong>. You are never asked for an email address, a phone number, a name that we see, or a password, because there is nothing to sign in to.</li>
+    <li>There are <strong>no servers</strong>. We operate no backend, no cloud storage and no message relay. Not as a fallback, not for delivery, not for sync, not for anything.</li>
+    <li>There is <strong>no analytics, telemetry or crash reporting</strong>, and no advertising or attribution framework. The app contains no third-party SDK that transmits anything anywhere.</li>
+    <li>There is <strong>no tracking</strong>. AirLink does not build a profile of you, does not use advertising identifiers, and does not link anything you do to any other app, website or service. It never asks for App Tracking Transparency permission because there is nothing to ask about.</li>
+    <li>AirLink <strong>makes no internet connections</strong>. It is designed to work in airplane mode, and it behaves the same way when you are online. If you inspect its network traffic you will find none.</li>
+  </ul>
+
+  <p>
+    This is also what our App Store privacy label says: <strong>Data Not Collected</strong>.
+  </p>
+
+  <h2>3. What stays on your phone</h2>
+
+  <p>
+    AirLink stores the following in its own private storage area on your device, and nowhere else:
+  </p>
+
+  <ul>
+    <li>Your conversations — messages, reactions, photos and voice messages, sent and received.</li>
+    <li>Files you have sent or received.</li>
+    <li>Your friends list, including any devices you have blocked.</li>
+    <li>Your display name and app settings.</li>
+    <li>Your cryptographic keys, generated on the device when you first open the app. The secret half never leaves it.</li>
+  </ul>
+
+  <p>
+    None of this is backed up to us, because we have nowhere to back it up to. It is subject
+    to your iPhone's own protections and to whatever you have chosen in iCloud Backup, which
+    is a matter between you and Apple.
+  </p>
+
+  <h2>4. What travels between the two phones</h2>
+
+  <p>
+    When you connect to someone, everything you exchange — text, photos, voice messages,
+    files, game moves, typing and read receipts — travels <strong>directly from your phone to
+    theirs</strong> over Bluetooth Low Energy or over a local Wi-Fi network you are both on.
+    It passes through no server, no cloud and no developer's computer. Your photos and voice
+    messages are <strong>never transmitted to us</strong> in any form, at any time.
+  </p>
+
+  <p>
+    That traffic is <strong>end-to-end encrypted</strong>. AirLink uses standard, published
+    cryptography and invents none of its own: an X25519 key exchange authenticated with
+    Ed25519 signatures in a SIGMA-I handshake, with ChaCha20-Poly1305 protecting every packet
+    and a replay window rejecting anything recorded and re-sent. The encryption keys are
+    generated on the two devices, are used by those two devices only, and are never escrowed,
+    uploaded or recoverable by us.
+  </p>
+
+  <p>
+    The first time two devices meet, both show the <strong>same six digits</strong> and both
+    people must confirm them. Those digits come from the handshake itself, so an attacker
+    relaying the connection would produce two codes that do not match. Confirming them is
+    what makes the encryption meaningful, which is why AirLink will not let content flow
+    before you do.
+  </p>
+
+  <div class="card">
+    <h3>Honestly: the other person's copy</h3>
+    <p>
+      Anything you send is stored on the recipient's phone, and they can keep it, screenshot
+      it or show it to anyone. Deleting a message on your phone removes your copy, not
+      theirs. No messaging app can promise otherwise, and we would rather say so here than
+      imply a control we do not have.
+    </p>
+  </div>
+
+  <h2>5. What nearby devices can see</h2>
+
+  <p>
+    To find each other at all, two phones have to announce themselves. While AirLink is open
+    it broadcasts a short advertisement over Bluetooth, and on a shared Wi-Fi network it
+    advertises a Bonjour service (<code>_airlink._tcp</code>). Another device running AirLink
+    within range can see the display name you chose and a random identifier that is generated
+    fresh every time the app starts, so it cannot be used to recognise you from one day to
+    the next.
+  </p>
+
+  <p>
+    Your identity in AirLink is derived from a key generated on your device. It is
+    deliberately <em>not</em> derived from anything about your hardware or your accounts —
+    no MAC address, no advertising identifier, no phone number, no email address. If you
+    would rather not be identifiable by name, change your display name under
+    <strong>You → Settings → Your name</strong> (tap your profile card at the top of the You tab).
+  </p>
+
+  <h2>6. Permissions, and exactly what each is for</h2>
+
+  <p>
+    iOS asks for each of these the first time it is needed — Bluetooth and Local Network
+    while you are setting the app up, and Camera, Photos, Microphone and Notifications only
+    when you first use the feature that needs them. AirLink still runs if you refuse any of
+    them; it simply does less.
+  </p>
+
+  <div class="card">
+    <h3>Bluetooth</h3>
+    <p>
+      To find friends nearby and to talk to their phones directly. AirLink does not use
+      Bluetooth for location, does not scan for beacons, and does not share anything about
+      where you are.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Local Network</h3>
+    <p>
+      When you and your friend are on the same Wi-Fi, AirLink uses that network to move
+      photos, voice messages and files far faster than Bluetooth can. It connects only to
+      devices you have connected to, and only on your local network — never out to the
+      internet.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Camera</h3>
+    <!-- OWNER EDIT: this paragraph must match what the shipped build actually
+         does. Today the only camera use in the app is scanning a friend's QR
+         code, which is what NSCameraUsageDescription in Info.plist says. If a
+         later build lets someone take a photo from inside a chat, add that here
+         and update the Info.plist purpose string to match. -->
+    <p>
+      To scan a friend's QR code when you add them, so you do not have to type anything.
+      Nothing the camera sees is stored or sent anywhere.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Photos</h3>
+    <p>
+      To let you pick a photo to send to the person you are connected to. AirLink reads only
+      the photos you choose, and each one goes to that one device and nowhere else.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Microphone</h3>
+    <p>
+      To record a voice message, only while you are recording one. The recording is stored on
+      your phone and sent to the person you are talking to, over the same direct, encrypted
+      link as everything else. Nothing is recorded in the background, and no audio is ever
+      transmitted to us.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Notifications</h3>
+    <p>
+      To tell you about a new message or a game invitation from someone you are connected to.
+      These notifications are created by your own iPhone, from something that has already
+      arrived over the direct link between the two phones. AirLink uses no push service, so
+      no notification and no part of its content passes through Apple's push servers, ours,
+      or anyone else's. Declining notifications costs you nothing except the alert; unread
+      items are still marked inside the app.
+    </p>
+  </div>
+
+  <h2>7. Nothing is shared with anyone</h2>
+
+  <p>
+    We share no data with any third party, for the straightforward reason that we hold none.
+    There are no advertisers, no data brokers, no analytics providers, no cloud processors
+    and no subcontractors with access to anything of yours. Nothing about you is sold,
+    rented or traded, now or in any future version of this policy.
+  </p>
+
+  <p>
+    We cannot comply with a request to hand over your messages — from anyone, for any reason —
+    because we do not have them and have no technical means of obtaining them.
+  </p>
+
+  <h2>8. Children</h2>
+
+  <p>
+    AirLink allows direct messaging between two people who have explicitly accepted each
+    other, so it is rated for teenagers and older, and it is not directed at children under
+    13. We knowingly collect no data from anyone of any age, children included.
+  </p>
+
+  <h2>9. Deleting your data</h2>
+
+  <p>
+    You are in complete control of everything AirLink holds, because all of it is on your
+    phone:
+  </p>
+
+  <ul>
+    <li><strong>A conversation</strong> — press and hold a message and choose to delete it, or use <strong>Report and block</strong>, which removes the whole conversation and blocks the person.</li>
+    <li><strong>One conversation</strong> — <strong>You → Settings → Clear a conversation</strong>.</li>
+    <li><strong>All conversations</strong> — <strong>You → Settings → Clear all history</strong>.</li>
+    <li><strong>Everything</strong> — delete the app. That removes the messages, the files, the friends list and the keys. There is no account left behind anywhere, because there was never an account.</li>
+  </ul>
+
+  <p>
+    There is no "request my data" form here and no deletion request to send us: a request
+    would have to be addressed to a company that holds your data, and we are not one.
+  </p>
+
+  <h2>10. Your rights</h2>
+
+  <p>
+    Privacy laws such as the GDPR and the CCPA give you rights over personal data a company
+    holds about you — access, correction, deletion, portability, and objection to its sale.
+    We hold no personal data about you at all, so there is nothing for us to disclose,
+    correct, delete or sell, and no profiling or automated decision-making takes place.
+    Your data stays under your own control on your own device. If you believe otherwise, or
+    simply want to check, write to us at the address below and we will answer.
+  </p>
+
+  <h2>11. Changes to this policy</h2>
+
+  <p>
+    If a future version of AirLink changes what happens to your information, this policy will
+    be updated before that version is released, and the date at the top will change. We would
+    have to be adding something that transmits data off your device for this document to need
+    a meaningful rewrite, and that is not a direction we intend to take.
+  </p>
+
+  <h2>12. Contact</h2>
+
+  <!-- OWNER EDIT: same address as section 1 and as the support page. -->
+  <p>
+    Questions about this policy, or about anything AirLink does with information:
+    <a href="mailto:support@example.invalid"><span class="edit-me">EDIT ME — support@example.invalid</span></a>
+  </p>
+
+</main>
+
+<footer>
+  <!-- OWNER EDIT: the copyright name. -->
+  <p>
+    <a href="index.html">Support</a> · Privacy Policy
+  </p>
+  <p>Last updated 20 September 2026. © 2026 <span class="edit-me">EDIT ME — your name</span>.</p>
+</footer>
+
+</body>
+</html>

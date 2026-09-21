@@ -402,6 +402,7 @@ export class MockTransport implements Transport {
   private discovering = false;
   private readonly links = new Map<string, MockLink>();
   private available = true;
+  private loopback = false;
   private conditionOverrides: Partial<NetworkConditions> = {};
 
   constructor(
@@ -412,6 +413,16 @@ export class MockTransport implements Transport {
 
   async availability(): Promise<TransportAvailability> {
     return this.available ? { available: true } : { available: false, reason: 'radioOff' };
+  }
+
+  /**
+   * Make this transport discover its OWN advertisement, as Bonjour does.
+   *
+   * The only way to write a test that proves a device never lists itself.
+   */
+  setLoopbackDiscovery(on: boolean): void {
+    this.loopback = on;
+    this.rescan();
   }
 
   /** Simulate the radio being switched off. */
@@ -476,18 +487,37 @@ export class MockTransport implements Transport {
     for (const other of this.network.allTransports()) {
       if (other === this || !other.advertising || !other.available) continue;
       if (!this.network.canReach(this.endpointId, other.endpointId)) continue;
-      const record = other.advertising;
-      const peer: DiscoveredPeer = {
-        endpointId: other.endpointId,
-        transport: TransportKind.MOCK,
-        ...(record.displayName !== undefined ? { advertisedName: record.displayName } : {}),
-        advertisementToken: record.token,
-        rssi: -45,
-        discoveredAt: now,
-        lastSeenAt: now,
-      };
-      this.events.emit('peerDiscovered', { peer });
+      this.emitDiscovery(other, now);
     }
+
+    /*
+     * A radio that hears its own voice.
+     *
+     * Bonjour does exactly this - a listener and a browser on one device see
+     * each other - and it is why a phone once listed itself as a nearby
+     * stranger. The mock could never reproduce it, because it skipped `this`
+     * unconditionally, so no test could have caught the bug. Off by default,
+     * since most radios do not behave this way; switched on for the tests that
+     * must prove the self filter holds.
+     */
+    if (this.loopback && this.advertising) this.emitDiscovery(this, now);
+  }
+
+  private emitDiscovery(other: MockTransport, now: number): void {
+    const record = other.advertising;
+    if (!record) return;
+    const peer: DiscoveredPeer = {
+      endpointId: other.endpointId,
+      transport: TransportKind.MOCK,
+      ...(record.displayName !== undefined ? { advertisedName: record.displayName } : {}),
+      ...(record.discoveryId !== undefined ? { discoveryId: record.discoveryId } : {}),
+      advertisementToken: record.token,
+      protocolVersion: record.protocolVersion,
+      rssi: -45,
+      discoveredAt: now,
+      lastSeenAt: now,
+    };
+    this.events.emit('peerDiscovered', { peer });
   }
 
   /** @internal */

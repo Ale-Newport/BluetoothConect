@@ -141,6 +141,8 @@ private enum NetworkTxtKey {
     static let version = "v"
     /// Base64 of the rotating advertisement token; absent when not advertising.
     static let token = "t"
+    /// Sixteen hex characters, constant for the advertising app's run.
+    static let discoveryId = "d"
     /// The user's short display name. Present ONLY when the user opted in -
     /// presence alone answers "did they opt in", so never an empty string.
     static let displayName = "n"
@@ -229,6 +231,9 @@ private struct NetworkDiscoveredEndpoint {
     let result: NWBrowser.Result
     var name: String
     var token: String
+    /// See `DiscoveredEndpoint.discoveryId`. Carried so the presence heartbeat
+    /// re-announces the same peer with the same identity rather than a blank.
+    var discoveryId: String
     var lastSeen: TimeInterval
 }
 
@@ -275,6 +280,8 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
     private var registeredServiceNames = Set<String>()
     private var isAdvertising = false
     private var advertisedToken = ""
+    /// See `DiscoveredEndpoint.discoveryId`. Constant for this app run.
+    private var advertisedDiscoveryId = ""
     private var advertisedDisplayName = ""
 
     private var endpoints: [String: NetworkDiscoveredEndpoint] = [:]
@@ -471,7 +478,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
 
     // MARK: - Advertising
 
-    func startAdvertising(token: Data, displayName: String) throws {
+    func startAdvertising(token: Data, displayName: String, discoveryId: String) throws {
         var thrown: Error?
         queue.sync {
             guard isStarted, let configuration else {
@@ -480,6 +487,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
             }
             isAdvertising = true
             advertisedToken = token.isEmpty ? "" : token.base64EncodedString()
+            advertisedDiscoveryId = discoveryId
             advertisedDisplayName = Self.clamp(displayName, toUtf8Bytes: 63)
 
             let service = makeService(type: configuration.bonjourServiceType)
@@ -532,6 +540,10 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         // next without guessing from which keys happen to be there.
         txt[NetworkTxtKey.version] = NetworkTxtKey.versionValue
         if !advertisedToken.isEmpty { txt[NetworkTxtKey.token] = advertisedToken }
+        // Sixteen bytes of TXT record that end an entire class of bug: this is
+        // what lets our own browser recognise our own listener, and what lets
+        // this device be recognised as the SAME device on Bluetooth.
+        if !advertisedDiscoveryId.isEmpty { txt[NetworkTxtKey.discoveryId] = advertisedDiscoveryId }
         // Only present when the user opted in. An empty key would still occupy
         // space in a record that has to fit a single DNS response.
         if !advertisedDisplayName.isEmpty { txt[NetworkTxtKey.displayName] = advertisedDisplayName }
@@ -732,16 +744,38 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
 
         var token = ""
         var displayName = ""
+        var discoveryId = ""
         if case let .bonjour(txt) = result.metadata {
             token = Self.sanitisedToken(txt[NetworkTxtKey.token])
             displayName = Self.clamp(txt[NetworkTxtKey.displayName] ?? "", toUtf8Bytes: 63)
+            discoveryId = Self.sanitisedDiscoveryId(txt[NetworkTxtKey.discoveryId])
         }
         if !token.isEmpty && token == advertisedToken { return }
+
+        /*
+         * The strongest self-filter there is, and the one that does not depend
+         * on a name.
+         *
+         * This device publishes ONE discovery id from every transport it owns,
+         * so an advertisement carrying ours is ours whichever radio it came
+         * back on - including the sibling `LocalNetworkTransport` this instance
+         * knows nothing about, whose service name is not in our
+         * `registeredServiceNames` and whose token can be one rotation ahead of
+         * or behind ours.
+         */
+        if !discoveryId.isEmpty && discoveryId == advertisedDiscoveryId { return }
 
         let now = Date().timeIntervalSince1970
         let existing = endpoints[id]
         endpoints[id] = NetworkDiscoveredEndpoint(
-            id: id, result: result, name: displayName, token: token, lastSeen: now
+            id: id,
+            result: result,
+            name: displayName,
+            token: token,
+            // Only ever filled in, never blanked: a later browse result whose
+            // TXT record we could not read must not erase what we already know.
+            discoveryId: discoveryId.isEmpty ? (existing?.discoveryId ?? "") : discoveryId,
+            lastSeen: now
         )
         pruneEndpointsIfNeeded()
 
@@ -749,7 +783,12 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         // token, so a rotation is new information even for a known endpoint.
         if let existing, existing.token == token, existing.name == displayName { return }
         events?.peerDiscovered(DiscoveredEndpoint(
-            transport: kind, endpointId: id, name: displayName, token: token, rssi: 0
+            transport: kind,
+            endpointId: id,
+            name: displayName,
+            token: token,
+            discoveryId: discoveryId,
+            rssi: 0
         ))
     }
 
@@ -788,6 +827,7 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
                     endpointId: entry.id,
                     name: entry.name,
                     token: entry.token,
+                    discoveryId: entry.discoveryId,
                     rssi: 0
                 ))
             }
@@ -1407,6 +1447,21 @@ final class LocalNetworkTransport: AirLinkTransport, @unchecked Sendable {
         // Re-encode so what crosses the bridge is canonical base64 regardless of
         // what the peer put on the wire.
         return decoded.base64EncodedString()
+    }
+
+    /**
+     * A discovery id off the wire, or "" for anything that is not one.
+     *
+     * Checked rather than trusted, because this value decides whether an
+     * advertisement is treated as our OWN: a peer that could put an arbitrary
+     * string here could make itself invisible to us. Sixteen lowercase hex
+     * characters, exactly, and nothing else.
+     */
+    private static func sanitisedDiscoveryId(_ raw: String?) -> String {
+        guard let raw, raw.count == 16 else { return "" }
+        let allowed = CharacterSet(charactersIn: "0123456789abcdef")
+        guard raw.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return "" }
+        return raw
     }
 
     private static func clamp(_ value: String, toUtf8Bytes limit: Int) -> String {

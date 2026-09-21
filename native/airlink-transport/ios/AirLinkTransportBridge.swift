@@ -247,12 +247,17 @@ import UIKit
     @objc public func startAdvertising(_ transportName: String,
                                        token: String,
                                        displayName: String,
+                                       discoveryId: String,
                                        resolve: @escaping () -> Void,
                                        reject: @escaping (String, String) -> Void) {
         run(reject) {
             guard self.started else { throw AirLinkError.notStarted }
             let tokenData = Data(base64Encoded: token) ?? Data()
-            try self.transport(transportName).startAdvertising(token: tokenData, displayName: displayName)
+            try self.transport(transportName).startAdvertising(
+                token: tokenData,
+                displayName: displayName,
+                discoveryId: discoveryId
+            )
             resolve()
         }
     }

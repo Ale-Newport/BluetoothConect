@@ -154,18 +154,20 @@ internal class BleScanner(
      * gets to correct itself - the picker row that said "Unknown device"
      * becomes the person's name.
      */
-    fun enrich(endpointId: String, name: String, token: ByteArray) {
+    fun enrich(endpointId: String, name: String, token: ByteArray, discoveryId: String = "") {
         val existing = sightings[endpointId] ?: return
         val current = existing.endpoint
         val betterName = if (name.isNotEmpty()) name else current.name
         val betterToken =
             if (token.isNotEmpty()) Base64.encodeToString(token, Base64.NO_WRAP) else current.token
-        if (betterName == current.name && betterToken == current.token) return
+        val betterId = if (discoveryId.isNotEmpty()) discoveryId else current.discoveryId
+        if (betterName == current.name && betterToken == current.token && betterId == current.discoveryId) return
         existing.endpoint = DiscoveredEndpoint(
             transport = current.transport,
             endpointId = current.endpointId,
             name = betterName,
             token = betterToken,
+            discoveryId = betterId,
             rssi = current.rssi,
         )
         existing.announcedMs = SystemClock.elapsedRealtime()
@@ -275,6 +277,10 @@ internal class BleScanner(
             endpointId = address,
             name = if (name.isNotEmpty()) name else previous.name,
             token = if (encodedToken.isNotEmpty()) encodedToken else previous.token,
+            // Never blanked, for the same reason as the two above it: an
+            // advertisement carries no discovery id, and the identity read that
+            // does must not have its answer erased by the next scan result.
+            discoveryId = previous.discoveryId,
             rssi = result.rssi,
         )
 

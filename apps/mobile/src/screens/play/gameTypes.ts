@@ -156,3 +156,81 @@ export {
   poolView,
 } from '../../../../../packages/games/src/games/pool.js';
 export type { PoolState, PoolView } from '../../../../../packages/games/src/games/pool.js';
+
+// -- the turn-based catalogue added in the stabilisation pass ---------------
+//
+// Every one of these is deliberately latency-tolerant: a move is a few bytes,
+// a few hundred milliseconds late changes nothing, and several of them are
+// played entirely locally with only a result exchanged. That is what AirLink's
+// slowest link can actually carry well.
+
+export { SIZE as GOMOKU_SIZE } from '../../../../../packages/games/src/games/gomoku.js';
+export type { GomokuState } from '../../../../../packages/games/src/games/gomoku.js';
+
+export { SIZE as REVERSI_SIZE, legalMovesFor as reversiLegalMoves } from '../../../../../packages/games/src/games/reversi.js';
+export type { ReversiState } from '../../../../../packages/games/src/games/reversi.js';
+
+export {
+  DOTS as DAB_DOTS,
+  BOXES as DAB_BOXES,
+  Orientation as DabOrientation,
+} from '../../../../../packages/games/src/games/dotsAndBoxes.js';
+export type { DotsAndBoxesState } from '../../../../../packages/games/src/games/dotsAndBoxes.js';
+
+export { COLOURS as CODE_COLOURS } from '../../../../../packages/games/src/games/codeBreaker.js';
+export type { CodeBreakerState } from '../../../../../packages/games/src/games/codeBreaker.js';
+
+export { PAIRS as MEMORY_PAIRS } from '../../../../../packages/games/src/games/memoryDuel.js';
+export type { MemoryDuelState } from '../../../../../packages/games/src/games/memoryDuel.js';
+
+export type { SlidingPuzzleState } from '../../../../../packages/games/src/games/slidingPuzzle.js';
+
+export {
+  ROUNDS as RPS_ROUNDS,
+  MAX_NONCE as RPS_MAX_NONCE,
+  MIN_NONCE as RPS_MIN_NONCE,
+  PAPER,
+  ROCK,
+  SCISSORS,
+  WINS_NEEDED as RPS_WINS_NEEDED,
+  commitment as rpsCommitment,
+  roundWinner as rpsRoundWinner,
+  unpackOutcome as rpsUnpackOutcome,
+} from '../../../../../packages/games/src/games/rockPaperScissors.js';
+export type { Choice as RpsChoice } from '../../../../../packages/games/src/games/rockPaperScissors.js';
+export type { RockPaperScissorsState } from '../../../../../packages/games/src/games/rockPaperScissors.js';
+
+export { ROUNDS as TAP_RACE_ROUNDS } from '../../../../../packages/games/src/games/tapRace.js';
+export type { TapRaceState } from '../../../../../packages/games/src/games/tapRace.js';
+
+export {
+  ROUNDS as QUICK_MATH_ROUNDS,
+  MAX_ANSWER_MS as QUICK_MATH_MAX_ANSWER_MS,
+  MAX_ANSWER_VALUE as QUICK_MATH_MAX_ANSWER_VALUE,
+  currentProblem as quickMathCurrentProblem,
+  problemText as quickMathProblemText,
+} from '../../../../../packages/games/src/games/quickMath.js';
+export type { QuickMathProblem } from '../../../../../packages/games/src/games/quickMath.js';
+export type { QuickMathState } from '../../../../../packages/games/src/games/quickMath.js';
+
+export type { WordChainState } from '../../../../../packages/games/src/games/wordChain.js';
+
+export {
+  ROUNDS as QUIZ_ROUNDS,
+  OPTIONS as QUIZ_OPTIONS,
+  SEATS as QUIZ_SEATS,
+  UNANSWERED as QUIZ_UNANSWERED,
+  MAX_ANSWER_MS as QUIZ_MAX_ANSWER_MS,
+  hasAnswered as quizHasAnswered,
+} from '../../../../../packages/games/src/games/quizDuel.js';
+export type { QuizDuelState } from '../../../../../packages/games/src/games/quizDuel.js';
+
+export {
+  PROMPTS_PER_GAME as SECRET_CHOICE_PROMPTS,
+  SECRET_CHOICE_BANKS,
+  UNCHOSEN as SECRET_CHOICE_UNCHOSEN,
+  currentRound as secretChoiceCurrentRound,
+  pickAt as secretChoicePickAt,
+  roundView as secretChoiceRoundView,
+} from '../../../../../packages/games/src/games/secretChoice.js';
+export type { SecretChoiceState } from '../../../../../packages/games/src/games/secretChoice.js';

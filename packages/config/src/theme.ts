@@ -42,6 +42,41 @@ export interface ColorScheme {
   bubbleIncomingText: string;
   /** Scrim behind a modal sheet. */
   scrim: string;
+
+  /**
+   * ONE HUE PER PLACE.
+   *
+   * `accent` stays the single colour of a primary action, everywhere, because a
+   * button that changes colour by screen stops reading as a button. These are
+   * the other job colour does: telling you WHERE you are. The five tabs, the
+   * game categories and the message kinds each get their own hue, so the app
+   * is navigable by colour rather than being one blue app with five identical
+   * grey screens.
+   *
+   * All of them sit at roughly the same lightness and chroma, so they read as
+   * one family rather than a bag of colours. Each has a `-Muted` partner for
+   * chips, tinted backgrounds and empty states.
+   */
+  areaHome: string;
+  areaChat: string;
+  areaPlay: string;
+  areaShare: string;
+  areaYou: string;
+  areaHomeMuted: string;
+  areaChatMuted: string;
+  areaPlayMuted: string;
+  areaShareMuted: string;
+  areaYouMuted: string;
+
+  /** Game categories, so the catalogue is scannable without reading it. */
+  catQuick: string;
+  catStrategy: string;
+  catWords: string;
+  catTrivia: string;
+  catPuzzles: string;
+  catParty: string;
+  catTogether: string;
+  catRealtime: string;
 }
 
 const light: ColorScheme = {
@@ -65,6 +100,26 @@ const light: ColorScheme = {
   bubbleIncoming: '#EDEDF2',
   bubbleIncomingText: '#08080C',
   scrim: 'rgba(8, 8, 12, 0.32)',
+
+  areaHome: '#0A6CFF',
+  areaChat: '#6E4BE8',
+  areaPlay: '#DC6803',
+  areaShare: '#0E9C8E',
+  areaYou: '#C4457B',
+  areaHomeMuted: '#E6F0FF',
+  areaChatMuted: '#EFEAFE',
+  areaPlayMuted: '#FDF0E2',
+  areaShareMuted: '#E2F5F3',
+  areaYouMuted: '#FCEAF2',
+
+  catQuick: '#DC6803',
+  catStrategy: '#3E63DD',
+  catWords: '#0E9C8E',
+  catTrivia: '#8E4EC6',
+  catPuzzles: '#C4457B',
+  catParty: '#E5484D',
+  catTogether: '#12A150',
+  catRealtime: '#0891B2',
 };
 
 const dark: ColorScheme = {
@@ -88,6 +143,28 @@ const dark: ColorScheme = {
   bubbleIncoming: '#22222A',
   bubbleIncomingText: '#F5F5F7',
   scrim: 'rgba(0, 0, 0, 0.55)',
+
+  // Lifted and slightly desaturated: the light-mode hues go muddy on a dark
+  // ground, and a saturated hue on near-black vibrates.
+  areaHome: '#4D9AFF',
+  areaChat: '#A38BFF',
+  areaPlay: '#F2A057',
+  areaShare: '#3FC8B8',
+  areaYou: '#F084B0',
+  areaHomeMuted: '#152540',
+  areaChatMuted: '#231D3D',
+  areaPlayMuted: '#33220F',
+  areaShareMuted: '#0F2E2B',
+  areaYouMuted: '#331624',
+
+  catQuick: '#F2A057',
+  catStrategy: '#7B9BFF',
+  catWords: '#3FC8B8',
+  catTrivia: '#B98AE8',
+  catPuzzles: '#F084B0',
+  catParty: '#FF7A80',
+  catTogether: '#4ED887',
+  catRealtime: '#45B8D8',
 };
 
 export const colors = { light, dark } as const;
@@ -163,6 +240,77 @@ export const motion = {
   /** Spring for anything the user's finger set in motion. */
   spring: { damping: 20, stiffness: 220, mass: 0.7 },
 } as const;
+
+/**
+ * Which hue belongs to which tab.
+ *
+ * A lookup rather than a colour written into each screen: the tab bar, the
+ * screen header and any chip on that screen have to agree, and they only agree
+ * if they read the same entry.
+ */
+export type AreaName = 'Home' | 'Chat' | 'Play' | 'Share' | 'You';
+
+export function areaColor(scheme: ColorScheme, area: AreaName): string {
+  switch (area) {
+    case 'Chat':
+      return scheme.areaChat;
+    case 'Play':
+      return scheme.areaPlay;
+    case 'Share':
+      return scheme.areaShare;
+    case 'You':
+      return scheme.areaYou;
+    default:
+      return scheme.areaHome;
+  }
+}
+
+export function areaColorMuted(scheme: ColorScheme, area: AreaName): string {
+  switch (area) {
+    case 'Chat':
+      return scheme.areaChatMuted;
+    case 'Play':
+      return scheme.areaPlayMuted;
+    case 'Share':
+      return scheme.areaShareMuted;
+    case 'You':
+      return scheme.areaYouMuted;
+    default:
+      return scheme.areaHomeMuted;
+  }
+}
+
+/**
+ * Which hue belongs to which game category.
+ *
+ * Takes the category as a plain string so `@airlink/config` does not have to
+ * depend on `@airlink/games` - the dependency runs the other way, and a colour
+ * table is not worth inverting it for. An unknown category falls back to the
+ * Play hue rather than throwing: a new game must never be able to crash the
+ * catalogue.
+ */
+export function categoryColor(scheme: ColorScheme, category: string): string {
+  switch (category) {
+    case 'quick':
+      return scheme.catQuick;
+    case 'strategy':
+      return scheme.catStrategy;
+    case 'words':
+      return scheme.catWords;
+    case 'trivia':
+      return scheme.catTrivia;
+    case 'puzzles':
+      return scheme.catPuzzles;
+    case 'party':
+      return scheme.catParty;
+    case 'together':
+      return scheme.catTogether;
+    case 'realtime':
+      return scheme.catRealtime;
+    default:
+      return scheme.areaPlay;
+  }
+}
 
 /** Palette for generated avatars, so a friend without a photo still has identity. */
 export const avatarPalette = [

@@ -3,8 +3,8 @@ import { Linking, Pressable, View } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useShallow } from 'zustand/react/shallow';
-import { ConnectionState } from '@airlink/core';
-import { brand, strings } from '@airlink/config';
+import { ConnectionState, TransportUnavailableReason } from '@airlink/core';
+import { areaColor, brand, strings } from '@airlink/config';
 import {
   Avatar,
   Button,
@@ -67,6 +67,7 @@ const SEARCH_HINT_MS = 6000;
 const AVATAR_SIZE = 44;
 
 export function HomeScreen(): React.JSX.Element {
+  const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
   const isFocused = useIsFocused();
 
@@ -157,6 +158,44 @@ export function HomeScreen(): React.JSX.Element {
   const bluetoothBlocked = bluetoothOff && !radios.wifiOn;
   const bluetoothReduced = bluetoothOff && radios.wifiOn;
   /**
+   * WHICH truth to tell, and whether Settings can do anything about it.
+   *
+   * Four reasons reach this screen and only three of them are "Bluetooth is
+   * off". A declined permission is not a switch the user forgot, and hardware
+   * with no Bluetooth radio has nothing in Settings to change - that case used
+   * to render an "Open Settings" button that went to a page which could not
+   * help, which is worse than saying nothing.
+   */
+  const bluetoothBanner = useMemo(() => {
+    const withWifi = radios.wifiOn;
+    switch (radios.bluetoothReason) {
+      case TransportUnavailableReason.PERMISSION_DENIED:
+      case TransportUnavailableReason.PERMISSION_NOT_REQUESTED:
+        return {
+          title: strings.status.bluetoothDenied,
+          detail: withWifi
+            ? strings.status.bluetoothDeniedWifiWorksDetail
+            : strings.status.bluetoothDeniedDetail,
+          settings: true,
+        };
+      case TransportUnavailableReason.UNSUPPORTED_HARDWARE:
+      case TransportUnavailableReason.UNSUPPORTED_OS_VERSION:
+        return {
+          title: strings.status.bluetoothUnsupported,
+          detail: strings.status.bluetoothUnsupportedDetail,
+          settings: false,
+        };
+      default:
+        return {
+          title: withWifi ? strings.status.bluetoothOffWifiWorks : strings.status.bluetoothOff,
+          detail: withWifi
+            ? strings.status.bluetoothOffWifiWorksDetail
+            : strings.status.bluetoothOffDetail,
+          settings: true,
+        };
+    }
+  }, [radios.bluetoothReason, radios.wifiOn]);
+  /**
    * Grey, not amber, before the radios have answered.
    *
    * `connecting` and `warning` are the same colour, so the old tone opened the
@@ -164,6 +203,18 @@ export function HomeScreen(): React.JSX.Element {
    * problem, and it should not look like one.
    */
   const bannerTone: StatusTone = radios.bluetoothOn ? 'connected' : 'disconnected';
+
+  /**
+   * Home's hue, for the rules beside the section headings and the mark in the
+   * empty state.
+   *
+   * It is the same blue as `accent`, and deliberately read from `areaColor`
+   * anyway. Home is the tab the accent was chosen for, so the two agreeing is
+   * the point rather than a coincidence - and if the palette is ever retuned,
+   * the tab keeps moving with its four siblings instead of being the one screen
+   * that quietly hard-wired itself to the button colour.
+   */
+  const homeHue = areaColor(theme.colors, 'Home');
 
   return (
     <Screen scroll>
@@ -180,20 +231,28 @@ export function HomeScreen(): React.JSX.Element {
       {bluetoothBlocked ? (
         <StatusBanner
           tone="warning"
-          title={strings.status.bluetoothOff}
+          title={bluetoothBanner.title}
           // Deliberately not `radios.detail`: that line comes from the
           // transport layer and can carry engineering wording.
-          detail={strings.status.bluetoothOffDetail}
-          action={<InlineAction title={strings.permissions.openSettings} onPress={openSettings} />}
+          detail={bluetoothBanner.detail}
+          action={
+            bluetoothBanner.settings ? (
+              <InlineAction title={strings.permissions.openSettings} onPress={openSettings} />
+            ) : undefined
+          }
         />
       ) : bluetoothReduced ? (
         // Not a warning. Nothing is broken; one of two ways of finding people
         // is switched off, and the other is working.
         <StatusBanner
           tone="disconnected"
-          title={strings.status.bluetoothOffWifiWorks}
-          detail={strings.status.bluetoothOffWifiWorksDetail}
-          action={<InlineAction title={strings.permissions.openSettings} onPress={openSettings} />}
+          title={bluetoothBanner.title}
+          detail={bluetoothBanner.detail}
+          action={
+            bluetoothBanner.settings ? (
+              <InlineAction title={strings.permissions.openSettings} onPress={openSettings} />
+            ) : undefined
+          }
         />
       ) : (
         // Deliberately not `state.offline`: nothing in the app ever writes it,
@@ -211,7 +270,7 @@ export function HomeScreen(): React.JSX.Element {
           need most was the one you had to scroll for. */}
       {connected.length > 0 ? (
         <>
-          <SectionHeading>{strings.home.connected}</SectionHeading>
+          <SectionHeading hue={homeHue}>{strings.home.connected}</SectionHeading>
           {connected.map((peer, index) => (
             <View key={peer.key}>
               {index > 0 ? <Gap size="md" /> : null}
@@ -224,7 +283,7 @@ export function HomeScreen(): React.JSX.Element {
 
       {sortedFriends.length > 0 ? (
         <>
-          <SectionHeading>{strings.home.nearbyFriends}</SectionHeading>
+          <SectionHeading hue={homeHue}>{strings.home.nearbyFriends}</SectionHeading>
           <PeerGroup peers={sortedFriends} onOpen={openPeer} />
           <Gap size="xl" />
         </>
@@ -232,7 +291,7 @@ export function HomeScreen(): React.JSX.Element {
 
       {sortedStrangers.length > 0 ? (
         <>
-          <SectionHeading>{strings.home.otherDevices}</SectionHeading>
+          <SectionHeading hue={homeHue}>{strings.home.otherDevices}</SectionHeading>
           <PeerGroup peers={sortedStrangers} onOpen={openPeer} />
           <Gap size="xl" />
         </>
@@ -243,6 +302,7 @@ export function HomeScreen(): React.JSX.Element {
           {searchHintVisible ? (
             <EmptyState
               icon="radar"
+              area="Home"
               title={strings.home.nobodyNearby}
               body={strings.home.nobodyNearbyBody}
               action={

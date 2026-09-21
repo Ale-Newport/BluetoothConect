@@ -64,6 +64,21 @@ export type ActionOutcome<TAction> =
   | { readonly accepted: false; readonly reason: RejectionReason; readonly detail: string };
 
 /**
+ * Everything a device needs to continue from somebody else's board.
+ *
+ * The board, the per-player sequence counters, how far the simulation has run,
+ * and the version that names this position. All four, because a snapshot that
+ * carried only the first left a guest permanently unable to play. See
+ * `GameSession.snapshotEnvelope`.
+ */
+export interface StateEnvelope {
+  readonly state: CborValue;
+  readonly seq: Readonly<Record<PlayerId, number>>;
+  readonly version: number;
+  readonly elapsedMs: number;
+}
+
+/**
  * One player's view of one game. Identical code runs on host and guest; only
  * the `isHost` flag changes behaviour, and only for realtime games.
  */
@@ -75,6 +90,12 @@ export class GameSession<TState, TAction extends GameAction = GameAction> {
   private elapsedMs = 0;
   /** Sub-step time carried between tick() calls. See tick(). */
   private tickRemainder = 0;
+  /** Actions applied. The number both devices compare. See `stateVersion`. */
+  private version = 0;
+  /** The newest host snapshot this device has taken, so a late one is refused. */
+  private adoptedHostVersion = -1;
+  /** Who left, if anybody. See `abandon`. */
+  private abandonedBy: PlayerId | null = null;
   private readonly historyLimit: number;
   private readonly random: SeededGameRandom;
 
@@ -103,6 +124,8 @@ export class GameSession<TState, TAction extends GameAction = GameAction> {
   }
 
   get status(): GameStatus {
+    // Somebody walking away outranks the position. See `abandon`.
+    if (this.abandonedBy !== null) return { kind: GameStatusKind.ABANDONED, by: this.abandonedBy };
     return this.options.definition.status(this.state);
   }
 
@@ -121,6 +144,19 @@ export class GameSession<TState, TAction extends GameAction = GameAction> {
 
   get actionCount(): number {
     return this.log.length;
+  }
+
+  /**
+   * How many actions this board has applied, counted from zero.
+   *
+   * The single number two devices compare to know whether they are looking at
+   * the same position. Every action names the version it expects to be applied
+   * ON TOP OF, so a receiver can tell "I am behind" from "this is a repeat"
+   * without knowing anything about the game's rules - and ask for a snapshot
+   * instead of silently diverging.
+   */
+  get stateVersion(): number {
+    return this.version;
   }
 
   get simulatedMs(): number {
@@ -227,6 +263,7 @@ export class GameSession<TState, TAction extends GameAction = GameAction> {
 
     this.state = this.options.definition.applyAction(this.state, action, context);
     this.nextSeqByPlayer.set(action.player, expected + 1);
+    this.version += 1;
     this.log.push(action);
     if (this.log.length > this.historyLimit) this.log.shift();
     return { accepted: true, applied: { action, index: this.log.length - 1 } };
@@ -289,6 +326,103 @@ export class GameSession<TState, TAction extends GameAction = GameAction> {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * A snapshot AND the bookkeeping needed to carry on from it.
+   *
+   * A board is not the whole of a session's state. Per-player sequence numbers
+   * are what give an action exactly-once semantics, and they used to be left
+   * behind by a snapshot entirely - so a guest that missed one move could be
+   * handed a perfectly correct board and STILL reject every action that
+   * followed, for ever, because it was waiting for a sequence number that had
+   * already gone past. The game looked alive and accepted nothing. Repairing
+   * the position without repairing the counters is not a repair.
+   */
+  snapshotEnvelope(): StateEnvelope {
+    const seq: Record<PlayerId, number> = {};
+    for (const player of this.options.setup.players) {
+      seq[player] = this.nextSeqByPlayer.get(player) ?? 0;
+    }
+    return {
+      state: this.options.definition.encodeState(this.state),
+      seq,
+      version: this.version,
+      elapsedMs: this.elapsedMs,
+    };
+  }
+
+  /**
+   * Adopt an authoritative snapshot, counters and all.
+   *
+   * Returns false for a snapshot that cannot be decoded, or one the host sent
+   * itself - a host is not corrected by its guests - or one OLDER than the
+   * board already held, which is a late answer to a question already resolved.
+   */
+  applySnapshotEnvelope(envelope: StateEnvelope): boolean {
+    if (this.options.isHost) return false;
+    /*
+     * Compared against the last snapshot we ADOPTED, not against our own
+     * action count.
+     *
+     * The two are different numbers and comparing them is unsound: a guest
+     * whose own moves never reached the host has applied MORE actions than the
+     * host has, so it is simultaneously ahead by count and wrong about the
+     * board - exactly the state that most needs repairing. Refusing the repair
+     * because the number was smaller would have left it permanently diverged.
+     * Host versions only ever compare meaningfully with other host versions.
+     */
+    if (envelope.version < this.adoptedHostVersion) return false;
+    let next: TState;
+    try {
+      next = this.options.definition.decodeState(envelope.state);
+    } catch {
+      return false;
+    }
+    this.state = next;
+    this.version = envelope.version;
+    this.adoptedHostVersion = envelope.version;
+    this.elapsedMs = envelope.elapsedMs;
+    this.nextSeqByPlayer.clear();
+    for (const [player, seq] of Object.entries(envelope.seq)) {
+      if (Number.isInteger(seq) && seq >= 0) this.nextSeqByPlayer.set(player, seq);
+    }
+    // Our own next action must continue from what the host believes it has
+    // already seen from us, or the very first move after a resync is rejected
+    // as a duplicate.
+    this.localSeq = this.nextSeqByPlayer.get(this.options.localPlayer) ?? this.localSeq;
+    return true;
+  }
+
+  /**
+   * Somebody left, and the game is over because of it rather than on the board.
+   *
+   * `GameStatusKind.ABANDONED` has been in the engine's status union since the
+   * beginning and nothing could ever produce it, because a status is a pure
+   * function of the state and no game models "my opponent walked away" - quite
+   * rightly, since it is not a fact about the position. So a game somebody left
+   * simply never finished: its row sat on the "in progress" shelf for the rest
+   * of the flight, offering to resume a game the other person had closed.
+   *
+   * It lives on the session rather than in any game's state on purpose. Putting
+   * it in the state would mean an `abandon` action in all twenty-eight
+   * reducers, twenty-eight encoders that had to carry it, and twenty-eight
+   * chances to get it wrong - for a fact that is about the people rather than
+   * the board. It is deliberately final: nothing clears it, because the room it
+   * belongs to is torn down at the same moment.
+   *
+   * Returns false for a game already over, or a player who is not in it.
+   */
+  abandon(player: PlayerId): boolean {
+    if (this.abandonedBy !== null || this.isOver) return false;
+    if (!this.options.setup.players.includes(player)) return false;
+    this.abandonedBy = player;
+    return true;
+  }
+
+  /** Who left, or null. */
+  get abandonedByPlayer(): PlayerId | null {
+    return this.abandonedBy;
   }
 
   /** Encode an action for transmission. */

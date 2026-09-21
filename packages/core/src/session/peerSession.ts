@@ -453,6 +453,23 @@ export class PeerSession {
       rttMs: this.reliable.smoothedRttMs,
       rtoMs: this.reliable.currentRtoMs,
       clockOffsetMs: this.clockSync.offsetMs,
+      /*
+       * The heartbeat, in the terms it actually fails in.
+       *
+       * A session is presumed alive while ANY traffic arrives, not only a
+       * keepalive - a busy conversation should never be declared dead for want
+       * of a ping. `missedHeartbeats` is therefore how many keepalive intervals
+       * have passed with silence, and a session is only given up on after the
+       * liveness window, which is several of them. A single lost packet must
+       * never end a connection on a plane.
+       */
+      lastInboundAt: this.lastInboundAt,
+      silentForMs: Math.max(0, this.options.clock.now() - this.lastInboundAt),
+      missedHeartbeats: Math.floor(
+        Math.max(0, this.options.clock.now() - this.lastInboundAt) /
+          (this.options.keepaliveIntervalMs ?? TIMING.keepaliveIntervalMs),
+      ),
+      livenessTimeoutMs: this.options.livenessTimeoutMs ?? TIMING.livenessTimeoutMs,
       linkMetrics: this.link?.metrics() ?? null,
     };
   }

@@ -37,7 +37,10 @@ export function ConnectFourBoard({
 
   const board = Math.min(width, MAX_BOARD);
   const gap = theme.spacing.xs;
-  const cell = (board - theme.spacing.sm * 2 - gap * (CONNECT_FOUR_COLS - 1)) / CONNECT_FOUR_COLS;
+  // Floored for the reason given in TicTacToeBoard: an exact fit is not a fit.
+  const cell = Math.floor(
+    (board - theme.spacing.sm * 2 - gap * (CONNECT_FOUR_COLS - 1)) / CONNECT_FOUR_COLS,
+  );
 
   const winning = useMemo(() => new Set(state.winningLine ?? []), [state.winningLine]);
   const myTurn = turn === local;

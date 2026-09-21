@@ -43,9 +43,40 @@ type Stage = 'idle' | 'connecting' | 'securing' | 'connected' | 'failed';
  * ours is deliberately longer: when the radio has its own answer we would rather
  * show that than pre-empt it with a generic timeout. Securing is a handshake
  * over an open link, so it is quick or it is broken.
+ *
+ * PAIRING IS THE EXCEPTION, AND IT HAS NO DEADLINE HERE AT ALL. Comparing six
+ * digits means picking up the other phone, reading it, and tapping on both -
+ * human time, and easily more than twenty seconds the first time somebody does
+ * it. Counting it against a handshake budget is what made a successful first
+ * pairing end on "Couldn't connect" while the session underneath was Connected
+ * and Excellent: the sheet timed out on the person, not on the protocol. The
+ * real limit is `PeerSession`'s own 120s pairing timeout, which reports a
+ * genuine failure properly.
  */
 const CONNECTING_TIMEOUT_MS = 25_000;
 const SECURING_TIMEOUT_MS = 20_000;
+
+/**
+ * How long this stage may sit before the sheet calls it a failure, or `null`
+ * when it may sit indefinitely.
+ *
+ * Exported because it is a policy rather than a detail, and because the one
+ * case that matters is invisible from outside: PAIRING gets no deadline. It is
+ * the only state in the machine that waits for a PERSON - to pick up the other
+ * phone, read six digits, and tap on both - and twenty seconds is nothing like
+ * long enough for that the first time somebody does it. Counting it as a stall
+ * ended a perfectly good first pairing on "Couldn't connect" while the home
+ * screen behind the sheet said Connected and Excellent.
+ *
+ * Everything else keeps its deadline: a link that never opens and a handshake
+ * that dies mid-exchange are both real failures, and a spinner that never
+ * resolves is worse than an honest one.
+ */
+export function deadlineFor(stage: Stage, connection: ConnectionState | undefined): number | null {
+  if (stage !== 'connecting' && stage !== 'securing') return null;
+  if (connection === ConnectionState.PAIRING) return null;
+  return stage === 'connecting' ? CONNECTING_TIMEOUT_MS : SECURING_TIMEOUT_MS;
+}
 
 /** Long enough to read the word "Connected", short enough not to be a wait. */
 const SUCCESS_DISMISS_MS = 1000;
@@ -122,11 +153,16 @@ export function ConnectSheet(): React.JSX.Element {
   // and the timer restarts whenever the stage moves - so real progress is never
   // punished for taking a while overall.
   useEffect(() => {
-    if (stage !== 'connecting' && stage !== 'securing') return;
-    const budget = stage === 'connecting' ? CONNECTING_TIMEOUT_MS : SECURING_TIMEOUT_MS;
-    const timer = setTimeout(() => setStage('failed'), budget);
+    const budget = deadlineFor(stage, connection);
+    if (budget === null) return;
+    const timer = setTimeout(() => {
+      // Belt and braces: never contradict a session that has actually come up.
+      // This sheet has told somebody they could not connect while the home
+      // screen behind it said Connected, which is worse than saying nothing.
+      setStage((current) => (current === 'connected' ? current : 'failed'));
+    }, budget);
     return () => clearTimeout(timer);
-  }, [stage]);
+  }, [stage, connection]);
 
   useEffect(() => {
     if (stage !== 'connected') return;

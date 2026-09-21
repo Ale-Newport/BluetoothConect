@@ -207,6 +207,9 @@ export function AirHockeyTable({
         }}
         onStartShouldSetResponder={() => live}
         onMoveShouldSetResponder={() => live}
+        // Once this board has the gesture it keeps it. A drag on a table is a
+        // move, never a scroll and never a navigation.
+        onResponderTerminationRequest={() => false}
         onResponderGrant={aim}
         onResponderMove={aim}
       >

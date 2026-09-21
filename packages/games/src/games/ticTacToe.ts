@@ -65,6 +65,20 @@ function findWin(board: readonly Cell[]): { mark: Cell; line: readonly number[] 
   return null;
 }
 
+/**
+ * A winner off the wire, checked against the seats.
+ *
+ * `null` for "nobody has won", and an error for anything else: a string that
+ * names no player is not a missing winner, it is a peer claiming a result that
+ * cannot have happened.
+ */
+function decodeWinner(value: CborValue | undefined, players: readonly PlayerId[]): PlayerId | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw new Error('ticTacToe: winner must be a player id or null');
+  if (!players.includes(value)) throw new Error('ticTacToe: winner is not a player in this game');
+  return value;
+}
+
 export const ticTacToe: GameDefinition<TicTacToeState, TicTacToeAction> = {
   id: 'tic-tac-toe',
   name: 'Tic-Tac-Toe',
@@ -150,7 +164,11 @@ export const ticTacToe: GameDefinition<TicTacToeState, TicTacToeAction> = {
       players,
       turnIndex: asInt(m.t, 'turnIndex', 0, 1),
       moveCount: asInt(m.m, 'moveCount', 0, 9),
-      winner: typeof m.w === 'string' ? m.w : null,
+      // A winner has to be somebody who is actually playing. A snapshot
+      // arriving from a peer decides what every screen shows about the
+      // result, so a name that is in no seat is refused rather than
+      // rendered as the person who won.
+      winner: decodeWinner(m.w, players),
       winningLine: Array.isArray(m.l) ? asArray(m.l, 'winningLine', 3).map((n) => asInt(n, 'line', 0, 8)) : null,
     };
   },

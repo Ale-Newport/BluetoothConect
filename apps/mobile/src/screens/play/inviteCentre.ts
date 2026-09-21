@@ -2,46 +2,53 @@ import { useSyncExternalStore } from 'react';
 import { ConnectionState, type IncomingMessage } from '@airlink/core';
 import { findGame } from '@airlink/games';
 import type { AirLinkClient } from '../../client/AirLinkClient.js';
-import { MessageType, decodeInvite, trySend } from './gameProtocol.js';
+import {
+  INVITE_LIFETIME_MS,
+  MessageType,
+  decodeAck,
+  decodeInvite,
+  encodeAck,
+  trySend,
+} from './gameProtocol.js';
 import { createGameRow } from './useGameRoom.js';
 import { hasRenderer } from './games/index.js';
 import { useOptionalClient } from './useOptionalClient.js';
 
 /**
- * The other half of an invitation.
+ * The other half of an invitation, and the reason one used to vanish.
  *
  * `useGameRoom` sends `GAME_INVITE` and waits. Something has to be LISTENING
- * for it on the other phone, or a game can never be started at all: the invited
- * player has no room open, so nothing of theirs is subscribed to that message,
- * and the host sits asking for forty-five seconds and then says "No answer" -
- * which is a lie, because the answer never had anywhere to arrive.
+ * for it on the other phone. This is that listener - and until now it was built
+ * lazily by the Play tab, which is a LAZY bottom tab, so on a phone that had
+ * not opened Play since launch it did not exist at all. The invitation was
+ * decrypted, acknowledged by the reliability layer, delivered to zero
+ * subscribers and dropped, while the other phone said "Waiting for your
+ * friend…" for forty-five seconds and then lied about there being no answer.
  *
- * This is that listener, and it is shaped exactly like the Share tab's transfer
- * centre for the same reason: one instance per client, held for the client's
- * lifetime, written to from outside React by session events, read through
- * `useSyncExternalStore`. An invitation is a question with a deadline, so it is
- * offered while the Play tab is in front and then quietly expires - nothing is
- * queued up to ambush somebody an hour later.
+ * It is now built by `ClientProvider` at startup, exactly like the chat centre
+ * next to it and for exactly the same reason, and the question it produces is
+ * rendered by a host mounted beside the navigator rather than inside one tab.
+ * An invitation is reachable from anywhere in the app.
  *
  * WHAT IT DOES ON ARRIVAL, before anybody is asked anything:
  *
+ *   - ACKNOWLEDGES IT, immediately and always. That single message is what lets
+ *     the asking phone say "Delivered" instead of guessing, and what lets it
+ *     stop retrying. It is sent before any judgement is made about whether the
+ *     game is playable, because the question being asked is "did this arrive?",
+ *     not "will you play?".
  *   - An invite for a game this build cannot play is DECLINED immediately,
- *     rather than left to time out. The other phone gets a real answer.
- *   - An invite for a game whose row already exists is ignored: it is the host
- *     repeating itself, or announcing a game that is already on the shelf.
+ *     rather than left to time out.
+ *   - A REPEAT IS IDEMPOTENT. The same `inviteId` arriving ten times produces
+ *     one question, one row and one acknowledgement each time.
  *   - The row is written from the invite - the seed, the seat order, the game -
  *     so that accepting opens a room that builds a byte-identical starting
- *     state without another round trip. The room refuses to invent that row
- *     itself, and it is right to.
- *
- * Being a per-client singleton created on first use, this only starts listening
- * once something has read it - today, the Play tab. Mounting it once next to the
- * navigator would make an invitation reachable from any tab; that belongs in the
- * navigator's own file, not here. See the report.
+ *     state without another round trip.
  */
 
 /** An invitation waiting on an answer, as a screen needs to see it. */
 export interface GameInviteRecord {
+  readonly inviteId: string;
   readonly sessionId: string;
   /** The peer, for navigation. Never rendered. */
   readonly peerKey: string;
@@ -54,20 +61,31 @@ export interface GameInviteRecord {
   /** True if the seat order makes THIS device the host. Normally false. */
   readonly isHost: boolean;
   readonly receivedAt: number;
+  readonly expiresAt: number;
 }
 
-/** How long an invitation is worth showing. The host stops asking at 45s. */
-export const INVITE_LIFETIME_MS = 45_000;
+export { INVITE_LIFETIME_MS };
 
 const NO_INVITES: readonly GameInviteRecord[] = [];
 
+/**
+ * How many answered invitations are remembered.
+ *
+ * Enough that a retry storm on a bad link cannot re-ask something already
+ * answered, and bounded so a long flight cannot grow it without limit. The old
+ * set had no ceiling at all.
+ */
+const SETTLED_MEMORY = 128;
+
 class GameInviteCentre {
   private readonly invites = new Map<string, GameInviteRecord>();
-  /** Sessions already answered, so a repeated invite is not asked twice. */
+  /** Invites already answered, newest last, so a repeat is not asked twice. */
   private readonly settled = new Set<string>();
   private readonly bindings = new Map<string, (() => void)[]>();
   private readonly listeners = new Set<() => void>();
   private readonly clientOffs: (() => void)[] = [];
+  /** inviteId -> the peer that asked, so an ack can be repeated on a retry. */
+  private readonly acknowledged = new Map<string, string>();
 
   /** Stable between changes, so `useSyncExternalStore` behaves. */
   private snapshotCache: readonly GameInviteRecord[] = NO_INVITES;
@@ -97,11 +115,10 @@ class GameInviteCentre {
    * Take the invitation. The row is already written, so the caller only has to
    * open the room.
    */
-  accept(sessionId: string): GameInviteRecord | null {
-    const record = this.invites.get(sessionId);
+  accept(inviteId: string): GameInviteRecord | null {
+    const record = this.invites.get(inviteId);
     if (!record) return null;
-    this.settled.add(sessionId);
-    this.invites.delete(sessionId);
+    this.settle(inviteId);
     this.publish();
     return record;
   }
@@ -113,54 +130,94 @@ class GameInviteCentre {
    * rematch accepted inside the room the two players were already in. The room
    * owns that conversation, and this must not offer it a second time.
    */
-  forget(sessionId: string): void {
-    this.settled.add(sessionId);
-    if (this.invites.delete(sessionId)) this.publish();
+  forget(inviteId: string): void {
+    this.settle(inviteId);
+    if (this.invites.delete(inviteId)) this.publish();
   }
 
   /** Say no, out loud: the other phone stops asking instead of timing out. */
-  decline(sessionId: string): void {
-    const record = this.invites.get(sessionId);
-    this.settled.add(sessionId);
-    this.invites.delete(sessionId);
+  decline(inviteId: string): void {
+    const record = this.invites.get(inviteId);
+    this.settle(inviteId);
     this.publish();
     if (!record) return;
     const handle = this.client.peer(record.peerKey);
-    if (handle) trySend(handle.session, MessageType.GAME_DECLINE, { s: sessionId });
+    if (handle) trySend(handle.session, MessageType.GAME_DECLINE, { s: record.sessionId, i: inviteId });
+  }
+
+  /** Every invitation still open, for Developer Mode. */
+  diagnostics(): { inviteId: string; gameId: string; peerId: string | null; expiresAt: number }[] {
+    return [...this.invites.values()].map((r) => ({
+      inviteId: r.inviteId,
+      gameId: r.gameId,
+      peerId: r.peerId,
+      expiresAt: r.expiresAt,
+    }));
+  }
+
+  dispose(): void {
+    for (const off of this.clientOffs) off();
+    this.clientOffs.length = 0;
+    for (const offs of this.bindings.values()) for (const off of offs) off();
+    this.bindings.clear();
+    this.listeners.clear();
+    this.invites.clear();
   }
 
   // -- sessions --------------------------------------------------------------
 
   private attach(peerKey: string): void {
-    if (this.bindings.has(peerKey)) return;
     const handle = this.client.peer(peerKey);
     if (!handle || handle.session.state !== ConnectionState.CONNECTED) return;
-    this.bindings.set(peerKey, [
+    // Bind on the handle's own key, not on whatever name the caller used. A
+    // session is re-keyed onto its peer id the moment the handshake reveals
+    // one, and binding under the older name left the listener orphaned.
+    if (this.bindings.has(handle.key)) return;
+    this.bindings.set(handle.key, [
       handle.session.events.on('message', (message) => {
-        if (message.type === MessageType.GAME_INVITE) this.onInvite(peerKey, message);
+        if (message.type === MessageType.GAME_INVITE) this.onInvite(handle.key, message);
       }),
-      handle.session.events.on('closed', () => this.detach(peerKey)),
+      handle.session.events.on('closed', () => this.detach(handle.key)),
     ]);
   }
 
   private detach(peerKey: string): void {
-    const offs = this.bindings.get(peerKey);
-    if (!offs) return;
-    for (const off of offs) off();
-    this.bindings.delete(peerKey);
+    const handle = this.client.peer(peerKey);
+    for (const key of [peerKey, handle?.key]) {
+      if (!key) continue;
+      const offs = this.bindings.get(key);
+      if (!offs) continue;
+      for (const off of offs) off();
+      this.bindings.delete(key);
+    }
   }
 
   private onInvite(peerKey: string, message: IncomingMessage): void {
     const invite = decodeInvite(message.value);
     if (!invite) return;
-    if (this.settled.has(invite.sessionId) || this.invites.has(invite.sessionId)) return;
+
+    const handle = this.client.peer(peerKey);
+    if (!handle) return;
+
+    // ACKNOWLEDGE FIRST, ALWAYS, AND ON EVERY REPEAT.
+    //
+    // This is a receipt, not an answer, and the asking phone needs it whatever
+    // we go on to decide. Acknowledging a repeat matters just as much: if the
+    // first ack was the frame that got lost, only a repeat can rescue it.
+    trySend(handle.session, MessageType.GAME_INVITE_ACK, encodeAck(invite.inviteId));
+    this.acknowledged.set(invite.inviteId, peerKey);
+
+    if (this.settled.has(invite.inviteId)) {
+      // Already answered. Re-send the answer rather than staying silent, so a
+      // lost decline does not become a forty-five-second wait.
+      trySend(handle.session, MessageType.GAME_RESPONSE_ACK, encodeAck(invite.inviteId));
+      return;
+    }
+    if (this.invites.has(invite.inviteId)) return; // Already asking. One question.
 
     const me = this.client.profile?.peerId;
     // An invitation that does not name this device is not ours to answer.
     if (!me || !invite.players.includes(me)) return;
-
-    const handle = this.client.peer(peerKey);
-    if (!handle) return;
 
     const entry = findGame(invite.gameId);
     const playable =
@@ -172,8 +229,8 @@ class GameInviteCentre {
     if (!entry || !playable) {
       // Better a plain "not now" than forty-five seconds of a spinner on the
       // other phone. The tile on THIS device already explains the mismatch.
-      this.settled.add(invite.sessionId);
-      trySend(handle.session, MessageType.GAME_DECLINE, { s: invite.sessionId });
+      this.settle(invite.inviteId);
+      trySend(handle.session, MessageType.GAME_DECLINE, { s: invite.sessionId, i: invite.inviteId });
       return;
     }
 
@@ -191,24 +248,37 @@ class GameInviteCentre {
     if (!createGameRow(this.client, invite.sessionId, entry.definition, invite.seed, invite.players, host)) return;
 
     this.prune();
-    this.invites.set(invite.sessionId, {
+    this.invites.set(invite.inviteId, {
+      inviteId: invite.inviteId,
       sessionId: invite.sessionId,
-      peerKey,
+      peerKey: handle.key,
       peerId: handle.session.peerId,
       peerName: handle.session.capabilities?.displayName ?? '',
       gameId: invite.gameId,
       gameName: entry.definition.name,
       isHost: host === me,
       receivedAt: Date.now(),
+      expiresAt: Date.now() + INVITE_LIFETIME_MS,
     });
     this.publish();
   }
 
+  private settle(inviteId: string): void {
+    this.settled.add(inviteId);
+    this.invites.delete(inviteId);
+    while (this.settled.size > SETTLED_MEMORY) {
+      const oldest = this.settled.values().next().value;
+      if (oldest === undefined) break;
+      this.settled.delete(oldest);
+      this.acknowledged.delete(oldest);
+    }
+  }
+
   /** Drop invitations the other phone has already given up on. */
   private prune(): void {
-    const cutoff = Date.now() - INVITE_LIFETIME_MS;
+    const now = Date.now();
     for (const [id, record] of this.invites) {
-      if (record.receivedAt < cutoff) this.invites.delete(id);
+      if (record.expiresAt <= now) this.invites.delete(id);
     }
   }
 
@@ -219,6 +289,7 @@ class GameInviteCentre {
 }
 
 export type { GameInviteCentre };
+export { decodeAck };
 
 /**
  * One centre per client, for the client's lifetime.
@@ -260,5 +331,5 @@ export function useGameInvites(): readonly GameInviteRecord[] {
  */
 export function useNextInvite(): GameInviteRecord | null {
   const invites = useGameInvites();
-  return invites.find((record) => Date.now() - record.receivedAt < INVITE_LIFETIME_MS) ?? null;
+  return invites.find((record) => record.expiresAt > Date.now()) ?? null;
 }

@@ -172,10 +172,21 @@ jest.mock('@airlink/native-transport', () => {
       }),
       start: async () => undefined,
       stop: async () => undefined,
-      startAdvertising: async () => undefined,
-      stopAdvertising: async () => undefined,
-      startDiscovery: async () => undefined,
-      stopDiscovery: async () => undefined,
+      // Recorded, because "did the app actually stop being findable?" is a
+      // question tests need to ask. Reporting a radio as unavailable while
+      // still advertising leaves the peer seeing a device that says it is gone.
+      startAdvertising: async (kind) => {
+        calls.push({ name: 'startAdvertising', kind });
+      },
+      stopAdvertising: async (kind) => {
+        calls.push({ name: 'stopAdvertising', kind });
+      },
+      startDiscovery: async (kind) => {
+        calls.push({ name: 'startDiscovery', kind });
+      },
+      stopDiscovery: async (kind) => {
+        calls.push({ name: 'stopDiscovery', kind });
+      },
       connect: async () => {
         // No radio, so no link. Rejecting is the honest answer, and the app has
         // to survive it - which is what the failure-path test checks.

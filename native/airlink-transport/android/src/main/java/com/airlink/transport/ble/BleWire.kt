@@ -177,6 +177,9 @@ internal object BleWire {
     private const val IDENTITY_VERSION: Byte = 1
 
     private const val IDENTITY_FLAG_HAS_PSM: Int = 1 shl 0
+    private const val IDENTITY_FLAG_HAS_DISCOVERY_ID: Int = 1 shl 1
+    /** Exactly sixteen; anything else is not a discovery id and is refused. */
+    const val DISCOVERY_ID_CHARS: Int = 16
 
     /** version + flags + PSM(2) + token length. */
     private const val IDENTITY_HEADER_BYTES: Int = 5
@@ -224,10 +227,15 @@ internal object BleWire {
      * display name and the L2CAP PSM.
      *
      *      0        1        2        3        4                  5 + tokLen
-     *      +--------+--------+--------+--------+--------+=========+=========+
-     *      | version| flags  |    L2CAP PSM    | tokLen |  token  |  name   |
-     *      +--------+--------+--------+--------+--------+=========+=========+
+     *      +--------+--------+--------+--------+--------+=========+=====+====+
+     *      | version| flags  |    L2CAP PSM    | tokLen |  token  | id  |name|
+     *      +--------+--------+--------+--------+--------+=========+=====+====+
      *                        |<-- big-endian ->|
+     *
+     * The discovery id sits between the token and the name, length-prefixed and
+     * present only when flag bit 1 is set, so a phone running an older build
+     * decodes everything it knew about and simply does not see the new field.
+     * Two people on a plane cannot both update.
      *
      * WHY THE PSM IS HERE. An L2CAP connection-oriented channel needs a PSM,
      * the PSM is assigned dynamically by the stack at listen time, and BLE has
@@ -236,28 +244,49 @@ internal object BleWire {
      * upgrade that works iPhone-to-Android. A peer that publishes no PSM, or a
      * record we cannot parse, simply means no upgrade - GATT carries on.
      */
-    class IdentityRecord(val psm: Int, val token: ByteArray, val name: String) {
+    class IdentityRecord(
+        val psm: Int,
+        val token: ByteArray,
+        val name: String,
+        /** See `DiscoveredEndpoint.discoveryId`, or "" when the peer sent none. */
+        val discoveryId: String = "",
+    ) {
         companion object {
             val EMPTY = IdentityRecord(0, ByteArray(0), "")
         }
     }
 
-    fun encodeIdentity(psm: Int, token: ByteArray, name: String): ByteArray {
+    fun encodeIdentity(psm: Int, token: ByteArray, name: String, discoveryId: String = ""): ByteArray {
         // A token we cannot express is dropped rather than truncated: half a
         // token is not a shorter token, it is a token that matches the wrong
         // person. The protocol's is six bytes, so this never fires in practice.
         val safeToken = if (token.size > MAX_IDENTITY_TOKEN_BYTES) ByteArray(0) else token
-        val used = IDENTITY_HEADER_BYTES + safeToken.size
+        // Only a well-formed id is published. Something that can never match is
+        // worse than nothing at all: it looks like a working filter.
+        val idBytes =
+            if (discoveryId.length == DISCOVERY_ID_CHARS) discoveryId.toByteArray(Charsets.US_ASCII) else ByteArray(0)
+        val idBlock = if (idBytes.isEmpty()) 0 else 1 + idBytes.size
+        val used = IDENTITY_HEADER_BYTES + safeToken.size + idBlock
         val nameBytes = trimUtf8(name, minOf(MAX_NAME_BYTES, MAX_IDENTITY_BYTES - used))
+
+        var flags = if (psm in 1..0xFFFF) IDENTITY_FLAG_HAS_PSM else 0
+        if (idBytes.isNotEmpty()) flags = flags or IDENTITY_FLAG_HAS_DISCOVERY_ID
 
         val out = ByteArray(used + nameBytes.size)
         out[0] = IDENTITY_VERSION
-        out[1] = if (psm in 1..0xFFFF) IDENTITY_FLAG_HAS_PSM.toByte() else 0
+        out[1] = flags.toByte()
         out[2] = ((psm ushr 8) and 0xFF).toByte()
         out[3] = (psm and 0xFF).toByte()
         out[4] = safeToken.size.toByte()
         safeToken.copyInto(out, IDENTITY_HEADER_BYTES)
-        nameBytes.copyInto(out, used)
+        var cursor = IDENTITY_HEADER_BYTES + safeToken.size
+        if (idBytes.isNotEmpty()) {
+            out[cursor] = idBytes.size.toByte()
+            cursor += 1
+            idBytes.copyInto(out, cursor)
+            cursor += idBytes.size
+        }
+        nameBytes.copyInto(out, cursor)
         return out
     }
 
@@ -282,8 +311,20 @@ internal object BleWire {
             return IdentityRecord.EMPTY
         }
         val token = raw.copyOfRange(IDENTITY_HEADER_BYTES, IDENTITY_HEADER_BYTES + tokenLength)
-        val name = decodeName(raw, IDENTITY_HEADER_BYTES + tokenLength, raw.size)
-        return IdentityRecord(psm, token, name)
+        var cursor = IDENTITY_HEADER_BYTES + tokenLength
+
+        var discoveryId = ""
+        if (flags and IDENTITY_FLAG_HAS_DISCOVERY_ID != 0) {
+            if (cursor >= raw.size) return IdentityRecord.EMPTY
+            val idLength = raw[cursor].toInt() and 0xFF
+            cursor += 1
+            if (idLength != DISCOVERY_ID_CHARS || cursor + idLength > raw.size) return IdentityRecord.EMPTY
+            discoveryId = String(raw, cursor, idLength, Charsets.US_ASCII)
+            cursor += idLength
+        }
+
+        val name = decodeName(raw, cursor, raw.size)
+        return IdentityRecord(psm, token, name, discoveryId)
     }
 
     // -- L2CAP datagram framing -----------------------------------------------

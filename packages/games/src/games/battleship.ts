@@ -478,7 +478,13 @@ function decodeReveal(value: CborValue | undefined, what: string): FleetReveal {
 
 export const battleship: GameDefinition<BattleshipState, BattleshipAction> = {
   id: 'battleship',
-  name: 'Battleship',
+  /**
+   * "Battleship" is Hasbro's registered trademark for the board game, so the
+   * title shown to a user is our own. The `id` deliberately does NOT change:
+   * it travels in the capability exchange and is stored against saved games,
+   * so renaming it would stop this build talking to any already installed.
+   */
+  name: 'Fleet Hunt',
   protocolVersion: 1,
   mode: GameMode.TURN_BASED,
   minPlayers: 2,

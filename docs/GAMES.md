@@ -1,9 +1,46 @@
 # Games
 
-Twelve games, all real, all playable between two phones with no server.
+Twenty-eight games, all real, all playable between two phones with no server.
 
-Chess · Connect Four · Battleship · Tic-Tac-Toe · Draw & Guess · Pong ·
-Air Hockey · 8-Ball · Trivia · Word Duel · Darts · Reaction
+| Shelf | Games |
+|---|---|
+| **Quick** | Reaction · Tic-Tac-Toe · Rock Paper Scissors · Tap Race · Quick Math · Darts |
+| **Strategy** | Chess · Connect Four · Battleship · Gomoku · Reversi · Dots & Boxes |
+| **Words** | Word Duel · Word Chain |
+| **Trivia** | Trivia · Flag Duel · Capital Duel · Geography Duel |
+| **Puzzles** | Code Breaker · Memory Duel · Sliding Puzzle Race |
+| **Party** | Draw & Guess |
+| **Just the two of you** | Would You Rather · Most Likely To · This or That |
+| **Real-time** | Pong · Air Hockey · 8-Ball |
+
+---
+
+## 0. What the catalogue knows about the link
+
+AirLink's floor is Bluetooth between an iPhone and an Android: five to forty
+kilobytes a second, with tens of milliseconds of latency and jitter. Chess does
+not notice that. Pong is ruined by it. So every entry declares:
+
+```ts
+category            which shelf it belongs on
+latencySensitivity  NONE - played locally, only a result is exchanged
+                    LOW  - turn-based; a few hundred milliseconds is invisible
+                    HIGH - continuous; wants a fast, steady link
+bandwidth           TINY | LOW | HIGH
+typicalMinutes      so "we have twenty minutes" is answerable
+```
+
+On a slow link `gamesForLink(false)` puts the latency-sensitive games last and
+the Play tab marks them **Best over Wi-Fi**. Nothing is hidden — somebody who
+wants to try Air Hockey over Bluetooth is welcome to, and will be told what to
+expect first.
+
+The three games with `latencySensitivity: NONE` are worth understanding,
+because they are the shape that suits this app best: **Tap Race**, **Quick
+Math** and **Sliding Puzzle Race** each run entirely on their own phone and
+exchange only a result. Tap Race sends one number after twenty seconds. Latency
+cannot be felt because nothing is waiting on it, and — the part that matters —
+nobody can win because their radio was better.
 
 ---
 
@@ -57,6 +94,31 @@ interface GameDefinition<TState, TAction> {
 `validateAction` runs on **both** devices for **every** action, local and
 remote. Never trust a peer to have validated on their side. `applyAction` is
 only ever called with actions that already passed it.
+
+### Versioning, and what happens when a move goes missing
+
+Every action carries the `stateVersion` it expects to be applied on top of, and
+the runtime keeps per-player sequence numbers so an action is applied exactly
+once however often the link re-delivers it.
+
+A gap in those sequence numbers is not survivable on its own: the missing action
+is never coming, so every action after it is rejected as `OUT_OF_ORDER`, for
+ever, while the board still looks perfectly healthy. The repair is
+`snapshotEnvelope()` / `applySnapshotEnvelope()`, which carry **the board, the
+sequence vector, the version and the elapsed time together**. A snapshot that
+carried only the board — which is what it used to be — corrected the position
+and left the game just as dead.
+
+```
+guest cannot apply an action  ->  GAME_SYNC_REQUEST
+host                          ->  GAME_STATE { state, seq, version, elapsedMs }
+guest adopts all four         ->  plays on
+```
+
+Host versions only ever compare with other host versions. A guest whose own
+moves never reached the host has applied *more* actions than the host has, so it
+is ahead by count and wrong about the board at the same time — which is exactly
+the device that most needs the repair.
 
 `decodeAction` receives bytes from an unauthenticated peer: validate every
 field with the `asInt` / `asString` / `asArray` helpers, bound every array, and

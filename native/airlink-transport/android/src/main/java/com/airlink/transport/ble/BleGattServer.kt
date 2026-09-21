@@ -87,6 +87,14 @@ internal class BleGattServer(
 
     /** The bytes served from the identity characteristic. Rebuilt when anything in it changes. */
     private var identityValue: ByteArray = BleWire.encodeIdentity(0, ByteArray(0), "")
+    /**
+     * See `DiscoveredEndpoint.discoveryId`.
+     *
+     * It travels in the identity characteristic rather than the advertisement
+     * for the same reason the token does on iOS: there is no room. Thirty-one
+     * bytes have to carry a 128-bit service UUID before anything else.
+     */
+    private var discoveryId: String = ""
 
     private val peers = LinkedHashMap<String, ServerPeer>()
 
@@ -255,7 +263,7 @@ internal class BleGattServer(
      *   no permission, radio off, hardware that has no advertiser, or a token
      *   and name that will not fit in the 31 bytes a scan response has.
      */
-    fun startAdvertising(token: ByteArray, displayName: String) {
+    fun startAdvertising(token: ByteArray, displayName: String, discoveryId: String) {
         val ids = uuids ?: throw BleErrors.notStarted()
         if (!availability.isRadioOn) throw BleErrors.radioOff()
         if (!availability.canAdvertisePermission) throw BleErrors.permissionDenied()
@@ -272,6 +280,7 @@ internal class BleGattServer(
         }
 
         this.token = advertised
+        this.discoveryId = discoveryId
         // The name is NOT part of the advertisement - there is no room for it
         // next to a 128-bit service UUID, and Android cannot broadcast an
         // arbitrary one anyway. It is served from the identity characteristic,
@@ -502,7 +511,7 @@ internal class BleGattServer(
     }
 
     private fun rebuildIdentityValue() {
-        identityValue = BleWire.encodeIdentity(l2capListener.psm, token, displayName)
+        identityValue = BleWire.encodeIdentity(l2capListener.psm, token, displayName, discoveryId)
     }
 
     // -- peers ----------------------------------------------------------------

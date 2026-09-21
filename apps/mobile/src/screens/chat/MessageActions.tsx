@@ -31,6 +31,7 @@ export function MessageActions({
   onReact,
   onCopy,
   onDelete,
+  onReport,
   onClose,
 }: {
   message: Message | null;
@@ -40,6 +41,11 @@ export function MessageActions({
   onReact: (message: Message, emoji: string) => void;
   onCopy: (message: Message) => void;
   onDelete: (message: Message) => void;
+  /**
+   * Absent for your own messages: reporting yourself is not a thing, and an
+   * inert row would be the reviewer's first tap.
+   */
+  onReport?: (message: Message) => void;
   onClose: () => void;
 }): React.JSX.Element {
   const theme = useTheme();
@@ -128,6 +134,20 @@ export function MessageActions({
                 />
                 <Divider />
                 <ActionRow title={strings.chat.deleteForMe} destructive onPress={() => onDelete(message)} />
+                {/* Reachable from the offending message in one long press.
+                    Blocking used to live three screens away under You →
+                    Friends, and only worked on an accepted friend - which is
+                    never who you want to block. */}
+                {onReport && message ? (
+                  <>
+                    <Divider />
+                    <ActionRow
+                      title={strings.chat.report}
+                      destructive
+                      onPress={() => onReport(message)}
+                    />
+                  </>
+                ) : null}
               </View>
 
               <View style={{ marginTop: theme.spacing.md }}>

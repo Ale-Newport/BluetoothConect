@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Pressable, View } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { strings } from '@airlink/config';
+import { areaColor, strings } from '@airlink/config';
 import { Avatar, Card, Gap, Label, Screen, SectionHeading, haptic, useTheme } from '../../ui/index.js';
 import { useClient } from '../../client/ClientProvider.js';
 import { selectDeveloperMode, selectProfile, useAppStore } from '../../state/index.js';
@@ -88,11 +88,24 @@ export function YouScreen(): React.JSX.Element {
     }
   }, [client, developerMode]);
 
+  /** The tab's hue, and the ground it is allowed to sit on. */
+  const youHue = areaColor(theme.colors, 'You');
+
   return (
     <Screen scroll>
       <Gap size="xxl" />
 
-      <Card onPress={() => navigation.navigate('Settings')}>
+      {/*
+        The profile card is the one surface on this tab that is tinted rather
+        than white, because it is the one thing on the screen that is about this
+        person rather than about a setting. The tint is the muted partner, so
+        every word on it keeps the full-strength text colour and none of the
+        contrast the plain card had is given up.
+      */}
+      <Card
+        onPress={() => navigation.navigate('Settings')}
+        style={{ backgroundColor: theme.colors.areaYouMuted, borderColor: youHue }}
+      >
         <View style={{ alignItems: 'center' }}>
           <Avatar name={displayName} peerId={peerId} color={avatarColor} size={84} />
           <Gap size="md" />
@@ -115,7 +128,7 @@ export function YouScreen(): React.JSX.Element {
       </Label>
 
       <Gap size="xl" />
-      <SectionHeading>{local.you.peopleSection}</SectionHeading>
+      <SectionHeading hue={youHue}>{local.you.peopleSection}</SectionHeading>
       <Group>
         <NavRow
           title={strings.profile.friends}
@@ -136,14 +149,14 @@ export function YouScreen(): React.JSX.Element {
       </Group>
 
       <Gap size="xl" />
-      <SectionHeading>{local.you.privacySection}</SectionHeading>
+      <SectionHeading hue={youHue}>{local.you.privacySection}</SectionHeading>
       <Group>
         <NavRow title={strings.profile.privacy} right={<Chevron />} onPress={() => setPrivacyOpen(true)} />
         <NavRow title={strings.profile.security} right={<Chevron />} onPress={() => setSecurityOpen(true)} />
       </Group>
 
       <Gap size="xl" />
-      <SectionHeading>{local.you.aboutSection}</SectionHeading>
+      <SectionHeading hue={youHue}>{local.you.aboutSection}</SectionHeading>
       <Group>
         <NavRow title={local.you.settings} right={<Chevron />} onPress={() => navigation.navigate('Settings')} />
         {developerMode ? (

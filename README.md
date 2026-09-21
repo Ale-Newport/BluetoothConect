@@ -23,7 +23,7 @@ not as a fallback, not for sign-in, not for anything.
 | | |
 |---|---|
 | 💬 **Chat** | Text, emoji, replies, reactions, receipts, typing — persisted locally |
-| 🎮 **Play** | 12 real multiplayer games, turn-based and realtime |
+| 🎮 **Play** | 28 real multiplayer games, shelved by what they are and by what the link can carry |
 | 📤 **Share** | Chunked, resumable, verified file transfer with a real ETA |
 | 🎬 **Sync** | Watch the same local video in step, to within tens of milliseconds |
 | 🔒 **Private** | End-to-end encrypted, no account, nothing leaves the device |
@@ -61,7 +61,7 @@ Details and sources: [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md).
 # Requires Node 22+, pnpm, Xcode 26+ for iOS, JDK 17 + Android SDK for Android
 pnpm install
 
-pnpm test            # ~1150 tests, no phone required
+pnpm test            # ~1500 tests, no phone required
 pnpm typecheck
 ```
 
@@ -146,6 +146,10 @@ composed into a **SIGMA-I** authenticated key exchange.
 
 - Long-term **Ed25519** identity, generated on device. Nothing derived from
   hardware — no MAC address, no advertising id, no phone number.
+- A **per-run discovery id** in every advertisement, so a device recognises its
+  own broadcast exactly rather than guessing from a rotating token, and one
+  phone seen over two radios is known to be one phone. Fresh on every launch,
+  so it links nothing across time.
 - **X25519** ephemeral exchange, then each side signs the handshake transcript
   inside the resulting encrypted channel: mutual authentication, forward secrecy
   and identity hiding.
@@ -164,9 +168,16 @@ rather than hidden.
 
 ## Games
 
-Chess (full rules — castling, en passant, promotion, fifty-move, repetition,
-insufficient material) · Connect Four · Battleship · Tic-Tac-Toe · Draw & Guess ·
-Pong · Air Hockey · 8-Ball · Trivia · Word Duel · Darts · Reaction
+**Strategy** Chess (full rules — castling, en passant, promotion, fifty-move,
+repetition, insufficient material) · Connect Four · Battleship · Gomoku ·
+Reversi · Dots & Boxes
+**Quick** Reaction · Tic-Tac-Toe · Rock Paper Scissors · Tap Race · Quick Math · Darts
+**Words** Word Duel · Word Chain
+**Trivia** General Trivia · Flag Duel · Capital Duel · Geography Duel
+**Puzzles** Code Breaker · Memory Duel · Sliding Puzzle Race
+**Party** Draw & Guess
+**Just the two of you** Would You Rather · Most Likely To · This or That
+**Real-time** Pong · Air Hockey · 8-Ball
 
 A game is a **deterministic reducer**: same start, same actions, same result on
 both devices. Turn-based games send only moves; realtime games run an
@@ -174,9 +185,16 @@ authoritative host with interpolated snapshots. Every one of them passes a
 shared conformance suite that checks determinism, purity, wire round-tripping,
 resistance to a cheating peer, and termination — across dozens of seeds.
 
+**The catalogue knows what the link can carry.** A game of chess does not notice
+forty milliseconds of Bluetooth jitter; a game of Pong is ruined by it. So each
+game declares its latency sensitivity, and on a slow link the ones that will
+feel good come first while the ones that will not are marked *Best over Wi-Fi* —
+reordered and labelled, never hidden.
+
 Battleship is worth a look: since both devices run the same reducer, a fleet
 cannot simply be kept in shared state, so it uses commit-reveal with cheat
-detection at the end. [`docs/GAMES.md`](docs/GAMES.md).
+detection at the end. Rock Paper Scissors uses the same idea for the same
+reason. [`docs/GAMES.md`](docs/GAMES.md).
 
 ---
 
@@ -192,6 +210,7 @@ detection at the end. [`docs/GAMES.md`](docs/GAMES.md).
 | [GAMES.md](docs/GAMES.md) | Writing a game against the contract |
 | [FILE_TRANSFER.md](docs/FILE_TRANSFER.md) · [SYNC.md](docs/SYNC.md) | The two hardest features |
 | [TESTING.md](docs/TESTING.md) | How to test a P2P app without two phones |
+| [APP_STORE.md](docs/APP_STORE.md) | Shipping it: submission, export compliance, and the two guidelines most likely to reject a P2P app |
 | [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) | The plan, and what is done |
 
 ---

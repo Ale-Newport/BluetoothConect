@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AirLink — Support</title>
+<meta name="description" content="Help and contact details for AirLink, the offline peer-to-peer app for two phones.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <p class="wordmark">AirLink</p>
+  <h1>Support</h1>
+  <p class="lede">Two phones, no internet. If something is not working, the answer is almost certainly on this page.</p>
+  <nav class="pages">
+    <a href="index.html" aria-current="page">Support</a>
+    <a href="privacy.html">Privacy Policy</a>
+  </nav>
+</header>
+
+<main>
+
+  <!-- OWNER EDIT 1 of 3 on this page: replace the support address below. It must
+       match `supportEmail` in packages/config/src/brand.ts, because the in-app
+       "Email the developer" button uses that value and stays hidden while it is
+       still the example.invalid placeholder. Delete the .edit-note paragraph
+       once every placeholder on this page is gone. -->
+  <p class="edit-note">
+    <strong>Before publishing:</strong> replace every <span class="edit-me">EDIT ME</span> marker on this page
+    and on the privacy policy, then delete this box. See <code>README.md</code> for the full list.
+  </p>
+
+  <h2>What AirLink is</h2>
+
+  <p>
+    AirLink connects two phones <strong>directly to each other</strong> over Bluetooth and,
+    when both are on the same Wi-Fi network, over that network as well. There is no server
+    in the middle and no account to create. It works in airplane mode, on a plane, in a
+    tunnel, in a field — anywhere the two phones are close enough to hear each other.
+  </p>
+
+  <p>Once two phones are connected you can:</p>
+
+  <ul>
+    <li><strong>Chat</strong> — text, emoji, replies, reactions, photos and voice messages.</li>
+    <li><strong>Play</strong> — around 28 two-player games, from chess to air hockey.</li>
+    <li><strong>Share</strong> — send a file of any kind, with a real progress bar that survives a reconnect.</li>
+    <li><strong>Watch together</strong> — play the same video on both phones, in step.</li>
+  </ul>
+
+  <div class="callout">
+    <p>
+      <strong>AirLink needs two devices. With one phone there is nothing to see.</strong>
+      The home screen will honestly say that nobody is nearby, because nobody is. That is
+      the app working correctly, not a fault. Everything in AirLink happens between two
+      phones that have found each other.
+    </p>
+  </div>
+
+  <h2>Connecting two phones for the first time</h2>
+
+  <ol class="steps">
+    <li>Open AirLink on <strong>both</strong> phones and keep both apps on screen while you connect.</li>
+    <li>Allow <strong>Bluetooth</strong> when iOS asks. If both phones are on the same Wi-Fi, allow <strong>Local Network</strong> too — that is what makes photos and files fast.</li>
+    <li>Wait a few seconds. Each phone lists the other under <strong>Other devices</strong>.</li>
+    <li>On one phone, tap <strong>Connect</strong> next to the other phone's name.</li>
+    <li>Both phones now show the <strong>same six digits</strong>. Compare them out loud, and confirm on <em>both</em> phones only if they match.</li>
+    <li>That is it. You are now friends, and the two phones recognise each other automatically from then on — no code, no confirmation, and nothing to sign in to.</li>
+  </ol>
+
+  <p>
+    You can also skip the six digits by scanning a QR code: on one phone go to
+    <strong>You → Show my QR code</strong>, and on the other <strong>You → Scan a friend</strong>.
+  </p>
+
+  <div class="card">
+    <h3>Why the six digits matter</h3>
+    <p>
+      The digits are calculated from the encrypted handshake itself. If somebody were
+      sitting between the two phones relaying the conversation, the two phones would
+      necessarily compute <em>different</em> codes. Matching digits are proof you are talking
+      to the phone you think you are. If the codes differ, cancel and try again somewhere else.
+    </p>
+  </div>
+
+  <h2>Troubleshooting</h2>
+
+  <div class="card">
+    <h3>1. AirLink says Bluetooth permission is off</h3>
+    <p>
+      This is a permission you declined, not a switch you forgot. Open the iPhone
+      <strong>Settings</strong> app → scroll to <strong>AirLink</strong> → turn <strong>Bluetooth</strong> on.
+      (The banner inside AirLink distinguishes this from Bluetooth actually being switched
+      off in Control Centre, and from a device with no Bluetooth radio at all, so read which
+      of the three it says.)
+    </p>
+    <p>
+      Without Bluetooth, AirLink can still find friends on the same Wi-Fi network — but it
+      cannot work with no network at all, which is the whole point of the app.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>2. The two phones are not on the same Wi-Fi</h3>
+    <p>
+      Wi-Fi is optional but it is far faster, so it is worth getting right. Both phones must
+      be on the <strong>same network</strong> — not one on Wi-Fi and one on mobile data, and not
+      two different networks in the same building. Guest networks and some hotel and
+      office networks block devices from seeing each other entirely; if that is what you are
+      on, turn Wi-Fi off on both phones and let AirLink use Bluetooth.
+    </p>
+    <p>
+      Both phones must also have allowed <strong>Local Network</strong> access for AirLink
+      (Settings → AirLink → Local Network). If you declined it once, iOS never asks again —
+      you have to turn it on there yourself.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>3. One phone is on an older version of AirLink</h3>
+    <p>
+      Two phones running versions that do not speak the same protocol will simply not list
+      each other. AirLink hides a device it cannot talk to rather than offering you a
+      connection that would fail halfway through, so an old build looks exactly like no
+      device at all.
+    </p>
+    <p>
+      Update AirLink from the App Store on <strong>both</strong> phones, force-quit the app on
+      both (swipe up from the bottom and flick the card away), and reopen it.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>4. The two phones still cannot see each other</h3>
+    <p>Work through these in order — the first two fix most cases:</p>
+    <ul>
+      <li><strong>Keep AirLink on screen on both phones.</strong> iOS heavily restricts what an app in the background may broadcast, and a locked phone is much harder for the other one to find.</li>
+      <li><strong>Get closer.</strong> Bluetooth is a few metres through open air and much less through a bag, a pocket, a wall or a body.</li>
+      <li><strong>Switch Bluetooth off and on again</strong> in Settings on both phones. The iOS Bluetooth stack occasionally gets stuck; this clears it.</li>
+      <li><strong>Force-quit and reopen AirLink</strong> on both phones.</li>
+      <li><strong>Check you have not blocked each other.</strong> A blocked device is never shown. Look under <strong>You → Friends</strong> and tap <strong>Unblock</strong> if the name is there.</li>
+      <li><strong>Restart both phones.</strong> Rarely needed, but it is the last thing that fixes a wedged radio.</li>
+    </ul>
+    <p class="meta">
+      Airplane mode is fine, as long as Bluetooth is switched back on afterwards — iOS
+      remembers Bluetooth separately once you turn it on inside airplane mode.
+    </p>
+  </div>
+
+  <h2>Photos, voice messages and notifications</h2>
+
+  <div class="card chat">
+    <p>
+      Photos are picked from your photo library, and voice messages are recorded with the
+      microphone control in the chat. iOS asks for <strong>Photos</strong> and
+      <strong>Microphone</strong> access the first time you use each, and AirLink asks for
+      each only at that moment — not on first launch.
+    </p>
+    <p>
+      Both travel over the same direct link as your text messages. Over Bluetooth alone a
+      photo can take minutes; AirLink shows an honest estimate rather than a spinner. If you
+      can get both phones onto the same Wi-Fi, it takes seconds instead.
+    </p>
+    <p>
+      If you allow <strong>Notifications</strong>, AirLink can tell you about a new message or
+      a game invitation while you are in another part of the app or another app entirely.
+      These are created by your own phone from something the other phone just sent you over
+      the direct link — there is no push service and no server involved, so nothing about
+      your messages passes through anyone else's computer. Unread items are also marked with
+      a badge on the tab bar inside the app, whether or not you allow notifications.
+    </p>
+  </div>
+
+  <h2>Blocking and reporting someone</h2>
+
+  <div class="card">
+    <p>
+      <strong>Press and hold any message from the other person → Report and block.</strong> That blocks the person,
+      drops the connection immediately, and deletes the conversation from your phone. They
+      cannot connect to you or be connected to again unless you unblock them under
+      <strong>You → Friends</strong>.
+    </p>
+    <p>
+      You can also block a device directly from <strong>You → Friends → Block device</strong>.
+    </p>
+    <p>
+      We want to be straight with you about what reporting can and cannot do here. Messages
+      in AirLink travel directly between two phones and never reach us — there is no server,
+      so we never had a copy of anything and there is nothing for us to review, take down or
+      pass to anyone. What blocking does is the part that actually protects you: it ends the
+      connection and prevents another one. If you want to tell us what happened anyway,
+      please write to the address below.
+    </p>
+  </div>
+
+  <h2>Deleting your data</h2>
+
+  <p>
+    Everything AirLink knows lives on your phone: your messages, the files you have sent and
+    received, your friends list and your keys. <strong>You → Settings → Clear all history</strong> erases
+    conversations, and deleting the app removes all of it. There is no account to close,
+    because there was never an account.
+  </p>
+
+  <h2>Contact</h2>
+
+  <!-- OWNER EDIT 2 of 3 on this page. -->
+  <p>
+    Questions, bug reports, or anything this page does not answer:
+    <a href="mailto:support@example.invalid"><span class="edit-me">EDIT ME — support@example.invalid</span></a>
+  </p>
+
+  <p class="meta">
+    One person maintains AirLink, so a reply can take a few days. Telling us which iPhone
+    model and iOS version both phones are running, and what you had already tried, makes a
+    useful answer much more likely.
+  </p>
+
+</main>
+
+<footer>
+  <!-- OWNER EDIT 3 of 3 on this page: the copyright name. -->
+  <p>
+    AirLink — together, even when you're offline.
+    <a href="privacy.html">Privacy Policy</a>
+  </p>
+  <p>Last updated 20 September 2026. © 2026 <span class="edit-me">EDIT ME — your name</span>.</p>
+</footer>
+
+</body>
+</html>

@@ -147,7 +147,7 @@ Karn's algorithm: a retransmitted packet yields no RTT sample.
 | `0x01–0x08` | control: PING, PONG, ACK, ERROR, BYE, CLOCK_SYNC_REQUEST/RESPONSE, KEEPALIVE |
 | `0x10–0x14` | session: HELLO, HELLO_ACK, CAPABILITIES, PRESENCE, PROFILE_UPDATE |
 | `0x20–0x27` | messaging: MESSAGE, TYPING, DELIVERY_RECEIPT, READ_RECEIPT, REACTION, MESSAGE_DELETE, history |
-| `0x30–0x38` | games: GAME_INVITE/ACCEPT/DECLINE/STATE/EVENT/END/SYNC_REQUEST/INPUT/LEAVE |
+| `0x30–0x3e` | games: GAME_INVITE/ACCEPT/DECLINE/STATE/EVENT/END/SYNC_REQUEST/INPUT/LEAVE, then INVITE_ACK, RESPONSE_ACK, READY, START, REMATCH_REQUEST/ACCEPT |
 | `0x40–0x48` | files: FILE_OFFER/ACCEPT/DECLINE/CHUNK/CHUNK_ACK/COMPLETE/CANCEL/RESUME/ERROR |
 | `0x50–0x5a` | sync: SYNC_CREATE/JOIN/LEAVE/PLAY/PAUSE/SEEK/RATE/HEARTBEAT/CONTENT_QUERY/REPLY/END |
 | `0x60–0x66` | groups: GROUP_CREATE/UPDATE/MEMBER_JOIN/MEMBER_LEAVE/RELAY/STATE_REQUEST/RESPONSE |
@@ -156,6 +156,36 @@ Karn's algorithm: a retransmitted packet yields no RTT sample.
 **An unknown message type is ignored, not an error.** That single rule is what
 lets a newer build talk to an older one: v2 can send message types v1 has never
 heard of, and v1 carries on with the conversation.
+
+### 4.1 An invitation is acknowledged before it is answered
+
+`GAME_INVITE` carries an `inviteId` of its own, distinct from the game session
+it would create, and the receiving device sends `GAME_INVITE_ACK` **the moment
+it decodes one** — before a human has looked at it, and again on every repeat.
+
+That receipt is not a nicety. Without it the asking phone could not tell "never
+arrived" from "not answered yet", so it said *"Waiting for your friend…"* for
+forty-five seconds in both cases and then claimed there had been no answer —
+including in the case where the invitation had been delivered to a device that
+had nothing listening for it at all. With it, the screen can say *Sending*, then
+*Delivered*, then *Waiting for Maria*, and each of those is true.
+
+The invite id is what makes a repeat safe. The asking phone retries on a bounded
+exponential backoff until the acknowledgement arrives; the answering phone keys
+everything on the id, so twenty copies of one invitation produce one question,
+one row, and twenty acknowledgements.
+
+### 4.2 Actions carry the version they expect
+
+`GAME_EVENT` carries `n`, the `stateVersion` the action expects to be applied on
+top of, and `GAME_STATE` carries the whole envelope: the board, the per-player
+sequence vector, the version and the elapsed time.
+
+The sequence vector is the part that was missing. Per-player sequence numbers
+give an action exactly-once semantics, and a gap in them is not survivable on
+its own — the missing action is never coming, so every action after it is
+rejected for ever while the board still looks healthy. A snapshot that carried
+only the board corrected the position and left the game just as dead.
 
 ---
 

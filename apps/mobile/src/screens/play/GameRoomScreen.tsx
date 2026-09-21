@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ActivityIndicator, View } from 'react-native';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { GameStatusKind, findGame } from '@airlink/games';
@@ -16,7 +15,8 @@ import {
   useTheme,
 } from '../../ui/index.js';
 import type { RootStackParams } from '../../navigation/routes.js';
-import { FaceOff, LiveDot, MIN_TARGET } from './boardKit.js';
+import { FaceOff } from './boardKit.js';
+import { GameShell } from './GameShell.js';
 import { playText } from './strings.js';
 import { RoomPhase, useGameRoom, type GameRoomView } from './useGameRoom.js';
 import { rendererFor } from './games/index.js';
@@ -47,10 +47,8 @@ const PREPARE_LIMIT_MS = 8000;
 
 export function GameRoomScreen(): React.JSX.Element {
   const theme = useTheme();
-  const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
   const { params } = useRoute<RouteProp<RootStackParams, 'GameRoom'>>();
-  const { width } = useWindowDimensions();
 
   const room = useGameRoom(params);
   const entry = room.entry ?? findGame(params.gameId) ?? null;
@@ -101,137 +99,85 @@ export function GameRoomScreen(): React.JSX.Element {
     [navigation, params.gameId, params.peerKey],
   );
 
-  const boardWidth = width - theme.spacing.lg * 2;
+  const rematchBanner = room.incomingRematch ? (
+    <>
+      <Card>
+        <Label variant="headline">{playText.room.rematchAsked(room.opponentName)}</Label>
+        <Gap size="md" />
+        <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
+          <Button
+            title={strings.play.accept}
+            style={{ flex: 1 }}
+            onPress={() => goToRematch(room.acceptRematch())}
+          />
+          <Button
+            title={strings.play.decline}
+            variant="secondary"
+            style={{ flex: 1 }}
+            onPress={room.declineRematch}
+          />
+        </View>
+      </Card>
+      <Gap size="md" />
+    </>
+  ) : null;
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.background, paddingTop: insets.top }}>
-      <Header
-        title={entry?.definition.name ?? strings.play.title}
-        subtitle={room.opponentName}
-        live={room.live}
-        onLeave={leave}
-      />
-
-      <ScrollView
-        contentContainerStyle={{
-          paddingHorizontal: theme.spacing.lg,
-          paddingBottom: insets.bottom + theme.spacing.xxl,
-        }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        {room.live ? null : (
-          <>
-            <StatusBanner
-              tone="connecting"
-              title={strings.connection.reconnecting}
-              detail={playText.room.reconnectingDetail}
-            />
-            <Gap size="md" />
-          </>
-        )}
-
-        {room.incomingRematch ? (
-          <>
-            <Card>
-              <Label variant="headline">{playText.room.rematchAsked(room.opponentName)}</Label>
-              <Gap size="md" />
-              <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
-                <Button
-                  title={strings.play.accept}
-                  style={{ flex: 1 }}
-                  onPress={() => goToRematch(room.acceptRematch())}
-                />
-                <Button
-                  title={strings.play.decline}
-                  variant="secondary"
-                  style={{ flex: 1 }}
-                  onPress={room.declineRematch}
-                />
-              </View>
-            </Card>
-            <Gap size="md" />
-          </>
-        ) : null}
-
-        <Body room={room} width={boardWidth} onLeave={leave} onRematch={() => goToRematch(room.requestRematch())} />
-      </ScrollView>
-    </View>
+    <GameShell
+      title={entry?.definition.name ?? strings.play.title}
+      opponentName={room.opponentName}
+      live={room.live}
+      turnLine={turnLineFor(room)}
+      onExit={leave}
+      banner={rematchBanner}
+    >
+      {(box) => (
+        <Body
+          room={room}
+          width={box.width}
+          height={box.height}
+          onLeave={leave}
+          onRematch={() => goToRematch(room.requestRematch())}
+        />
+      )}
+    </GameShell>
   );
+}
+
+/**
+ * Whose move it is, in the words a player uses.
+ *
+ * Null while the game is not being played, so the line does not claim a turn
+ * during an invitation or after a result.
+ */
+function turnLineFor(room: GameRoomView): string | null {
+  if (room.phase !== RoomPhase.PLAYING || room.turn === null) return null;
+  return room.turn === room.local ? strings.play.yourTurn : strings.play.theirTurn(room.opponentName);
 }
 
 // ---------------------------------------------------------------------------
 
-function Header({
-  title,
-  subtitle,
-  live,
-  onLeave,
-}: {
-  title: string;
-  subtitle: string;
-  live: boolean;
-  onLeave: () => void;
-}): React.JSX.Element {
-  const theme = useTheme();
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: theme.spacing.md,
-        paddingHorizontal: theme.spacing.lg,
-        paddingVertical: theme.spacing.sm,
-      }}
-    >
-      <View style={{ flex: 1 }}>
-        <Label variant="headline" numberOfLines={1}>
-          {title}
-        </Label>
-        {subtitle ? (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs }}>
-            <LiveDot live={live} />
-            <Label variant="footnote" tone="secondary" numberOfLines={1}>
-              {subtitle}
-            </Label>
-          </View>
-        ) : null}
-      </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={strings.play.leaveGame}
-        onPress={onLeave}
-        hitSlop={theme.spacing.md}
-        style={({ pressed }) => [
-          {
-            minHeight: MIN_TARGET,
-            justifyContent: 'center',
-            paddingHorizontal: theme.spacing.md,
-          },
-          pressed ? { opacity: 0.6 } : null,
-        ]}
-      >
-        <Label variant="footnote" tone="accent">
-          {playText.room.leaveConfirm}
-        </Label>
-      </Pressable>
-    </View>
-  );
-}
-
 function Body({
   room,
   width,
+  height,
   onLeave,
   onRematch,
 }: {
   room: GameRoomView;
+  /** The exact box the shell has left for the board. Never exceeded. */
   width: number;
+  height: number;
   onLeave: () => void;
   onRematch: () => void;
 }): React.JSX.Element {
   const theme = useTheme();
   const [preparingTooLong, setPreparingTooLong] = useState(false);
+  /** What the board is actually left with once the result card has its share. */
+  const [boardHeight, setBoardHeight] = useState<number | null>(null);
+  const onBoardBox = useCallback((next: number) => {
+    setBoardHeight((held) => (held !== null && Math.abs(held - next) < 1 ? held : next));
+  }, []);
 
   useEffect(() => {
     if (room.phase !== RoomPhase.PREPARING) {
@@ -272,22 +218,35 @@ function Body({
         />
       );
 
+    /*
+     * Two states, not one, and the difference is the whole point.
+     *
+     * INVITING means the question is still going out and nothing has come
+     * back. DELIVERED means the other phone acknowledged it - so it is on
+     * their screen, and what we are waiting for now is a person, not a radio.
+     * The app used to say "Waiting for your friend…" for forty-five seconds in
+     * both cases, including the case where the invitation had never arrived at
+     * all, which is the single most misleading thing it did.
+     */
     case RoomPhase.INVITING:
+    case RoomPhase.DELIVERED: {
+      const delivered = room.phase === RoomPhase.DELIVERED;
       return (
         <View style={{ paddingVertical: theme.spacing.xxl, gap: theme.spacing.lg }}>
           <FaceOff players={room.players} local={room.local} nameFor={room.nameFor} />
           <View style={{ alignItems: 'center', gap: theme.spacing.xs }}>
             <ActivityIndicator color={theme.colors.accent} />
             <Label variant="headline" align="center">
-              {strings.play.waitingForOpponent}
+              {delivered ? playText.room.inviteWaiting(room.opponentName) : playText.room.inviteSending}
             </Label>
             <Label variant="footnote" tone="tertiary" align="center">
-              {playText.room.waitingDetail}
+              {delivered ? playText.room.inviteDelivered : playText.room.waitingDetail}
             </Label>
           </View>
           <Button title={strings.common.cancel} variant="secondary" onPress={onLeave} />
         </View>
       );
+    }
 
     case RoomPhase.UNANSWERED:
       return (
@@ -330,12 +289,28 @@ function Body({
       );
 
     default:
+      /*
+       * A finished game is the board AND the result, and neither may push the
+       * other off the screen - the scene does not scroll, so anything that does
+       * not fit is simply gone.
+       *
+       * The result takes its natural height and the board takes what is left,
+       * measured rather than guessed at. A fixed fraction was the obvious
+       * alternative and is wrong on exactly the phones it matters on: the
+       * result card is three buttons and two names, which is nearly half the
+       * usable height of a small handset and nowhere near half of a large one.
+       */
       return (
-        <View>
-          <Board room={room} width={width} />
+        <View style={{ flex: 1 }}>
+          <View
+            style={{ flex: 1, justifyContent: 'center' }}
+            onLayout={(event) => onBoardBox(Math.round(event.nativeEvent.layout.height))}
+          >
+            <Board room={room} width={width} height={boardHeight ?? height} />
+          </View>
           {room.phase === RoomPhase.ENDED ? (
             <>
-              <Gap size="xl" />
+              <Gap size="lg" />
               <Result room={room} onLeave={onLeave} onRematch={onRematch} />
             </>
           ) : null}
@@ -353,7 +328,15 @@ function Body({
  * practice this branch is reachable only through an invite from a build that
  * has a game this one does not.
  */
-function Board({ room, width }: { room: GameRoomView; width: number }): React.JSX.Element {
+function Board({
+  room,
+  width,
+  height,
+}: {
+  room: GameRoomView;
+  width: number;
+  height: number;
+}): React.JSX.Element {
   const Renderer = room.entry ? rendererFor(room.entry.definition.id) : null;
 
   if (!Renderer || room.state === null) {
@@ -378,6 +361,7 @@ function Board({ room, width }: { room: GameRoomView; width: number }): React.JS
       frames={room.frames}
       elapsedMs={room.elapsedMs}
       width={width}
+      height={height}
       sessionKey={room.sessionKey}
     />
   );

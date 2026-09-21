@@ -172,8 +172,57 @@ export const local = {
     noFriendsBody: 'Add a friend first, then you can compare safety numbers.',
   },
 
+  /**
+   * What a notification says on the lock screen.
+   *
+   * Short, and never a summary of the conversation: the phone's notification
+   * shade is the one place in this app where text can be read by somebody who
+   * is not holding the phone. The name of the sender and one line is the most
+   * that belongs there.
+   */
+  notify: {
+    /** For a message whose sender has published no name yet. */
+    someone: 'Someone',
+    photo: 'Sent you a photo',
+    voice: 'Sent you a voice message',
+    file: 'Sent you a file',
+    /** A message with a body we cannot show, rather than an empty banner. */
+    message: 'Sent you a message',
+    invite: (game: string): string => `Wants to play ${game}`,
+    /**
+     * What a screen reader says about a badged tab.
+     *
+     * A red circle with a number in it says nothing at all to VoiceOver, and
+     * the badge is precisely the part of the tab bar somebody must not miss.
+     */
+    badgeChats: (n: number): string =>
+      n === 1 ? '1 conversation with unread messages' : `${n} conversations with unread messages`,
+    badgeInvites: (n: number): string => (n === 1 ? '1 game invitation waiting' : `${n} game invitations waiting`),
+  },
+
   settings: {
     profileSection: 'YOUR PROFILE',
+    notificationsSection: 'NOTIFICATIONS',
+    notifications: 'Notify me about messages',
+    /**
+     * One sentence per state the permission can be in, because "off" covers
+     * three different situations and only two of them can be fixed here.
+     */
+    notificationsOn: 'New messages and game invitations reach you when the app is closed.',
+    notificationsOff: 'Turn this on to hear about messages and invitations while the app is closed.',
+    notificationsDenied: 'Notifications are switched off for AirLink in iOS Settings.',
+    notificationsDeniedTitle: 'Notifications are off in Settings',
+    notificationsDeniedBody: `AirLink cannot turn them back on for you - iOS only lets you do that yourself. Open Settings, then Notifications, and allow them there.`,
+    notificationsTurnOffTitle: 'Turn notifications off in Settings',
+    notificationsTurnOffBody: `iOS keeps this switch, not AirLink. Open Settings, then Notifications, and turn them off there.`,
+    /**
+     * An honest dead end rather than a switch that does nothing: some builds
+     * have no notifications module at all, and a control that cannot work
+     * should say so instead of failing silently when it is pressed.
+     */
+    notificationsUnsupported: 'This version of the app cannot show notifications.',
+    /** Said plainly: nothing about a notification leaves the phone. */
+    notificationsPrivacy: 'Notifications are made on this device from messages that are already on it. Nothing is sent anywhere.',
     avatarSection: 'YOUR COLOUR',
     historySection: 'HISTORY',
     aboutSection: 'ABOUT',
@@ -213,6 +262,16 @@ export const local = {
     deviceSection: 'DEVICE',
     nativeSection: 'NATIVE LAYER',
     transportSection: 'TRANSPORTS',
+    /**
+     * The simulator has no Bluetooth radio, so "no Wi-Fi" is otherwise
+     * untestable without turning off the Mac's Wi-Fi - which hits both
+     * simulators at once and takes the host's network with it.
+     */
+    suppressWifi: 'Switch off Wi-Fi for this device',
+    restoreWifi: 'Switch Wi-Fi back on',
+    suppressWifiHint:
+      'Reports the local network as unavailable and drops any link using it, exactly as walking out of range does. Not remembered: restarting the app brings it back.',
+    wifiSuppressed: 'Local network is switched off in Developer Mode.',
     sessionSection: 'SESSIONS',
     logSection: 'ACTIVITY',
     artworkSection: 'ARTWORK',
@@ -221,6 +280,18 @@ export const local = {
     rawSection: 'RAW SNAPSHOT',
     deviceId: 'Device id',
     peerId: 'Peer id',
+    installationId: 'Installation id',
+    keyFingerprint: 'Key fingerprint',
+    discoveryId: 'Discovery id',
+    ownTokens: 'Own tokens remembered',
+    armedTransports: 'Scanning on',
+    discoverySection: 'DISCOVERY',
+    noDiscovered: 'Nothing has been seen yet.',
+    resolution: 'Resolution',
+    heldBack: 'Held back',
+    sessionKey: 'Filed under',
+    attemptId: 'Attempt',
+    sessionAge: 'Age',
     protocolVersion: 'Protocol version',
     appVersion: 'App version',
     platform: 'Platform',

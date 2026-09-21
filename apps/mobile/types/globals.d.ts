@@ -11,7 +11,8 @@ declare global {
     | {
         emit: (event: string, payload: unknown) => void;
         listenerCount: (event: string) => number;
-        calls: () => { name: string; transports?: string[] }[];
+        /** `kind` is present on the per-transport calls (advertising, discovery). */
+        calls: () => { name: string; transports?: string[]; kind?: string }[];
         clearCalls: () => void;
       }
     | undefined;

@@ -1444,3 +1444,56 @@ describe('pairing over two real sessions', () => {
     await ctx.sessionB.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pairing a stranger with somebody who already has friends
+// ---------------------------------------------------------------------------
+
+/**
+ * Found by pairing a third simulator with a phone that already had a friend.
+ *
+ * Two phones meeting for the first time pair cleanly. A third phone meeting one
+ * of them - who by then has a trusted friend of their own - showed the same six
+ * digits on both screens, both people confirmed, and both got "Not connected:
+ * the numbers weren't confirmed on both phones". Neither side recorded the
+ * friendship.
+ *
+ * This runs the REAL controllers over the simulated radio to settle whether
+ * that failure lives in the pairing protocol or above it, in the app's handling
+ * of sessions. A human takes a while to look from one phone to the other, so
+ * the confirmations are spaced the way a person spaces them.
+ */
+describe('pairing when the other phone already has a friend', () => {
+  it('completes, and records the new friend alongside the old one', async () => {
+    const existingFriend = makeDevice('Alejandro', 303);
+    const ctx = await connectPair({
+      seedA: 404,
+      seedB: 202,
+      // Maria already trusts somebody else.
+      prepare: (_lucas, maria) => maria.trust.set(friendRow(existingFriend.identity, { displayName: 'Alejandro' })),
+    });
+
+    expect(ctx.sessionA.state).toBe(ConnectionState.PAIRING);
+    expect(ctx.sessionB.state).toBe(ConnectionState.PAIRING);
+    expect(ctx.pairingA.sasCode).toBe(ctx.pairingB.sasCode);
+
+    const refused: string[] = [];
+    ctx.pairingA.events.on('refused', ({ reason }) => refused.push(`A:${reason}`));
+    ctx.pairingB.events.on('refused', ({ reason }) => refused.push(`B:${reason}`));
+
+    ctx.pairingA.confirm();
+    // A person reading six digits off another phone.
+    await ctx.clock.advanceAsync(20_000);
+    ctx.pairingB.confirm();
+    await ctx.clock.advanceAsync(2_000);
+
+    expect(refused).toEqual([]);
+    expect(ctx.pairingA.state).toBe(SasPairingState.BOTH_CONFIRMED);
+    expect(ctx.pairingB.state).toBe(SasPairingState.BOTH_CONFIRMED);
+    expect(ctx.sessionA.state).toBe(ConnectionState.CONNECTED);
+    expect(ctx.sessionB.state).toBe(ConnectionState.CONNECTED);
+    // Both friendships survive: the new one did not overwrite the old.
+    expect(ctx.maria.trust.record(ctx.alejandro.identity.peerId)).toBeDefined();
+    expect(ctx.maria.trust.record(existingFriend.identity.peerId)).toBeDefined();
+  });
+});

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { ConnectionState, newUuidLike, systemRandom } from '@airlink/core';
-import { strings } from '@airlink/config';
+import { categoryColor, strings } from '@airlink/config';
 import type { GameCatalogueEntry } from '@airlink/games';
 import { Label, haptic, useTheme } from '../../ui/index.js';
 import type { AirLinkClient } from '../../client/AirLinkClient.js';
@@ -121,25 +121,56 @@ export function peerKeyForPeerId(client: AirLinkClient | null, peerId: string | 
 // ---------------------------------------------------------------------------
 
 /**
+ * The mark's tile, and how strongly it is tinted.
+ *
+ * The five tabs each have a ready-made muted partner in the theme; the eight
+ * game categories do not, so the tile builds its own ground out of the category
+ * hue behind a low opacity. That is why the fill is a separate absolutely
+ * positioned layer rather than a `backgroundColor` on the tile itself: opacity
+ * on the tile would fade the mark drawn inside it too.
+ *
+ * Dark mode needs the heavier value. The same alpha that reads as a definite
+ * tint on white disappears entirely against near-black.
+ */
+const MARK_TILE = 40;
+const MARK_TINT = { light: 0.20, dark: 0.26 } as const;
+
+/**
  * One game.
  *
  * Mark, name, blurb, length. The mark is drawn from the game's id rather than
  * carried by the game package, which holds rules and has no opinion about
  * pixels.
+ *
+ * COLOUR IS THE POINT OF THE TILE. Twenty-eight of these render at once, and
+ * until the mark sat on its category's colour they were twenty-eight
+ * identically grey rectangles that had to be read one by one. The hue comes
+ * from `entry.category`, which every entry in the registry already carries, so
+ * a new game is coloured correctly the moment it is registered and an unknown
+ * category falls back to the Play hue rather than throwing.
  */
 export function GameTile({
   entry,
   availability,
   width,
   onPress,
+  favourite,
+  onToggleFavourite,
+  note,
 }: {
   entry: GameCatalogueEntry;
   availability: Availability;
   width: number;
   onPress: () => void;
+  /** Whether this game is on the user's own shortlist. */
+  favourite?: boolean;
+  onToggleFavourite?: () => void;
+  /** A short line under the name - today, "best over Wi-Fi". */
+  note?: string | null;
 }): React.JSX.Element {
   const theme = useTheme();
   const { playable, reason } = availability;
+  const hue = categoryColor(theme.colors, entry.category);
 
   return (
     <View style={{ width }}>
@@ -169,12 +200,29 @@ export function GameTile({
         <View
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
-          style={{ marginBottom: theme.spacing.xs }}
+          style={{
+            width: MARK_TILE,
+            height: MARK_TILE,
+            borderRadius: theme.radius.md,
+            alignItems: 'center',
+            justifyContent: 'center',
+            overflow: 'hidden',
+            marginBottom: theme.spacing.xs,
+          }}
         >
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: hue, opacity: MARK_TINT[theme.scheme] }]} />
           {/* Decorative - the game's name is right underneath - and drawn
               rather than typed, because a character is only as reliable as the
-              font behind it. See ui/Icon.tsx. */}
-          <GameArt gameId={entry.definition.id} size={theme.typography.title.fontSize} />
+              font behind it. See ui/Icon.tsx.
+
+              THE TILE CARRIES THE COLOUR, THE MARK CARRIES THE LEGIBILITY, and
+              they are deliberately not the same value. Stroking the mark in the
+              category hue on a ground of that same hue measured between 2.9:1
+              and 3.1:1 for `together`, `words` and `quick` in light mode - under
+              the 3:1 a 1.7pt line needs, and the palest hues were the worst.
+              Drawing it in the text colour instead keeps it at full contrast
+              while the tinted ground behind it still does the colour-coding. */}
+          <GameArt gameId={entry.definition.id} size={theme.typography.title.fontSize} color={theme.colors.text} />
         </View>
         <Label variant="headline" numberOfLines={1}>
           {entry.definition.name}
@@ -183,9 +231,47 @@ export function GameTile({
           {entry.blurb}
         </Label>
         <Label variant="caption" tone="tertiary" style={{ marginTop: theme.spacing.xs }}>
-          {playText.tabs.minutes(entry.typicalMinutes)}
+          {note ? `${playText.tabs.minutes(entry.typicalMinutes)} · ${note}` : playText.tabs.minutes(entry.typicalMinutes)}
         </Label>
       </Pressable>
+
+      {/*
+        The heart sits OUTSIDE the tile's own Pressable.
+        Nesting one pressable inside another gives the outer one the tap on
+        iOS about as often as not, and a favourite that sometimes opens a game
+        instead is worse than no favourite at all.
+      */}
+      {onToggleFavourite ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={
+            favourite
+              ? playText.tabs.favouriteOn(entry.definition.name)
+              : playText.tabs.favouriteOff(entry.definition.name)
+          }
+          onPress={() => {
+            haptic('selection');
+            onToggleFavourite();
+          }}
+          hitSlop={theme.spacing.sm}
+          style={({ pressed }) => [
+            {
+              position: 'absolute',
+              top: 0,
+              right: 0,
+              minWidth: MIN_TARGET,
+              minHeight: MIN_TARGET,
+              alignItems: 'center',
+              justifyContent: 'center',
+            },
+            pressed ? { opacity: 0.6 } : null,
+          ]}
+        >
+          <Label variant="footnote" tone={favourite ? 'accent' : 'tertiary'}>
+            {favourite ? '\u2665' : '\u2661'}
+          </Label>
+        </Pressable>
+      ) : null}
 
       {/* The reason lives under the tile, never inside it: a disabled control
           that does not say why is the thing this app refuses to ship. */}

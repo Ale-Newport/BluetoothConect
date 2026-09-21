@@ -18,6 +18,7 @@
 import {
   GameMode,
   GameStatusKind,
+  SeededGameRandom,
   VALID,
   asArray,
   asInt,
@@ -95,6 +96,23 @@ export interface WordDuelState {
   readonly submissions: readonly Submission[];
   /** True once every player has declared themselves finished. */
   readonly finishedBy: readonly PlayerId[];
+  /**
+   * How many submissions were in when the FIRST player stopped playing.
+   *
+   * The cancellation rule - a word both players found scores for neither -
+   * needs a boundary, and without one it punished exactly the wrong person.
+   * A player who finished early sat and watched their words be cancelled one
+   * by one by an opponent who could take as long as they liked, and there was
+   * no clock to stop it. Nothing you do after somebody has put their pencil
+   * down should be able to take their points away.
+   *
+   * So cancellation only applies among the words found while BOTH were still
+   * hunting. A word the late finisher finds afterwards still scores for them;
+   * it simply cannot reach back.
+   *
+   * -1 until somebody finishes.
+   */
+  readonly openUntil: number;
 }
 
 export interface WordDuelAction extends GameAction {
@@ -137,7 +155,11 @@ export function pathSpells(grid: readonly string[], word: string, path: readonly
 /** Per-player score, with words found by everyone cancelled out. */
 export function scores(state: WordDuelState): Map<PlayerId, number> {
   const counts = new Map<string, Set<PlayerId>>();
-  for (const s of state.submissions) {
+  // Only the words found while everybody was still playing can cancel. See
+  // `WordDuelState.openUntil`.
+  const boundary = state.openUntil < 0 ? state.submissions.length : state.openUntil;
+  for (let i = 0; i < boundary; i++) {
+    const s = state.submissions[i] as Submission;
     let holders = counts.get(s.word);
     if (!holders) {
       holders = new Set();
@@ -148,9 +170,10 @@ export function scores(state: WordDuelState): Map<PlayerId, number> {
 
   const totals = new Map<PlayerId, number>();
   for (const player of state.players) totals.set(player, 0);
-  for (const s of state.submissions) {
-    const holders = counts.get(s.word);
-    // Found by everyone: it cancels, and nobody banks it.
+  for (let i = 0; i < state.submissions.length; i++) {
+    const s = state.submissions[i] as Submission;
+    const holders = i < boundary ? counts.get(s.word) : undefined;
+    // Found by everyone, while everyone was still looking: it cancels.
     if (holders && holders.size === state.players.length) continue;
     totals.set(s.player, (totals.get(s.player) ?? 0) + scoreForLength(s.word.length));
   }
@@ -173,28 +196,20 @@ export const wordDuel: GameDefinition<WordDuelState, WordDuelAction> = {
   maxPlayers: 2,
 
   createInitialState(setup: GameSetup): WordDuelState {
-    // Both devices run this with the same seed, so the grid matches without a
-    // single byte crossing the link.
-    const random = new (class {
-      private state = setup.seed >>> 0;
-      next(): number {
-        this.state = (this.state + 0x6d2b79f5) >>> 0;
-        let t = this.state;
-        t = Math.imul(t ^ (t >>> 15), t | 1);
-        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-      }
-      nextInt(max: number): number {
-        return Math.floor(this.next() * max);
-      }
-      shuffle<T>(items: readonly T[]): T[] {
-        return [...items];
-      }
-    })();
+    /*
+     * The engine's generator, not a copy of it.
+     *
+     * There was a hand-rolled duplicate here - the same mulberry32, plus a
+     * `shuffle` that returned its input untouched. Nothing called that shuffle,
+     * which is the only reason it never produced a visible bug, but a second
+     * implementation of the one thing in this codebase that MUST agree
+     * byte-for-byte across two devices is not something to keep.
+     */
+    const random = new SeededGameRandom(setup.seed);
 
     const grid: string[] = [];
     for (let i = 0; i < CELL_COUNT; i++) grid.push(drawLetter(random));
-    return { players: [...setup.players], grid, submissions: [], finishedBy: [] };
+    return { players: [...setup.players], grid, submissions: [], finishedBy: [], openUntil: -1 };
   },
 
   validateAction(state, action, _context: GameContext): ValidationResult {
@@ -228,7 +243,12 @@ export const wordDuel: GameDefinition<WordDuelState, WordDuelAction> = {
 
   applyAction(state, action): WordDuelState {
     if (action.type === 'finish') {
-      return { ...state, finishedBy: [...state.finishedBy, action.player] };
+      const first = state.finishedBy.length === 0;
+      return {
+        ...state,
+        finishedBy: [...state.finishedBy, action.player],
+        openUntil: first ? state.submissions.length : state.openUntil,
+      };
     }
     const payload = action.payload as { word: string; path: number[] };
     return {
@@ -269,6 +289,7 @@ export const wordDuel: GameDefinition<WordDuelState, WordDuelAction> = {
       g: state.grid.join(''),
       s: state.submissions.map((s) => [s.player, s.word, [...s.path]] as CborValue),
       f: [...state.finishedBy],
+      o: state.openUntil,
     };
   },
 
@@ -286,14 +307,27 @@ export const wordDuel: GameDefinition<WordDuelState, WordDuelAction> = {
       const path = asArray(entry[2] as CborValue, 'path', MAX_WORD_LENGTH).map((c) =>
         asInt(c, 'path cell', 0, CELL_COUNT - 1),
       );
-      return { player: asString(entry[0] as CborValue, 'player', 64), word, path };
+      const player = asString(entry[0] as CborValue, 'player', 64);
+      // A submission credited to somebody who is not in this game would score
+      // for a player the reducer has never heard of, and - worse - would count
+      // towards the cancellation rule, silently deleting the real players'
+      // words. Every string off the wire is checked against the seat list.
+      if (!players.includes(player)) throw new Error('wordDuel: submission from a player not in this game');
+      return { player, word, path };
+    });
+
+    const finishedBy = asArray(m.f ?? [], 'finishedBy', 2).map((p) => {
+      const player = asString(p, 'player', 64);
+      if (!players.includes(player)) throw new Error('wordDuel: finish from a player not in this game');
+      return player;
     });
 
     return {
       players,
       grid: gridText.split(''),
       submissions,
-      finishedBy: asArray(m.f ?? [], 'finishedBy', 2).map((p) => asString(p, 'player', 64)),
+      finishedBy,
+      openUntil: m.o === undefined ? -1 : asInt(m.o, 'openUntil', -1, MAX_SUBMISSIONS_PER_PLAYER * 2),
     };
   },
 

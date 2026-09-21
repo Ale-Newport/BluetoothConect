@@ -1,18 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, View, useWindowDimensions } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   useFocusEffect,
-  useIsFocused,
   useNavigation,
   type CompositeNavigationProp,
 } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useShallow } from 'zustand/react/shallow';
-import { allGames, findGame, type GameCatalogueEntry } from '@airlink/games';
+import { findGame, needsBetterLink, type GameCatalogueEntry } from '@airlink/games';
 import type { GameSessionRow } from '@airlink/db';
-import { strings } from '@airlink/config';
+import { areaColor, categoryColor, strings } from '@airlink/config';
 import {
   Avatar,
   Button,
@@ -38,8 +37,16 @@ import {
   newGameSessionId,
   peerKeyForPeerId,
 } from './catalogue.js';
-import { useInviteCentre, useNextInvite, type GameInviteRecord } from './inviteCentre.js';
 import { playText } from './strings.js';
+import {
+  DurationFilter,
+  buildShelves,
+  catalogueCopy,
+  durationOptions,
+  randomGame,
+  useFavourites,
+  useSlowLinkNote,
+} from './catalogueModel.js';
 
 /**
  * Play.
@@ -81,45 +88,13 @@ export function PlayScreen(): React.JSX.Element {
   const [pendingGame, setPendingGame] = useState<GameCatalogueEntry | null>(null);
 
   /**
-   * Somebody asking to play.
+   * Nothing here asks about an invitation any more.
    *
-   * The invitation is asked about here because this is the tab it belongs to,
-   * and only while this tab is actually in front - `useIsFocused` is false with
-   * a game room open above it, and a sheet appearing behind a board nobody can
-   * see would be a question the user never gets to answer.
+   * `GameInviteHost`, mounted beside the navigator, does - so the question
+   * reaches the user wherever they are in the app rather than only on this
+   * tab, and, more importantly, the listener behind it exists from launch
+   * rather than from the first time somebody happened to open Play.
    */
-  const isFocused = useIsFocused();
-  const inviteCentre = useInviteCentre();
-  const invite = useNextInvite();
-
-  /**
-   * A rematch accepted inside the room is already open, so its invitation is
-   * spent even though this centre never saw the answer. Anything whose row has
-   * moved past "invited" is therefore forgotten rather than offered again.
-   */
-  useEffect(() => {
-    if (!invite || !client || !inviteCentre) return;
-    let state: string | null = null;
-    try {
-      state = client.db.games.get(invite.sessionId)?.state ?? null;
-    } catch {
-      state = null;
-    }
-    if (state !== null && state !== 'invited') inviteCentre.forget(invite.sessionId);
-  }, [client, invite, inviteCentre]);
-
-  const acceptInvite = useCallback(
-    (record: GameInviteRecord) => {
-      if (!inviteCentre?.accept(record.sessionId)) return;
-      navigation.navigate('GameRoom', {
-        peerKey: record.peerKey,
-        gameId: record.gameId,
-        gameSessionId: record.sessionId,
-        isHost: record.isHost,
-      });
-    },
-    [inviteCentre, navigation],
-  );
 
   /**
    * The saved-games shelf is read on focus rather than subscribed to.
@@ -140,12 +115,34 @@ export function PlayScreen(): React.JSX.Element {
     }, [client]),
   );
 
-  const games = useMemo(() => allGames(), []);
+  /**
+   * Whether the link with the person we would actually play is a fast one.
+   *
+   * With one friend connected that is simply their link. With several, the best
+   * of them - the catalogue is a shelf, not a promise about a particular peer,
+   * and the per-peer answer is given by `bestAvailabilityFor` on each tile.
+   */
+  const highBandwidth = connected.some((peer) => peer.highBandwidth);
+  const { toggle: toggleFavourite, isFavourite, ids: favourites } = useFavourites(client);
+  const [duration, setDuration] = useState<DurationFilter>(DurationFilter.ANY);
+  const shelves = useMemo(
+    () => buildShelves({ favourites, duration, highBandwidth }),
+    [favourites, duration, highBandwidth],
+  );
+  const slowLinkNote = useSlowLinkNote(highBandwidth);
+
   const columns = width >= 700 ? 3 : 2;
   const gutter = theme.spacing.md;
   const tileWidth = (width - theme.spacing.lg * 2 - gutter * (columns - 1)) / columns;
 
   const soloPeer = connected.length === 1 ? connected[0] ?? null : null;
+
+  /**
+   * The tab's own hue, for the things on this screen that are not about a
+   * single category: the "in progress" shelf, the favourites shelf, the empty
+   * state, and the selected length chip.
+   */
+  const playHue = areaColor(theme.colors, 'Play');
 
   const open = useCallback(
     (entry: GameCatalogueEntry, peer: PeerView) => {
@@ -182,20 +179,7 @@ export function PlayScreen(): React.JSX.Element {
   // The tab has no navigation header, so the title has to clear the notch itself.
   const topPadding = { paddingTop: insets.top + theme.spacing.xl };
 
-  /**
-   * An invitation is offered whichever half of this screen is showing.
-   *
-   * A friend who connected to US is not necessarily in the nearby list yet - an
-   * incoming link is keyed by the endpoint it arrived on - so the empty state
-   * and the grid can both be on screen when somebody asks to play.
-   */
-  const inviteSheet = (
-    <InviteSheet
-      invite={isFocused ? invite : null}
-      onAccept={acceptInvite}
-      onDecline={(record) => inviteCentre?.decline(record.sessionId)}
-    />
-  );
+  const inviteSheet = null;
 
   if (connected.length === 0) {
     return (
@@ -215,6 +199,7 @@ export function PlayScreen(): React.JSX.Element {
           />
           <EmptyState
             icon="dice"
+            area="Play"
             title={playText.tabs.nobodyTitle}
             body={playText.tabs.nobodyBody}
             action={
@@ -240,18 +225,104 @@ export function PlayScreen(): React.JSX.Element {
           onResume={resume}
         />
 
-        <SectionHeading>{playText.tabs.allGames}</SectionHeading>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: gutter }}>
-          {games.map((entry) => (
-            <GameTile
-              key={entry.definition.id}
-              entry={entry}
-              width={tileWidth}
-              availability={bestAvailabilityFor(client, connected, entry)}
-              onPress={() => choose(entry)}
-            />
+        {/*
+          "Surprise us", and how long you have.
+          Both are for the same moment: two people who want to play something
+          and do not want to read thirty names to decide what.
+        */}
+        <Row gap="sm">
+          <Button
+            title={catalogueCopy.random}
+            variant="secondary"
+            style={{ flex: 1 }}
+            onPress={() => {
+              const entry = randomGame(highBandwidth, Math.random());
+              if (entry) choose(entry);
+            }}
+          />
+        </Row>
+        <Gap size="sm" />
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: theme.spacing.xs }}
+        >
+          {durationOptions().map((option) => (
+            <Pressable
+              key={String(option.value)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: duration === option.value }}
+              onPress={() => setDuration(option.value)}
+              style={{
+                paddingHorizontal: theme.spacing.md,
+                paddingVertical: theme.spacing.xs,
+                borderRadius: theme.radius.pill,
+                /*
+                  The chosen length is marked in the Play hue rather than in
+                  `accent`, which belongs to primary actions and to nothing
+                  else - a filter chip that looks like the app's one blue
+                  button teaches people the wrong thing about the button.
+
+                  The tint is the ground and the label stays full-strength
+                  text, rather than white on the hue: several of these hues sit
+                  near 3:1 against white, which is not enough for type this
+                  small in either scheme.
+                */
+                backgroundColor:
+                  duration === option.value ? theme.colors.areaPlayMuted : theme.colors.surface,
+                // Both states carry a border so selecting one does not move the
+                // row by a hairline.
+                borderWidth: StyleSheet.hairlineWidth,
+                borderColor: duration === option.value ? playHue : theme.colors.separator,
+              }}
+            >
+              <Label
+                variant="footnote"
+                tone={duration === option.value ? 'primary' : 'secondary'}
+              >
+                {option.label}
+              </Label>
+            </Pressable>
           ))}
-        </View>
+        </ScrollView>
+
+        {slowLinkNote ? (
+          <>
+            <Gap size="sm" />
+            <Label variant="caption" tone="tertiary">
+              {slowLinkNote}
+            </Label>
+          </>
+        ) : null}
+
+        {shelves.map((shelf) => (
+          <View key={shelf.key}>
+            <Gap size="lg" />
+            {/*
+              A shelf's key IS its category, which is what makes the rule above
+              it the same colour as the marks on the tiles below it. Favourites
+              is the one shelf that is not a category - it mixes them - so it
+              takes the tab's own hue instead.
+            */}
+            <SectionHeading hue={shelf.key === 'favourites' ? playHue : categoryColor(theme.colors, shelf.key)}>
+              {shelf.title}
+            </SectionHeading>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: gutter }}>
+              {shelf.entries.map((entry) => (
+                <GameTile
+                  key={`${shelf.key}:${entry.definition.id}`}
+                  entry={entry}
+                  width={tileWidth}
+                  availability={bestAvailabilityFor(client, connected, entry)}
+                  favourite={isFavourite(entry.definition.id)}
+                  onToggleFavourite={() => toggleFavourite(entry.definition.id)}
+                  note={needsBetterLink(entry, highBandwidth) ? catalogueCopy.needsBetterLink : null}
+                  onPress={() => choose(entry)}
+                />
+              ))}
+            </View>
+          </View>
+        ))}
       </Screen>
 
       <PeerSheet
@@ -281,70 +352,6 @@ export function PlayScreen(): React.JSX.Element {
  * There is no way to dismiss this without answering it, deliberately - both
  * answers are one tap, and both tell the other person something.
  */
-function InviteSheet({
-  invite,
-  onAccept,
-  onDecline,
-}: {
-  invite: GameInviteRecord | null;
-  onAccept: (invite: GameInviteRecord) => void;
-  onDecline: (invite: GameInviteRecord) => void;
-}): React.JSX.Element {
-  const theme = useTheme();
-
-  return (
-    <Modal
-      visible={invite !== null}
-      transparent
-      animationType="slide"
-      onRequestClose={() => {
-        if (invite) onDecline(invite);
-      }}
-    >
-      <View style={{ flex: 1, backgroundColor: theme.colors.scrim }} />
-      <View
-        style={[
-          {
-            backgroundColor: theme.colors.surface,
-            borderTopLeftRadius: theme.radius.xl,
-            borderTopRightRadius: theme.radius.xl,
-            padding: theme.spacing.lg,
-            paddingBottom: theme.spacing.xxl,
-          },
-          theme.shadows.sheet,
-        ]}
-      >
-        <Row gap="md">
-          <Avatar name={invite?.peerName ?? ''} peerId={invite?.peerId ?? null} size={44} />
-          <View style={{ flex: 1 }}>
-            <Label variant="title2" numberOfLines={2}>
-              {invite ? strings.play.invitedYou(invite.peerName, invite.gameName) : ''}
-            </Label>
-          </View>
-        </Row>
-        <Gap size="lg" />
-        <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
-          <Button
-            title={strings.play.decline}
-            variant="secondary"
-            style={{ flex: 1 }}
-            onPress={() => {
-              if (invite) onDecline(invite);
-            }}
-          />
-          <Button
-            title={strings.play.accept}
-            style={{ flex: 1 }}
-            onPress={() => {
-              if (invite) onAccept(invite);
-            }}
-          />
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 /**
  * Games left half-played.
  *
@@ -371,7 +378,7 @@ function ResumeShelf({
 
   return (
     <View style={{ marginBottom: theme.spacing.xl }}>
-      <SectionHeading>{playText.tabs.inProgress}</SectionHeading>
+      <SectionHeading hue={areaColor(theme.colors, 'Play')}>{playText.tabs.inProgress}</SectionHeading>
       <Card style={{ paddingVertical: theme.spacing.xs }}>
         {playable.map((row, index) => {
           const entry = findGame(row.gameId);

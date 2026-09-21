@@ -197,6 +197,25 @@ the token is constant, so this is unlinkability against a casual observer, not
 against one watching a fixed location continuously — stated plainly in
 [`advertisementTokens.ts`](../packages/core/src/pairing/advertisementTokens.ts).
 
+**Discovery ids.** Every advertisement also carries sixteen hex characters
+identifying the installation *for the length of one app run*. It exists because
+the questions "is this advertisement my own?" and "is this the same phone I can
+already see on the other radio?" had no reliable answer before a handshake, and
+the guesses that stood in for one failed open — into a phone listing itself as a
+device to connect to, and into one person appearing four times.
+
+A durable identifier would have answered both and would have been a real
+regression: broadcast in the clear, it would let anyone in radio range log a
+phone's comings and goings across days, which is exactly what the rotating token
+exists to prevent. A value regenerated on every launch answers both questions
+completely and links nothing across time. **Within one run it is constant**, so
+an observer watching continuously can tell that two sightings an hour apart are
+the same session — the same limitation the token has, and for the same reason
+that the alternative is worse.
+
+The persistent `installationId` is never broadcast at all. It travels only
+inside the encrypted capability exchange, after both sides have authenticated.
+
 ---
 
 ## 8. User controls

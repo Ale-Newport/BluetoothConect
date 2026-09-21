@@ -121,6 +121,12 @@ export function DrawAndGuessBoard({
     dispatch('stroke', { points, color: colorIndex, width: brush });
   }, [brush, colorIndex, dispatch]);
 
+  /** Throw a stroke away unsent. See `onResponderTerminate`. */
+  const abandon = useCallback(() => {
+    wetPoints.current = [];
+    setWet([]);
+  }, []);
+
   const paths = useMemo(
     () => state.strokes.map((stroke) => ({ path: toPath(stroke.points, scale), stroke })),
     [scale, state.strokes],
@@ -177,7 +183,10 @@ export function DrawAndGuessBoard({
         onResponderGrant={extend}
         onResponderMove={extend}
         onResponderRelease={commit}
-        onResponderTerminate={commit}
+        // As in Word Duel: an interrupted stroke is discarded rather than sent
+        // as a half-drawn line. Nothing above can interrupt it any more either.
+        onResponderTerminate={abandon}
+        onResponderTerminationRequest={() => false}
       >
         <Canvas style={{ flex: 1 }}>
           {paths.map((entry, index) => (

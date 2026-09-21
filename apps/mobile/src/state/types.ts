@@ -6,7 +6,7 @@
  * `Envelope` or a `TransportKind`; it thinks about a person, a conversation and
  * whether things are working.
  */
-import type { ConnectionState, NearbyPeer } from '@airlink/core';
+import type { ConnectionState, NearbyPeer, TransportUnavailableReason } from '@airlink/core';
 
 export const AppPhase = {
   /** Reading the identity and opening the database. */
@@ -50,11 +50,42 @@ export interface PendingPairing {
   readonly startedAt: number;
 }
 
+/**
+ * How many things are waiting on the user, as the tab bar draws them.
+ *
+ * Counts, not lists. A badge only ever needs a number, and keeping the rows
+ * here would be a second copy of what SQLite and the invite centre already
+ * hold - which is exactly the kind of duplicate that drifts, and then argues
+ * with the screen it was meant to agree with.
+ *
+ * `unreadChats` counts CONVERSATIONS with something unread rather than unread
+ * messages. "3" meaning three people are waiting is a number somebody can act
+ * on; "47" meaning forty-seven messages is a number they can only feel bad
+ * about. The app icon carries the same figure, so the badge on the phone's home
+ * screen and the badge on the tab bar never say different things.
+ */
+export interface WaitingCounts {
+  readonly unreadChats: number;
+  /** Game invitations still open, still unanswered, and not yet expired. */
+  readonly pendingInvites: number;
+}
+
 export interface RadioStatus {
   readonly bluetoothOn: boolean;
   readonly wifiOn: boolean;
   /** Reason to show the user when something is off, already phrased for them. */
   readonly detail: string | null;
+  /**
+   * WHY Bluetooth is unavailable, not merely that it is.
+   *
+   * "Off", "you declined the permission" and "this device has no Bluetooth
+   * radio" are three different facts, and only the first two are worth sending
+   * somebody to Settings for. Collapsing them into one boolean is what put a
+   * dead "Open Settings" button in front of anyone whose hardware has no radio
+   * at all, and told a person who had denied the permission that their
+   * Bluetooth was switched off.
+   */
+  readonly bluetoothReason: TransportUnavailableReason | null;
 }
 
 export type { NearbyPeer };

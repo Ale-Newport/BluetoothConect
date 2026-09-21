@@ -10,10 +10,12 @@ import { selectPeers, useAppStore } from '../../state/index.js';
 import {
   chatCenterFor,
   MESSAGE_PAGE_SIZE,
+  type AttachmentFile,
   type ChatCenter,
   type ConversationPage,
   type ConversationSummary,
 } from './chatCenter.js';
+import { attachmentCenterFor, type AttachmentCenter, type OutgoingAttachment } from './attachments.js';
 
 /**
  * Reading the chat centre from React.
@@ -48,6 +50,18 @@ function useOptionalClient(): AirLinkClient | null {
 export function useChatCenter(): ChatCenter | null {
   const client = useOptionalClient();
   return useMemo(() => (client ? chatCenterFor(client) : null), [client]);
+}
+
+/**
+ * The outbox for photos and voice notes.
+ *
+ * Held for the client's lifetime like the chat centre, so a photo keeps moving
+ * while the user is somewhere else in the app, and so a queued one is flushed
+ * by the session coming back rather than by this screen being open.
+ */
+function useAttachmentCenter(): AttachmentCenter | null {
+  const client = useOptionalClient();
+  return useMemo(() => (client ? attachmentCenterFor(client) : null), [client]);
 }
 
 /**
@@ -144,11 +158,15 @@ export interface ConversationBinding {
   readonly page: ConversationPage;
   readonly loadMore: () => void;
   readonly send: (text: string, replyToRowId: string | null) => boolean;
+  /** A photo or a voice note. Same contract as `send`: false only means no conversation. */
+  readonly sendAttachment: (attachment: OutgoingAttachment, replyToRowId: string | null) => boolean;
   readonly retry: (rowId: string) => void;
+  /** How far a message's file has got, 0-100, or null when nothing is moving. */
+  readonly progressFor: (rowId: string) => number | null;
   readonly react: (rowId: string, emoji: string, add: boolean) => boolean;
   readonly remove: (rowId: string) => void;
   readonly setTyping: (typing: boolean) => void;
-  readonly fileFor: (fileId: string) => { name: string; sizeBytes: number; localPath: string | null } | null;
+  readonly fileFor: (fileId: string) => AttachmentFile | null;
 }
 
 const EMPTY_PAGE: ConversationPage = {
@@ -168,6 +186,7 @@ const EMPTY_PAGE: ConversationPage = {
  */
 export function useConversation(peerKey: string, fallbackName: string): ConversationBinding {
   const centre = useChatCenter();
+  const attachments = useAttachmentCenter();
   const version = useChatVersion(centre);
   // Read so a typing signal re-renders this screen. Deliberately not a memo
   // dependency anywhere: nothing it changes lives in the database.
@@ -249,11 +268,45 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
     [centre, peerId, displayName],
   );
 
+  const sendAttachment = useCallback(
+    (attachment: OutgoingAttachment, replyToRowId: string | null) =>
+      attachments && peerId
+        ? attachments.send({ peerId, displayName, attachment, replyToRowId }) !== null
+        : false,
+    [attachments, peerId, displayName],
+  );
+
+  /**
+   * One Retry control, two outboxes behind it.
+   *
+   * A text message is re-armed inside the chat protocol's queue; a photo is
+   * re-offered to the transfer layer. The bubble should not have to know which
+   * it is, so the routing happens here, off the row's own `fileId`.
+   */
   const retry = useCallback(
     (rowId: string) => {
-      if (centre && peerId) centre.retry(peerId, rowId);
+      if (!centre || !peerId) return;
+      const row = centre.messageRow(rowId);
+      if (row?.fileId && attachments) attachments.retry(peerId, rowId);
+      else centre.retry(peerId, rowId);
     },
-    [centre, peerId],
+    [centre, attachments, peerId],
+  );
+
+  /**
+   * How far a photo's bytes have got.
+   *
+   * The version is a real dependency, and naming it is what makes the function
+   * change identity as the transfer moves - which is the only way the number
+   * reaches a memoised bubble. Without it the progress line would read once and
+   * then sit still for the whole transfer.
+   */
+  const progressFor = useCallback(
+    (rowId: string) => {
+      dependsOn(version);
+      return attachments?.percentFor(rowId) ?? null;
+    },
+    [attachments, version],
   );
 
   const react = useCallback(
@@ -295,7 +348,9 @@ export function useConversation(peerKey: string, fallbackName: string): Conversa
     page,
     loadMore,
     send,
+    sendAttachment,
     retry,
+    progressFor,
     react,
     remove,
     setTyping,

@@ -13,6 +13,28 @@ export const PresenceState = {
 } as const;
 export type PresenceState = (typeof PresenceState)[keyof typeof PresenceState];
 
+/**
+ * How far along we are in working out what a sighting actually is.
+ *
+ * Discovery is not a single event. A Bluetooth advertisement from an iPhone
+ * arrives carrying neither a name nor a token, because iOS refuses to put
+ * service data on the air; the token comes from a read of the identity
+ * characteristic a moment later. A row therefore has to be allowed to be
+ * INCOMPLETE for a few seconds - and, crucially, must not be rendered while it
+ * is, which is what produced a Home screen full of "Unknown Device".
+ */
+export const PeerResolution = {
+  /** Seen, but nothing identifying has arrived yet. Held, not shown. */
+  DISCOVERED_UNRESOLVED: 'discoveredUnresolved',
+  /** Still being filled in by the transport. Held, not shown. */
+  RESOLVING_IDENTITY: 'resolvingIdentity',
+  /** Identified well enough to offer to a person. Shown. */
+  DISCOVERED_VALID: 'discoveredValid',
+  /** Deliberately not ours to show: ourselves, or an incompatible protocol. */
+  IGNORED: 'ignored',
+} as const;
+export type PeerResolution = (typeof PeerResolution)[keyof typeof PeerResolution];
+
 export const NearbyKind = {
   /** A peer we have paired with, recognised from its rotating token. */
   TRUSTED_FRIEND: 'trustedFriend',
@@ -34,6 +56,12 @@ export interface NearbyPeer {
   readonly kind: NearbyKind;
   /** Cryptographic peer id. Only known for a recognised friend. */
   readonly peerId: string | null;
+  /** Persistent id of the remote installation, once a handshake revealed one. */
+  readonly installationId: string | null;
+  /** Per-run id from the advertisement, if the transport carried one. */
+  readonly discoveryId: string | null;
+  /** How completely this device has been identified. */
+  readonly resolution: PeerResolution;
   /** Name to show. For an unknown device this is advertised and untrusted. */
   readonly displayName: string;
   /** Signal quality, bucketed. Never a raw dBm. */

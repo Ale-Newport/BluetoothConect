@@ -4,7 +4,7 @@ import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useShallow } from 'zustand/react/shallow';
 import { TransferDirection, TransferState } from '@airlink/core';
-import { strings } from '@airlink/config';
+import { areaColor, strings } from '@airlink/config';
 import {
   Button,
   Card,
@@ -225,7 +225,13 @@ export function ShareScreen(): React.JSX.Element {
       ) : null}
 
       {nothingAtAll ? (
-        <EmptyState icon="upload" title={shareStrings.emptyTitle} body={shareStrings.emptyBody} action={sendButton} />
+        <EmptyState
+          icon="upload"
+          area="Share"
+          title={shareStrings.emptyTitle}
+          body={shareStrings.emptyBody}
+          action={sendButton}
+        />
       ) : null}
 
       <Gap size="lg" />
@@ -252,17 +258,21 @@ function TransferSection({
   headingAction?: React.ReactNode;
 }): React.JSX.Element {
   const theme = useTheme();
+  // Every heading on this tab is a transfer section, so they all carry Share's
+  // teal. The status colours inside the rows below are untouched: a green tick
+  // on a transfer still means "this one finished", not "this is the Share tab".
+  const hue = areaColor(theme.colors, 'Share');
   return (
     <View>
       {headingAction ? (
         <Row align="center">
           <View style={{ flex: 1 }}>
-            <SectionHeading>{heading}</SectionHeading>
+            <SectionHeading hue={hue}>{heading}</SectionHeading>
           </View>
           {headingAction}
         </Row>
       ) : (
-        <SectionHeading>{heading}</SectionHeading>
+        <SectionHeading hue={hue}>{heading}</SectionHeading>
       )}
       <Card style={{ paddingVertical: theme.spacing.xs }}>
         {records.map((record, index) => (

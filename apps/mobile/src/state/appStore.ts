@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 import { ConnectionState } from '@airlink/core';
-import { AppPhase, type LocalProfile, type PeerView, type PendingPairing, type RadioStatus } from './types.js';
+import {
+  AppPhase,
+  type LocalProfile,
+  type PeerView,
+  type PendingPairing,
+  type RadioStatus,
+  type WaitingCounts,
+} from './types.js';
 
 /**
  * The app store.
@@ -28,6 +35,17 @@ interface AppState {
   /** True when the device has no internet - which is normal, not an error. */
   offline: boolean;
 
+  /**
+   * Conversations with something unread, for the badge on the Chat tab.
+   *
+   * Derived from the `unread_count` column the conversations table has kept all
+   * along, never counted independently: two counters for one fact is how a tab
+   * ends up wearing a badge for a message the user read ten minutes ago.
+   */
+  unreadChats: number;
+  /** Game invitations waiting on an answer, for the badge on the Play tab. */
+  pendingInvites: number;
+
   developerMode: boolean;
 
   // --- actions, all called from outside React ---
@@ -41,6 +59,15 @@ interface AppState {
   resolvePendingPairing(peerKey: string): void;
   setRadios(radios: Partial<RadioStatus>): void;
   setOffline(offline: boolean): void;
+  /**
+   * Both counts at once, because they are recomputed together.
+   *
+   * One action rather than two setters: the notification centre works both
+   * figures out in a single pass over the database, and writing them
+   * separately would re-render the whole tab bar twice for one arriving
+   * message.
+   */
+  setWaiting(counts: WaitingCounts): void;
   setDeveloperMode(on: boolean): void;
   reset(): void;
 }
@@ -49,6 +76,7 @@ const INITIAL_RADIOS: RadioStatus = {
   bluetoothOn: false,
   wifiOn: false,
   detail: null,
+  bluetoothReason: null,
 };
 
 export const useAppStore = create<AppState>((set) => ({
@@ -59,6 +87,8 @@ export const useAppStore = create<AppState>((set) => ({
   pendingPairings: [],
   radios: INITIAL_RADIOS,
   offline: true,
+  unreadChats: 0,
+  pendingInvites: 0,
   developerMode: false,
 
   setPhase: (phase, failure) => set({ phase, failure: failure ?? null }),
@@ -95,6 +125,16 @@ export const useAppStore = create<AppState>((set) => ({
 
   setRadios: (radios) => set((state) => ({ radios: { ...state.radios, ...radios } })),
   setOffline: (offline) => set({ offline }),
+
+  setWaiting: ({ unreadChats, pendingInvites }) =>
+    set((state) =>
+      // A no-op write would still notify every subscriber, and this one is
+      // called on every chat publish - including the ones that only moved a
+      // tick mark.
+      state.unreadChats === unreadChats && state.pendingInvites === pendingInvites
+        ? state
+        : { unreadChats, pendingInvites },
+    ),
   setDeveloperMode: (developerMode) => set({ developerMode }),
 
   reset: () =>
@@ -105,6 +145,8 @@ export const useAppStore = create<AppState>((set) => ({
       peers: [],
       pendingPairings: [],
       radios: INITIAL_RADIOS,
+      unreadChats: 0,
+      pendingInvites: 0,
       developerMode: false,
     }),
 }));
@@ -123,6 +165,8 @@ export const selectConnected = (s: AppState): PeerView[] =>
 export const selectRadios = (s: AppState): RadioStatus => s.radios;
 export const selectPendingPairings = (s: AppState): PendingPairing[] => s.pendingPairings;
 export const selectDeveloperMode = (s: AppState): boolean => s.developerMode;
+export const selectUnreadChats = (s: AppState): number => s.unreadChats;
+export const selectPendingInvites = (s: AppState): number => s.pendingInvites;
 
 export const selectPeer =
   (key: string) =>

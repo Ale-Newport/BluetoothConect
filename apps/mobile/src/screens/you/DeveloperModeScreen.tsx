@@ -198,6 +198,17 @@ export function DeveloperModeScreen(): React.JSX.Element {
     navigation.goBack();
   }, [client, navigation]);
 
+  const [wifiSuppressed, setWifiSuppressed] = useState(() => client.wifiSuppressed());
+
+  const toggleWifi = useCallback(() => {
+    const next = !wifiSuppressed;
+    setWifiSuppressed(next);
+    void (async () => {
+      await client.setWifiSuppressed(next);
+      refresh();
+    })();
+  }, [client, wifiSuppressed, refresh]);
+
   const transports = asRecord(snapshot.transports);
   const native = asRecord(snapshot.nativeCapabilities);
   const sessions = asArray(snapshot.sessions);
@@ -224,7 +235,19 @@ export function DeveloperModeScreen(): React.JSX.Element {
       <SectionHeading>{local.developer.deviceSection}</SectionHeading>
       <Group>
         <KeyValue label={local.developer.peerId} value={describeValue(snapshot.peerId)} />
-        <KeyValue label={local.developer.deviceId} value={describeValue(snapshot.deviceId)} />
+        {/*
+          The three identifiers that decide whether this device can tell itself
+          apart from everybody else. When it could not, it listed itself as a
+          nearby stranger, and there was no way to see why from the phone.
+        */}
+        <KeyValue label={local.developer.installationId} value={describeValue(snapshot.installationId)} />
+        <KeyValue label={local.developer.keyFingerprint} value={describeValue(snapshot.publicKeyFingerprint)} />
+        <KeyValue label={local.developer.discoveryId} value={describeValue(snapshot.discoveryId)} />
+        <KeyValue label={local.developer.ownTokens} value={formatCount(asNumber(snapshot.rememberedOwnTokens))} />
+        <KeyValue
+          label={local.developer.armedTransports}
+          value={describeNativeTransports(asArray(snapshot.armedTransports))}
+        />
         <KeyValue label={local.developer.protocolVersion} value={describeValue(snapshot.protocolVersion)} />
         <KeyValue label={local.developer.appVersion} value={describeValue(snapshot.appVersion)} />
         <KeyValue label={local.developer.platform} value={describeValue(snapshot.platform)} />
@@ -262,6 +285,24 @@ export function DeveloperModeScreen(): React.JSX.Element {
       <Gap size="xl" />
       <SectionHeading>{local.developer.transportSection}</SectionHeading>
       <TransportList transports={transports} />
+
+      <Gap size="sm" />
+      {/* The only way to see the app with no Wi-Fi on a simulator, which has
+          no Bluetooth radio to fall back to. */}
+      <Button
+        title={wifiSuppressed ? local.developer.restoreWifi : local.developer.suppressWifi}
+        variant="secondary"
+        onPress={toggleWifi}
+      />
+      <Gap size="xs" />
+      <Label variant="footnote" tone="tertiary">
+        {wifiSuppressed ? local.developer.wifiSuppressed : local.developer.suppressWifiHint}
+      </Label>
+
+      {/* -- discovery ---------------------------------------------------- */}
+      <Gap size="xl" />
+      <SectionHeading>{local.developer.discoverySection}</SectionHeading>
+      <DiscoveryList rows={asArray(snapshot.discovered)} />
 
       {/* -- sessions ----------------------------------------------------- */}
       <Gap size="xl" />
@@ -480,6 +521,50 @@ function TransportList({ transports }: { transports: Record<string, unknown> | n
   );
 }
 
+/**
+ * Every row discovery is holding, including the ones it is holding BACK.
+ *
+ * That second group is the point. A sighting with nothing identifying in it no
+ * longer reaches the Home screen - which is the fix for a list full of "Unknown
+ * Device" - but it still exists, and being unable to see it would replace one
+ * invisible problem with another.
+ */
+function DiscoveryList({ rows }: { rows: readonly unknown[] }): React.JSX.Element {
+  if (rows.length === 0) {
+    return (
+      <Card>
+        <Label variant="footnote" tone="tertiary">
+          {local.developer.noDiscovered}
+        </Label>
+      </Card>
+    );
+  }
+  return (
+    <Group>
+      {rows.map((row, index) => {
+        const entry = asRecord(row) ?? {};
+        const resolution = describeValue(entry.resolution);
+        const held = resolution !== 'discoveredValid';
+        const name = describeValue(entry.displayName) || describeValue(entry.key);
+        return (
+          <KeyValue
+            key={index}
+            label={held ? `${name} (${local.developer.heldBack})` : name}
+            value={[
+              resolution,
+              describeValue(entry.discoveryId).slice(0, 8),
+              asArray(entry.transports).map((t) => describeValue(t)).join(' '),
+              asBoolean(entry.connected) ? 'connected' : '',
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          />
+        );
+      })}
+    </Group>
+  );
+}
+
 function SessionCard({ session }: { session: unknown }): React.JSX.Element | null {
   const entry = asRecord(session);
   if (entry === null) return null;
@@ -567,14 +652,26 @@ function hexOfByteArray(value: unknown): string {
   return bytesToHex(Uint8Array.from(bytes));
 }
 
+/**
+ * A list of transports, however it happens to be shaped.
+ *
+ * The native layer reports objects carrying `kind` and `supported`; the client
+ * reports the armed ones as plain strings. Both arrive here, and a helper that
+ * understood only the first quietly rendered the second as "—" - which read as
+ * "nothing is scanning" while two radios were scanning perfectly well. A dash
+ * that means "I could not parse this" and a dash that means "there are none"
+ * must not look the same on a diagnostics screen.
+ */
 function describeNativeTransports(entries: readonly unknown[]): string {
-  const supported = entries
-    .map((entry) => asRecord(entry))
-    .filter((entry): entry is Record<string, unknown> => entry !== null)
-    .filter((entry) => asBoolean(entry.supported) !== false)
-    .map((entry) => asString(entry.kind) ?? '')
+  const names = entries
+    .map((entry) => {
+      if (typeof entry === 'string') return entry;
+      const record = asRecord(entry);
+      if (!record || asBoolean(record.supported) === false) return '';
+      return asString(record.kind) ?? '';
+    })
     .filter(Boolean);
-  return supported.length > 0 ? supported.join(', ') : '—';
+  return names.length > 0 ? names.join(', ') : '—';
 }
 
 function perSecond(value: number | null): string {

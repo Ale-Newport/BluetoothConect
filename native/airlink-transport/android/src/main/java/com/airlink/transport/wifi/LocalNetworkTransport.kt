@@ -95,6 +95,8 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
 
         /** Hard cap on any single TXT value we will carry across the bridge. */
         const val MAX_TXT_VALUE_CHARS = 64
+        /** Exactly sixteen; anything else is not a discovery id and is dropped. */
+        const val DISCOVERY_ID_CHARS = 16
 
         /**
          * Ceiling on a decoded advertisement token. The real one is 6 bytes;
@@ -127,6 +129,8 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         const val TXT_VERSION = "v"
         const val TXT_TOKEN = "t"
         const val TXT_NAME = "n"
+        /** Sixteen hex characters, constant for the advertising app's run. */
+        const val TXT_DISCOVERY_ID = "d"
 
         /**
          * Android 17 (SDK 37) makes local network access a runtime permission.
@@ -189,6 +193,21 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
     /** The name we asked for, needed to recognise our own service before registration completes. */
     private var requestedServiceName: String? = null
 
+    /**
+     * The name this transport advertises for its whole life.
+     *
+     * Chosen once, at the first advertisement, and held until the transport is
+     * stopped - see the long note in [startAdvertising] for why deriving it
+     * from the rotating token was so damaging.
+     */
+    private var advertisedServiceName: String? = null
+
+    /**
+     * The record currently on the air, so a rotation that changes nothing
+     * visible does not tear the registration down and put it back.
+     */
+    private var advertisedRecord: String? = null
+
     private val endpoints = LinkedHashMap<String, ResolvedEndpoint>()
 
     /**
@@ -225,6 +244,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         val port: Int,
         val displayName: String,
         val token: String,
+        val discoveryId: String,
     )
 
     private class LinkRecord(val link: FramedTcpLink, val endpointId: String)
@@ -400,26 +420,52 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
 
     // -- advertising ----------------------------------------------------------
 
-    override fun startAdvertising(token: ByteArray, displayName: String) {
+    override fun startAdvertising(token: ByteArray, displayName: String, discoveryId: String) {
         val manager = nsdManager ?: throw AirLinkError.Failed("network service discovery is unavailable")
         val config = configuration ?: throw AirLinkError.NotStarted()
         val tcpServer = server ?: throw AirLinkError.NotStarted()
         if (tcpServer.port == 0) throw AirLinkError.NotStarted()
 
         val tokenBase64 = if (token.isEmpty()) "" else Base64.encodeToString(token, Base64.NO_WRAP)
-        // The instance name is public, so it is derived from the rotating token
-        // rather than from anything durable. Two devices advertising the same
-        // token would collide, and mDNS resolves that by renaming one of them -
-        // which onServiceRegistered tells us about.
-        val suffix = if (tokenBase64.length >= 6) {
-            tokenBase64.substring(0, 6).replace(Regex("[^A-Za-z0-9]"), "0")
-        } else {
-            java.lang.Long.toHexString(System.nanoTime() and 0xFFFFFF)
-        }
-        val instanceName = "AirLink-$suffix"
+
+        /*
+         * The instance name is fixed for the life of this transport.
+         *
+         * It used to be DERIVED FROM THE TOKEN - and the token rotates every
+         * four seconds, so every four seconds this device unregistered its
+         * mDNS service and registered a different one. The consequences were
+         * severe and all of them were reported as separate bugs:
+         *
+         *   The instance name IS the endpointId, so to every other phone this
+         *   device became a brand-new peer every four seconds. One friend
+         *   appeared as a growing column of rows, each with its own Connect
+         *   button, because a row only decays after fifteen seconds.
+         *
+         *   Dialling one of the older rows failed, because the service it named
+         *   had already been unregistered.
+         *
+         *   Between the unregister and the next registration, this transport's
+         *   own self-filter had no name to compare against, so during that
+         *   window it reported ITSELF as a nearby device.
+         *
+         * A per-run random name has none of those problems and gives away no
+         * more: it is fresh on every launch, so it links nothing across time,
+         * which is the only property the token-derived version was buying.
+         */
+        val instanceName = advertisedServiceName ?: newServiceName().also { advertisedServiceName = it }
 
         onControl {
-            stopAdvertisingInternal()
+            /*
+             * Only tear the registration down when the RECORD has actually
+             * changed. A token rotation with nothing else moving is a new TXT
+             * value under the same name, and re-registering for that was the
+             * whole of the churn described above.
+             */
+            val record = "$tokenBase64|$displayName|$discoveryId|${tcpServer.port}"
+            if (registrationListener != null && record == advertisedRecord) return@onControl
+            advertisedRecord = record
+
+            stopAdvertisingInternal(keepName = true)
 
             val info = NsdServiceInfo().apply {
                 serviceName = instanceName
@@ -427,6 +473,11 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 port = tcpServer.port
                 setAttribute(TXT_VERSION, "1")
                 if (tokenBase64.isNotEmpty()) setAttribute(TXT_TOKEN, tokenBase64)
+                // Sixteen bytes of TXT that end an entire class of bug: this is
+                // what lets our own browser recognise our own registration, and
+                // what lets this phone be recognised as the same phone over
+                // Bluetooth.
+                if (discoveryId.isNotEmpty()) setAttribute(TXT_DISCOVERY_ID, discoveryId)
                 // Presence of the key is the opt-in signal, so an empty name is
                 // published as no key at all rather than as "".
                 if (displayName.isNotEmpty()) {
@@ -482,8 +533,18 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
                 // keeping it would go on filtering a real peer that happened to
                 // pick it. See the note in stopAdvertisingInternal().
                 requestedServiceName = null
+                advertisedRecord = null
                 log("error", "advertising failed: ${nsdError(errorCode)}")
-                events?.availabilityChanged(kind, false, UnavailableReason.UNKNOWN)
+                /*
+                 * Deliberately NOT reported as the radio being unavailable.
+                 *
+                 * A registration can fail for reasons that have nothing to do
+                 * with whether Wi-Fi works - NSD busy, a name collision, the
+                 * daemon restarting - and reporting it as unavailability
+                 * latched this transport off for the rest of the session, with
+                 * nothing to turn it back on. The next rotation retries in four
+                 * seconds, which is the right answer to a transient failure.
+                 */
             }
         }
 
@@ -503,11 +564,26 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         private fun isCurrent(): Boolean = registrationListener === this
     }
 
+    /**
+     * A fresh, public, meaningless instance name.
+     *
+     * Random rather than derived from anything, so it identifies this run and
+     * nothing else. Six hex characters is ample: a collision inside one cabin
+     * is vanishingly unlikely, and mDNS resolves one anyway by renaming us,
+     * which `onServiceRegistered` reports.
+     */
+    private fun newServiceName(): String {
+        val bytes = ByteArray(3)
+        java.security.SecureRandom().nextBytes(bytes)
+        val suffix = bytes.joinToString("") { "%02x".format(it) }
+        return "AirLink-$suffix"
+    }
+
     override fun stopAdvertising() {
         onControl { stopAdvertisingInternal() }
     }
 
-    private fun stopAdvertisingInternal() {
+    private fun stopAdvertisingInternal(keepName: Boolean = false) {
         // Cleared BEFORE the early return below, and that order is the point.
         // onRegistrationFailed drops the listener but cannot clear the name we
         // ASKED for, so a failed advertisement used to leave `requestedServiceName`
@@ -517,6 +593,13 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         // never reported at all.
         registeredServiceName = null
         requestedServiceName = null
+        if (!keepName) {
+            // A genuine stop forgets the name so the next start picks a fresh
+            // one; a re-registration under the same name deliberately keeps it,
+            // which is what makes this device's endpointId stable to its peers.
+            advertisedServiceName = null
+            advertisedRecord = null
+        }
         val manager = nsdManager ?: return
         val listener = registrationListener ?: return
         registrationListener = null
@@ -669,7 +752,17 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         // Our own advertisement comes back to us; there is no flag for it, only
         // the name, which is why we remember both what we asked for and what the
         // system settled on after any collision rename.
-        if (name == registeredServiceName || name == requestedServiceName) return
+        /*
+         * Our own service, coming back to our own browser. mDNS has no flag for
+         * it, only the name.
+         *
+         * Three names are checked, not two. `advertisedServiceName` is chosen
+         * before registration is even attempted and held for the life of the
+         * transport, so it covers the windows the other two do not: before the
+         * platform has confirmed the registration, and after a failure cleared
+         * them. Those windows are when this device used to list itself.
+         */
+        if (name == registeredServiceName || name == requestedServiceName || name == advertisedServiceName) return
         if (serviceInfoCallbacks.containsKey(name)) return
         // Three separate bounds because a service can sit in any one of these
         // and never reach the next: a noisy - or hostile - network can announce
@@ -868,8 +961,9 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         }
         val token = sanitisedToken(attributes[TXT_TOKEN])
         val displayName = textOf(attributes[TXT_NAME], MAX_DISPLAY_NAME_CHARS)
+        val discoveryId = textOf(attributes[TXT_DISCOVERY_ID], DISCOVERY_ID_CHARS)
 
-        val endpoint = ResolvedEndpoint(name, addresses, port, displayName, token)
+        val endpoint = ResolvedEndpoint(name, addresses, port, displayName, token, discoveryId)
         endpoints[name] = endpoint
         events?.peerDiscovered(endpointOf(endpoint))
     }
@@ -905,6 +999,7 @@ class LocalNetworkTransport(private val context: Context) : AirLinkTransport {
         endpoint.serviceName,
         endpoint.displayName,
         endpoint.token,
+        endpoint.discoveryId,
         // mDNS carries no signal strength. 0 is the contract's "not reported".
         0,
     )

@@ -14,6 +14,7 @@ import { render } from '@testing-library/react-native';
 import { allGames } from '@airlink/games';
 import { ALL_ICON_NAMES, Icon, ThemeProvider } from '../src/ui/index.js';
 import { DRAWN_GAME_IDS, GameArt } from '../src/screens/play/gameArt.js';
+import { hasRenderer } from '../src/screens/play/games/index.js';
 
 /** Count the drawing primitives an icon produced, at any depth. */
 function shapeCount(node: unknown): number {
@@ -46,4 +47,19 @@ test.each(allGames().map((entry) => entry.definition.id))('the %s tile has a mar
 test('the catalogue and the drawn set agree, in both directions', () => {
   const inCatalogue = allGames().map((entry) => entry.definition.id).sort();
   expect([...DRAWN_GAME_IDS].sort()).toEqual(inCatalogue);
+});
+
+test('every game in the catalogue can also be drawn as a board', () => {
+  /**
+   * The catalogue makes two promises about a game: that its rules exist, and
+   * that something can put it on screen. `hasRenderer` is the second half, and
+   * a game missing from it is not a crash - it is a permanently disabled tile,
+   * and an invitation for it is auto-declined with a reason the other person
+   * never sees. That is the quietest possible way to ship a broken game, which
+   * is exactly why it is asserted here.
+   */
+  const undrawable = allGames()
+    .map((entry) => entry.definition.id)
+    .filter((id) => !hasRenderer(id));
+  expect(undrawable).toEqual([]);
 });

@@ -38,24 +38,42 @@ enum BleIdentityRecord {
     static let maxTokenLength = 32
 
     private static let flagHasPSM: UInt8 = 1 << 0
+    private static let flagHasDiscoveryId: UInt8 = 1 << 1
     private static let headerLength = 5
+    /// Sixteen hex characters. See `DiscoveredEndpoint.discoveryId`.
+    static let discoveryIdLength = 16
 
     struct Contents {
         var token: Data
         var displayName: String
         var psm: UInt16
+        var discoveryId: String
     }
 
-    static func encode(token: Data, displayName: String, psm: UInt16) -> Data {
+    static func encode(token: Data, displayName: String, psm: UInt16, discoveryId: String) -> Data {
         let clampedToken = token.count > maxTokenLength ? token.prefix(maxTokenLength) : token[...]
+
+        // Only a well-formed id is published. A malformed one would be compared
+        // against ours by the layer above, and something that can never match is
+        // worse than nothing at all: it looks like a working filter.
+        let idBytes = Data(discoveryId.utf8)
+        let hasDiscoveryId = idBytes.count == discoveryIdLength
+
+        var flags: UInt8 = 0
+        if psm != 0 { flags |= flagHasPSM }
+        if hasDiscoveryId { flags |= flagHasDiscoveryId }
 
         var out = Data(capacity: maxEncodedLength)
         out.append(version)
-        out.append(psm == 0 ? 0 : flagHasPSM)
+        out.append(flags)
         out.append(UInt8(truncatingIfNeeded: psm >> 8))
         out.append(UInt8(truncatingIfNeeded: psm))
         out.append(UInt8(clampedToken.count))
         out.append(contentsOf: clampedToken)
+        if hasDiscoveryId {
+            out.append(UInt8(idBytes.count))
+            out.append(idBytes)
+        }
 
         // The name is whatever room is left. Truncating UTF-8 by bytes can split
         // a scalar, so drop whole characters until it fits - a name that arrives
@@ -84,13 +102,26 @@ enum BleIdentityRecord {
         guard tokenLength <= maxTokenLength, headerLength + tokenLength <= bytes.count else { return nil }
 
         let token = Data(bytes[headerLength ..< headerLength + tokenLength])
-        let nameBytes = Data(bytes[(headerLength + tokenLength)...])
+        var cursor = headerLength + tokenLength
+
+        var discoveryId = ""
+        if (flags & flagHasDiscoveryId) != 0 {
+            guard cursor < bytes.count else { return nil }
+            let idLength = Int(bytes[cursor])
+            cursor += 1
+            guard idLength == discoveryIdLength, cursor + idLength <= bytes.count else { return nil }
+            discoveryId = String(data: Data(bytes[cursor ..< cursor + idLength]), encoding: .utf8) ?? ""
+            cursor += idLength
+        }
+
+        let nameBytes = Data(bytes[cursor...])
         let name = String(data: nameBytes, encoding: .utf8) ?? ""
 
         return Contents(
             token: token,
             displayName: name,
-            psm: (flags & flagHasPSM) != 0 ? psm : 0
+            psm: (flags & flagHasPSM) != 0 ? psm : 0,
+            discoveryId: discoveryId
         )
     }
 }

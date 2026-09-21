@@ -17,7 +17,7 @@ packages/core              Pure TypeScript. No React, no platform APIs, no depen
   ├── pairing/             QR and six-digit pairing, trust store, rotating tokens
   └── presence/            the nearby registry the Home screen renders
 
-packages/games             Deterministic game reducers, turn-based and realtime runtimes, 12 games
+packages/games             Deterministic game reducers, turn-based and realtime runtimes, 28 games
 packages/db                SQLite schema, migrations, typed repositories
 packages/config            Branding: name, colours, strings, bundle ids — one place
 
@@ -86,6 +86,52 @@ re-establish.
 That is what makes a transport upgrade invisible, and it is covered by a test
 that drops the link mid-conversation, reconnects over a *different* transport,
 and asserts that not one message was lost.
+
+---
+
+## Who a peer is
+
+A peer has one name, and everything uses it. That sentence is here because for a
+long time it was not true, and almost every defect found on real phones was a
+consequence.
+
+| identifier | lifetime | travels | answers |
+|---|---|---|---|
+| `peerId` | forever | inside the handshake | "who is this, cryptographically?" |
+| `installationId` | until reinstall | inside the encrypted capability exchange | "same phone?" and "who dials?" |
+| `discoveryId` | one app run | in every advertisement, in clear | "is this me?" and "same phone, other radio?" |
+| `advertisementToken` | 4 seconds | in every advertisement, in clear | "is this a friend I have paired with?" |
+| `endpointId` | a radio's whim | never | nothing. It is a handle |
+
+The two in the middle are the ones added during stabilisation, and they exist
+because **before a handshake there was nothing to compare**. Self-filtering,
+peer deduplication and "am I already connected to this person?" were all built
+on a token that rotates every four seconds or on a Bonjour service name, and all
+three failed in the same conditions — under load, into a state where a phone
+listed *itself* as somebody to connect to.
+
+`discoveryId` is deliberately **not** durable. A stable identifier broadcast in
+the clear would let anyone within radio range log a phone's comings and goings
+across days, which is precisely what the rotating token exists to prevent. Fresh
+on every launch answers the question completely and links nothing across time.
+
+There is exactly one `isSelf` (`packages/core/src/presence/selfFilter.ts`), used
+by every transport. It replaced three separate self-checks — one in the client,
+one in each platform's Bonjour listener — that could and did drift apart.
+
+### Connected means connected
+
+`NearbyRegistry` holds one row per physical device, keyed in descending order of
+trust: a resolved friend's peer id, then the discovery id, then the endpoint,
+then the token. A row also has a **resolution state**, and one that has not been
+identified never reaches the interface at all — it is held for a few seconds
+while the transport fills it in, then discarded. That is the whole of the fix
+for a screen full of "Unknown Device": those rows are not hidden after the fact,
+they never arrive.
+
+While a session is live, its row is pinned. Discovery of that peer updates
+metadata and can do nothing else: it cannot open a second row, it cannot be
+swept for going quiet, and it cannot be re-keyed out from under the session.
 
 ---
 

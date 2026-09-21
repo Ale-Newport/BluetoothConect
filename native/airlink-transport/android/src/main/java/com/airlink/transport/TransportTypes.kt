@@ -113,6 +113,16 @@ data class DiscoveredEndpoint(
     val name: String,
     /** Base64 of the rotating advertisement token, or "" when absent. */
     val token: String,
+    /**
+     * Sixteen hex characters identifying the advertising installation for the
+     * length of its app run, or "" when the peer's build predates it.
+     *
+     * Fresh on every launch, so it links nothing across time; constant while
+     * the app runs, so recognising our own advertisement is exact rather than a
+     * race against a rotation, and one phone seen on two radios is recognisable
+     * as one phone before either has said a word.
+     */
+    val discoveryId: String = "",
     /** dBm, or 0 when the transport does not report signal strength. */
     val rssi: Int,
 ) {
@@ -122,6 +132,7 @@ data class DiscoveredEndpoint(
         putString("endpointId", endpointId)
         putString("name", name)
         putString("token", token)
+        putString("discoveryId", discoveryId)
         putInt("rssi", rssi)
     }
 }
@@ -234,8 +245,9 @@ interface AirLinkTransport {
     /**
      * @param token the rotating advertisement token, already decoded from base64
      * @param displayName included only when the user opted in; "" otherwise
+     * @param discoveryId sixteen hex characters, constant for this app run
      */
-    fun startAdvertising(token: ByteArray, displayName: String)
+    fun startAdvertising(token: ByteArray, displayName: String, discoveryId: String)
     fun stopAdvertising()
 
     fun startDiscovery()

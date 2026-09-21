@@ -99,6 +99,11 @@ class BleTransport(context: Context) : AirLinkTransport {
     private var wantsDiscovery = false
     private var advertisedToken: ByteArray? = null
     private var advertisedName: String = ""
+    /**
+     * See `DiscoveredEndpoint.discoveryId`. Held here because the GATT server is
+     * restarted on a Bluetooth state change and has to be handed the same value.
+     */
+    private var advertisedDiscoveryId: String = ""
 
     private var scanner: BleScanner? = null
     private var gattServer: BleGattServer? = null
@@ -241,10 +246,11 @@ class BleTransport(context: Context) : AirLinkTransport {
 
     // -- AirLinkTransport: advertising and discovery ---------------------------
 
-    override fun startAdvertising(token: ByteArray, displayName: String) {
+    override fun startAdvertising(token: ByteArray, displayName: String, discoveryId: String) {
         onHandler("startAdvertising") {
             val server = gattServer ?: throw BleErrors.notStarted()
-            server.startAdvertising(token, displayName)
+            advertisedDiscoveryId = discoveryId
+            server.startAdvertising(token, displayName, discoveryId)
             advertisedToken = token.copyOf()
             advertisedName = displayName
         }
@@ -351,7 +357,7 @@ class BleTransport(context: Context) : AirLinkTransport {
                 host = linkHost,
                 linkId = newLinkId(),
                 onIdentity = { endpoint, record ->
-                    scanner?.enrich(endpoint, record.name, record.token)
+                    scanner?.enrich(endpoint, record.name, record.token, record.discoveryId)
                 },
                 onFailed = { error ->
                     if (!answered) {
@@ -583,7 +589,7 @@ class BleTransport(context: Context) : AirLinkTransport {
                     val token = advertisedToken
                     if (token != null) {
                         try {
-                            server.startAdvertising(token, advertisedName)
+                            server.startAdvertising(token, advertisedName, advertisedDiscoveryId)
                         } catch (t: Throwable) {
                             emitLog("warn", "could not resume advertising: ${t.message ?: "unknown"}")
                         }

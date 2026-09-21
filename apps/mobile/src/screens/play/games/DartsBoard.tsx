@@ -171,6 +171,9 @@ export function DartsBoard({
         style={{ width: size, height: size, alignSelf: 'center' }}
         onStartShouldSetResponder={() => canThrow}
         onMoveShouldSetResponder={() => canThrow}
+        // Once this board has the gesture it keeps it. A drag on a table is a
+        // move, never a scroll and never a navigation.
+        onResponderTerminationRequest={() => false}
         onResponderGrant={(event) => setAim(toBoard(event))}
         onResponderMove={(event) => setAim(toBoard(event))}
         onResponderRelease={release}

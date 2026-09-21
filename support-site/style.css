@@ -1,0 +1,306 @@
+/*
+ * One small stylesheet for both pages.
+ *
+ * No web fonts and no external requests of any kind: a privacy policy that
+ * claims the app makes no network connections should not itself call out to a
+ * font CDN that logs the reader's IP address. The system font stack is also
+ * what the app itself uses on iOS, so the site looks like it belongs to it.
+ *
+ * Colours are declared once as custom properties and redefined for dark mode,
+ * so every rule below is written once. The app moved away from a single hue;
+ * the site borrows the same idea - one colour per area of meaning - without
+ * becoming a carnival.
+ */
+
+:root {
+  --bg: #fbfaf8;
+  --surface: #ffffff;
+  --border: #e4e0d8;
+  --text: #1b1a17;
+  --text-muted: #5d5a53;
+  --accent: #1f6feb;
+  --accent-soft: #eaf1ff;
+  --chat: #2f8f6d;
+  --chat-soft: #e6f4ee;
+  --play: #b4622a;
+  --play-soft: #fdeee2;
+  --warn: #8a5a00;
+  --warn-soft: #fff6e0;
+  --edit-bg: #fff0f0;
+  --edit-border: #c0392b;
+  --edit-text: #8b1f12;
+  --shadow: 0 1px 2px rgba(27, 26, 23, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14151a;
+    --surface: #1c1e25;
+    --border: #2f323c;
+    --text: #edeef2;
+    --text-muted: #a5a9b5;
+    --accent: #79a9ff;
+    --accent-soft: #1b2740;
+    --chat: #6cc9a4;
+    --chat-soft: #16302a;
+    --play: #e0946a;
+    --play-soft: #33241a;
+    --warn: #e5bd6a;
+    --warn-soft: #302818;
+    --edit-bg: #351c1a;
+    --edit-border: #e06a5a;
+    --edit-text: #ffb3a7;
+    --shadow: none;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0 20px 72px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+main,
+header,
+footer {
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+header {
+  padding: 48px 0 8px;
+}
+
+.wordmark {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 12px;
+}
+
+h1 {
+  font-size: 2rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  margin: 0 0 12px;
+}
+
+h2 {
+  font-size: 1.3rem;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  margin: 40px 0 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin: 28px 0 6px;
+}
+
+.lede {
+  font-size: 1.1rem;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+
+p,
+ul,
+ol {
+  margin: 0 0 16px;
+}
+
+ul,
+ol {
+  padding-left: 22px;
+}
+
+li {
+  margin-bottom: 6px;
+}
+
+a {
+  color: var(--accent);
+}
+
+a:hover {
+  text-decoration: none;
+}
+
+strong {
+  font-weight: 650;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.meta {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+/* Navigation between the two pages, and back to the top of a long one. */
+nav.pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 24px 0 8px;
+}
+
+nav.pages a {
+  display: inline-block;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.92rem;
+  box-shadow: var(--shadow);
+}
+
+nav.pages a[aria-current="page"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* A boxed answer. The accent stripe is the only decoration. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin: 0 0 16px;
+  box-shadow: var(--shadow);
+}
+
+.card > :last-child {
+  margin-bottom: 0;
+}
+
+.card h3 {
+  margin-top: 0;
+}
+
+.card.chat {
+  border-left-color: var(--chat);
+}
+
+.card.play {
+  border-left-color: var(--play);
+}
+
+.callout {
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0 0 20px;
+}
+
+.callout > :last-child {
+  margin-bottom: 0;
+}
+
+/* Numbered steps, used for pairing. */
+ol.steps {
+  counter-reset: step;
+  list-style: none;
+  padding-left: 0;
+}
+
+ol.steps li {
+  counter-increment: step;
+  position: relative;
+  padding-left: 40px;
+  margin-bottom: 14px;
+}
+
+ol.steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/*
+ * Anything the owner must replace before publishing is deliberately loud.
+ * A placeholder that blends in is a placeholder that ships, and a reviewer who
+ * opens a privacy policy containing "example.invalid" reads it as no policy.
+ */
+.edit-me {
+  background: var(--edit-bg);
+  border: 2px dashed var(--edit-border);
+  border-radius: 6px;
+  color: var(--edit-text);
+  padding: 1px 6px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.edit-note {
+  display: block;
+  background: var(--edit-bg);
+  border: 2px dashed var(--edit-border);
+  border-radius: 10px;
+  color: var(--edit-text);
+  padding: 12px 14px;
+  margin: 0 0 20px;
+  font-size: 0.92rem;
+}
+
+footer {
+  margin-top: 48px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+@media (max-width: 480px) {
+  body {
+    font-size: 16px;
+    padding: 0 16px 56px;
+  }
+
+  header {
+    padding-top: 32px;
+  }
+
+  h1 {
+    font-size: 1.6rem;
+  }
+}

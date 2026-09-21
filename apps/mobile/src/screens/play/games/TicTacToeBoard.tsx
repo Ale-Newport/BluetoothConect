@@ -38,7 +38,17 @@ export function TicTacToeBoard({
 
   const board = Math.min(width, MAX_BOARD);
   const gap = theme.spacing.sm;
-  const cell = (board - theme.spacing.sm * 2 - gap * GAP_UNITS) / 3;
+  /*
+   * Floored, because a row that fits EXACTLY does not reliably fit.
+   *
+   * `BoardSurface` carries its padding inside its own width, so three cells and
+   * two gaps come to precisely the inner width - and flexbox wraps on `>`, not
+   * on `>=`. One sub-pixel of rounding anywhere in that sum sends the third
+   * cell onto its own line, which is how a 3x3 grid became a 2-wide column of
+   * nine. The box is measured now rather than computed from the window, so
+   * fractional widths are the normal case rather than the exception.
+   */
+  const cell = Math.floor((board - theme.spacing.sm * 2 - gap * GAP_UNITS) / 3);
 
   const winning = useMemo(() => new Set(state.winningLine ?? []), [state.winningLine]);
   const myTurn = turn === local;

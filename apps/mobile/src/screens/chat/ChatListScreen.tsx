@@ -16,6 +16,7 @@ import {
   Gap,
   Label,
   SectionHeading,
+  StatusBarBackdrop,
   StatusDot,
   haptic,
   useTheme,
@@ -191,6 +192,7 @@ export function ChatListScreen(): React.JSX.Element {
         initialNumToRender={12}
         windowSize={9}
       />
+      <StatusBarBackdrop />
     </View>
   );
 }

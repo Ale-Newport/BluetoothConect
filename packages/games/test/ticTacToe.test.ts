@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ticTacToe } from '../src/games/ticTacToe.js';
 import { GameSession } from '../src/runtime.js';
 import { runConformance } from '../src/conformance.js';
-import { GameStatusKind } from '../src/engine.js';
+import { GameStatusKind, createContext } from '../src/engine.js';
 
 const setup = { players: ['a', 'b'], seed: 42, options: {} };
 
@@ -154,5 +154,38 @@ describe('tic-tac-toe conformance', () => {
       );
       expect(report.failures).toEqual([]);
     }
+  });
+});
+
+describe('a winner off the wire', () => {
+  /**
+   * A snapshot decides what every screen says about who won, so a name in it
+   * that belongs to nobody at the table is not a missing winner - it is a peer
+   * claiming a result that cannot have happened. Shared with Connect Four and
+   * Gomoku, which have the same field and had the same gap.
+   */
+  it('is refused when it names somebody who is not playing', () => {
+    const start = ticTacToe.createInitialState({ players: ['a', 'b'], seed: 1, options: {} });
+    const encoded = ticTacToe.encodeState(start) as Record<string, unknown>;
+    encoded.w = 'mallory';
+    expect(() => ticTacToe.decodeState(encoded as never)).toThrow();
+  });
+
+  it('is refused when it is not a string at all', () => {
+    const start = ticTacToe.createInitialState({ players: ['a', 'b'], seed: 1, options: {} });
+    const encoded = ticTacToe.encodeState(start) as Record<string, unknown>;
+    encoded.w = 7;
+    expect(() => ticTacToe.decodeState(encoded as never)).toThrow();
+  });
+
+  it('is accepted when it names a real player, and round-trips', () => {
+    const setup = { players: ['a', 'b'], seed: 1, options: {} };
+    const context = createContext(setup.players, setup.seed);
+    let state = ticTacToe.createInitialState(setup);
+    for (const [player, cell] of [['a', 0], ['b', 3], ['a', 1], ['b', 4], ['a', 2]] as const) {
+      state = ticTacToe.applyAction(state, { type: 'place', player, seq: 0, payload: { cell } }, context);
+    }
+    expect(state.winner).toBe('a');
+    expect(ticTacToe.decodeState(ticTacToe.encodeState(state)).winner).toBe('a');
   });
 });

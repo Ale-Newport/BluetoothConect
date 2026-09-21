@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Clipboard,
   FlatList,
@@ -30,7 +31,10 @@ import {
 import type { RootStackParams } from '../../navigation/routes.js';
 import { isOutgoing, isOwnReaction, type ConversationPage } from './chatCenter.js';
 import { useConversation } from './useChat.js';
+import { useClient } from '../../client/ClientProvider.js';
+import { canContactDeveloper, contactDeveloper, reportAndBlock } from './reportPeer.js';
 import { MessageBubble, type AttachmentView, type BubbleRow } from './MessageBubble.js';
+import type { OutgoingAttachment } from './attachments.js';
 import { Composer } from './Composer.js';
 import { MessageActions } from './MessageActions.js';
 import { RUN_BREAK_MS, daySeparatorLabel, isSameDay } from './chatTime.js';
@@ -68,11 +72,13 @@ export function ConversationScreen(): React.JSX.Element {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
   const route = useRoute<ConversationRoute>();
   const { peerKey, title } = route.params;
+  const client = useClient();
 
   const conversation = useConversation(peerKey, title);
   const {
     centre,
     peerId,
+    conversationId,
     displayName,
     avatarColor,
     connection,
@@ -83,7 +89,9 @@ export function ConversationScreen(): React.JSX.Element {
     page,
     loadMore,
     send,
+    sendAttachment,
     retry,
+    progressFor,
     react,
     remove,
     setTyping,
@@ -151,6 +159,44 @@ export function ConversationScreen(): React.JSX.Element {
     [page.reactions, react, displayName],
   );
 
+  /**
+   * Report and block, from the message itself.
+   *
+   * Guideline 1.2 asks for a way to report offensive content and to block the
+   * person who sent it. There is no server to report TO - the message came
+   * straight from their phone to this one and we never had a copy - so the
+   * confirmation says so rather than implying a moderator will read it. What
+   * it does do is immediate and local: block, drop the live session, delete
+   * the conversation.
+   */
+  const onReport = useCallback(() => {
+    setActionTarget(null);
+    Alert.alert(strings.safety.reportTitle(displayName), strings.safety.reportBody, [
+      { text: strings.common.cancel, style: 'cancel' },
+      {
+        text: strings.safety.reportConfirm,
+        style: 'destructive',
+        onPress: () => {
+          const outcome = reportAndBlock(client, peerId, conversationId);
+          if (!outcome.blocked) {
+            Alert.alert(strings.safety.reportFailed);
+            return;
+          }
+          // Offering the developer's address is pointless while it is still a
+          // placeholder, so the button is simply absent until one is set.
+          const buttons = canContactDeveloper()
+            ? [
+                { text: strings.common.done },
+                { text: strings.safety.contactDeveloper, onPress: () => void contactDeveloper() },
+              ]
+            : [{ text: strings.common.done }];
+          Alert.alert(strings.safety.reportedTitle, strings.safety.reportedBody(displayName), buttons);
+          navigation.goBack();
+        },
+      },
+    ]);
+  }, [client, peerId, conversationId, displayName, navigation]);
+
   const onCopy = useCallback((message: Message) => {
     // `Clipboard` is deprecated in React Native core but still shipped; moving
     // to @react-native-clipboard/clipboard is a dependency change, not a code
@@ -161,17 +207,41 @@ export function ConversationScreen(): React.JSX.Element {
     haptic('success');
   }, []);
 
+  /**
+   * A photo or a recording, straight into the conversation.
+   *
+   * Nothing is confirmed first: the composer has already made the choice
+   * explicit - a picker was open, or a recording bar was on screen - and a
+   * second "are you sure" over the top of that is the kind of ceremony that
+   * makes people stop sending things.
+   */
+  const onAttach = useCallback(
+    (attachment: OutgoingAttachment) => {
+      if (!sendAttachment(attachment, replyTo?.id ?? null)) {
+        setNotice(chatCopy.needsFirstConnection(displayName));
+        return;
+      }
+      setReplyTo(null);
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    },
+    [sendAttachment, replyTo, displayName],
+  );
+
   const renderItem = useCallback(
     ({ item }: { item: BubbleRow }) => (
       <MessageBubble
         row={item}
         peerName={displayName}
+        sendProgress={progressFor(item.message.id)}
         onLongPress={setActionTarget}
         onRetry={retry}
         onToggleReaction={onToggleReaction}
       />
     ),
-    [displayName, retry, onToggleReaction],
+    // `progressFor` changes identity while a photo is moving - that is
+    // deliberate, and it is what carries a new percentage into a memoised
+    // bubble. See `useConversation`.
+    [displayName, retry, onToggleReaction, progressFor],
   );
 
   const status = headerStatus(connection, isConnected);
@@ -294,6 +364,8 @@ export function ConversationScreen(): React.JSX.Element {
               value={draft}
               onChangeText={onChangeDraft}
               onSend={onSend}
+              onAttach={onAttach}
+              onNotice={setNotice}
               replyTo={replyTo}
               peerName={displayName}
               onCancelReply={() => setReplyTo(null)}
@@ -315,6 +387,8 @@ export function ConversationScreen(): React.JSX.Element {
           onToggleReaction(message.id, emoji);
         }}
         onCopy={onCopy}
+        // Not for your own messages: reporting yourself is not a thing.
+        onReport={actionTarget && !isOutgoing(actionTarget) ? onReport : undefined}
         onDelete={(message) => {
           setActionTarget(null);
           remove(message.id);

@@ -135,9 +135,24 @@ function findWinThrough(board: readonly Cell[], index: number, mark: Cell): read
   return null;
 }
 
+/**
+ * A winner off the wire, checked against the seats.
+ *
+ * `null` for "nobody has won", and an error for anything else: a string that
+ * names no player is not a missing winner, it is a peer claiming a result that
+ * cannot have happened.
+ */
+function decodeWinner(value: CborValue | undefined, players: readonly PlayerId[]): PlayerId | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw new Error('connectFour: winner must be a player id or null');
+  if (!players.includes(value)) throw new Error('connectFour: winner is not a player in this game');
+  return value;
+}
+
 export const connectFour: GameDefinition<ConnectFourState, ConnectFourAction> = {
   id: 'connect-four',
-  name: 'Connect Four',
+  /** Hasbro's trademark. Same reasoning as `battleship`: title changes, id does not. */
+  name: 'Four in a Row',
   protocolVersion: 1,
   mode: GameMode.TURN_BASED,
   minPlayers: 2,
@@ -236,7 +251,11 @@ export const connectFour: GameDefinition<ConnectFourState, ConnectFourAction> = 
       players,
       turnIndex: asInt(m.t, 'turnIndex', 0, 1),
       moveCount: asInt(m.m, 'moveCount', 0, CELL_COUNT),
-      winner: typeof m.w === 'string' ? m.w : null,
+      // A winner has to be somebody who is actually playing. A snapshot
+      // arriving from a peer decides what every screen shows about the
+      // result, so a name that is in no seat is refused rather than
+      // rendered as the person who won.
+      winner: decodeWinner(m.w, players),
       winningLine,
     };
   },

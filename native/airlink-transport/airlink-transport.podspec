@@ -21,7 +21,14 @@ Pod::Spec.new do |s|
   # remember to register.
   s.source_files = "ios/**/*.{h,m,mm,swift}"
 
-  s.frameworks   = "CoreBluetooth", "Network", "NetworkExtension", "SystemConfiguration"
+  # UserNotifications and AVFoundation are here for the two non-radio modules
+  # that share this pod: local notifications and voice-message recording. They
+  # live alongside the transports rather than in a pod of their own because
+  # there is exactly one place the app links native code, and splitting that
+  # into three would mean three podspecs and three codegen libraries to keep in
+  # step for no gain.
+  s.frameworks   = "CoreBluetooth", "Network", "NetworkExtension", "SystemConfiguration",
+                   "UserNotifications", "AVFoundation"
 
   # Pulls in React-Core, the New Architecture headers, and the generated
   # AirLinkTransportSpec so the TurboModule protocol is visible.

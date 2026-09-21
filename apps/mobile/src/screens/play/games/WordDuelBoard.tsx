@@ -139,6 +139,12 @@ export function WordDuelBoard({
     setFeedback({ text: accepted ? word.toUpperCase() : playText.wordDuel.notAWord, at: Date.now() });
   }, [dispatch, mine, state.grid]);
 
+  /** Drop a trace without submitting it. See `onResponderTerminate`. */
+  const abandonTrace = useCallback(() => {
+    pathRef.current = [];
+    setPath([]);
+  }, []);
+
   const traced = useMemo(() => new Set(path), [path]);
   const tracedWord = path.map((cell) => state.grid[cell] ?? '').join('');
 
@@ -172,7 +178,14 @@ export function WordDuelBoard({
           onResponderGrant={(event) => extend(cellAt(event))}
           onResponderMove={(event) => extend(cellAt(event))}
           onResponderRelease={finishTrace}
-          onResponderTerminate={finishTrace}
+          // A TERMINATED gesture is not a finished one. It used to run the same
+          // handler as a lift, so a trace interrupted by the page scrolling
+          // underneath it submitted whatever letters had been touched so far -
+          // a half-word, sent to the other phone, counted against you. Nothing
+          // can steal the gesture now, and if the system takes it anyway the
+          // trace is simply abandoned.
+          onResponderTerminate={abandonTrace}
+          onResponderTerminationRequest={() => false}
         >
           {state.grid.map((letter, index) => {
             const inPath = traced.has(index);

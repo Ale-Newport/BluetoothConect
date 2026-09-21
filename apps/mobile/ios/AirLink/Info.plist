@@ -24,6 +24,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -38,16 +40,13 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_airlink._tcp</string>
-		<string>_airlink._udp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>AirLink uses the camera to scan a friend's QR code so you can add them without typing anything.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>When you and your friend share a Wi-Fi network, AirLink uses it to send photos and video much faster. Only devices you connect to can see you.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>AirLink uses the microphone to record voice messages.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>AirLink saves photos your friends send you to your photo library.</string>
+	<string>AirLink uses the microphone when you record a voice message. It is sent straight to the friend you are talking to and never leaves the two phones.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>AirLink needs access to your photos so you can send them to a friend nearby.</string>
 	<key>RCTNewArchEnabled</key>
@@ -66,13 +65,6 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
-	<array>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
 	<key>UIUserInterfaceStyle</key>
 	<string>Automatic</string>

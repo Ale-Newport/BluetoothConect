@@ -188,6 +188,44 @@ corrects it. Not re-announcing loses people who are standing right there.
 
 ---
 
+## 3c. Every advertisement carries a discovery id
+
+Sixteen hex characters, chosen once per app run and broadcast by every transport
+that can carry any payload at all: the Bonjour TXT record on both platforms, and
+the BLE identity characteristic (there is no room in a BLE advertisement, and on
+iOS `CBPeripheralManager` honours only the local name and the service UUIDs
+anyway).
+
+It answers two questions that previously had no reliable answer:
+
+**"Is this me?"** Bonjour is not selective — a listener and a browser on the
+same device see each other — and an iPhone runs *two* local-network transports,
+each of which browses and finds the other's service. This was previously guessed
+at from a rotating token or a service name, and both guesses fail open, into a
+phone listing itself as somebody to connect to. An exact value that does not
+rotate cannot.
+
+**"Is this the same phone I can already see on the other radio?"** One
+installation broadcasts one discovery id everywhere, so a Bluetooth sighting and
+a Wi-Fi sighting of the same stranger merge before either device has said a
+word. The token can do this too, but only when both transports happen to be on
+the same four-second rotation, and they are not.
+
+It is deliberately **not** durable. A stable identifier broadcast in the clear
+would let anyone in radio range log a phone's comings and goings across days,
+which is precisely what the rotating token exists to prevent. Fresh on every
+launch answers both questions completely and links nothing across time.
+
+The persistent `installationId` — which already existed as `deviceId` — never
+goes on the air at all. It travels inside the encrypted capability exchange, and
+is what decides which of two phones dialling at the same instant yields.
+
+Both records are versioned by a flag bit rather than a version number, so a
+phone running an older build decodes everything it knew about and simply does
+not see the new field. Two people on a plane cannot both update.
+
+---
+
 ## 4. Negotiation and upgrade
 
 Both peers exchange their supported transports inside the encrypted handshake.

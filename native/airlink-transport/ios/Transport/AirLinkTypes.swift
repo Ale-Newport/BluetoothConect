@@ -42,10 +42,22 @@ struct DiscoveredEndpoint {
     let name: String
     /// Base64 of the rotating advertisement token, or "" when absent.
     let token: String
+    /// Sixteen hex characters identifying the advertising installation for the
+    /// length of its app run, or "" when the peer's build predates it. Fresh on
+    /// every launch, so it links nothing across time; constant while the app
+    /// runs, so "is this me?" is exact rather than a race against a rotation.
+    var discoveryId: String = ""
     let rssi: Int
 
     var payload: [String: Any] {
-        ["transport": transport.rawValue, "endpointId": endpointId, "name": name, "token": token, "rssi": rssi]
+        [
+            "transport": transport.rawValue,
+            "endpointId": endpointId,
+            "name": name,
+            "token": token,
+            "discoveryId": discoveryId,
+            "rssi": rssi,
+        ]
     }
 }
 
@@ -136,7 +148,7 @@ protocol AirLinkTransport: AnyObject {
     func start(configuration: TransportConfiguration) throws
     func stop()
 
-    func startAdvertising(token: Data, displayName: String) throws
+    func startAdvertising(token: Data, displayName: String, discoveryId: String) throws
     func stopAdvertising()
 
     func startDiscovery() throws

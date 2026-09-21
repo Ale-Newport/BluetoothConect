@@ -1,11 +1,12 @@
 import React, { useCallback, useMemo } from 'react';
 import { Image, Pressable, StyleSheet, View } from 'react-native';
-import { strings } from '@airlink/config';
+import { areaColor, areaColorMuted, strings } from '@airlink/config';
 import type { Message, MessageStatus, Reaction } from '@airlink/db';
 import { Icon, Label, haptic, useTheme } from '../../ui/index.js';
 import { isOutgoing, isOwnReaction } from './chatCenter.js';
 import { clockTime } from './chatTime.js';
 import { chatCopy } from './chatStrings.js';
+import { VoiceNote } from './VoiceNote.js';
 
 /**
  * One message.
@@ -38,10 +39,19 @@ export interface BubbleRow {
   readonly attachment: AttachmentView | null;
 }
 
+/**
+ * The file behind this message, as the bubble needs it.
+ *
+ * Structurally what `ChatCenter.fileFor` returns - kept declared here because
+ * this is the module that decides what a bubble is allowed to know.
+ */
 export interface AttachmentView {
   readonly name: string;
   readonly sizeBytes: number;
   readonly localPath: string | null;
+  readonly mimeType: string;
+  /** Set for a voice note, so its length reads before it has been played. */
+  readonly durationMs: number | null;
 }
 
 const MAX_BUBBLE_WIDTH = '78%';
@@ -64,12 +74,22 @@ export const MessageBubble = React.memo(MessageBubbleView);
 function MessageBubbleView({
   row,
   peerName,
+  sendProgress,
   onLongPress,
   onRetry,
   onToggleReaction,
 }: {
   row: BubbleRow;
   peerName: string;
+  /**
+   * How far this message's file has got, 0-100, or null when nothing is moving.
+   *
+   * A separate prop rather than part of `row` on purpose: the row is rebuilt
+   * only when the database changes, and this ticks several times a second while
+   * a photo is in flight. Passing it separately is what keeps the other
+   * ninety-nine bubbles out of that render.
+   */
+  sendProgress: number | null;
   onLongPress: (message: Message) => void;
   onRetry: (messageId: string) => void;
   onToggleReaction: (messageId: string, emoji: string) => void;
@@ -99,7 +119,7 @@ function MessageBubbleView({
 
   const label = [
     mine ? chatCopy.messageFromYou : chatCopy.messageFrom(peerName),
-    message.body ?? (message.kind === 'image' ? chatCopy.photoPreview : attachment?.name ?? chatCopy.filePreview),
+    message.body ?? previewOf(message, attachment),
     time,
     mine ? statusWord(message.status) : null,
   ]
@@ -145,7 +165,16 @@ function MessageBubbleView({
           ) : null}
 
           {attachment ? (
-            <Attachment view={attachment} isImage={message.kind === 'image'} onAccent={mine} />
+            message.kind === 'voice' ? (
+              <VoiceNote
+                messageId={message.id}
+                durationMs={attachment.durationMs}
+                path={attachment.localPath}
+                onAccent={mine}
+              />
+            ) : (
+              <Attachment view={attachment} isImage={message.kind === 'image'} onAccent={mine} />
+            )
           ) : null}
 
           {message.body ? (
@@ -181,10 +210,17 @@ function MessageBubbleView({
           />
         ) : null}
 
-        <StatusLine row={row} onRetry={onRetry} />
+        <StatusLine row={row} sendProgress={sendProgress} onRetry={onRetry} />
       </View>
     </View>
   );
+}
+
+/** What a message without words is called. */
+function previewOf(message: Message, attachment: AttachmentView | null): string {
+  if (message.kind === 'image') return chatCopy.photoPreview;
+  if (message.kind === 'voice') return chatCopy.voicePreview;
+  return attachment?.name ?? chatCopy.filePreview;
 }
 
 /**
@@ -229,7 +265,15 @@ function statusWord(status: MessageStatus): string {
  * way to use this app, not a failure, so the message says where it went rather
  * than warning about where it did not.
  */
-function StatusLine({ row, onRetry }: { row: BubbleRow; onRetry: (messageId: string) => void }): React.JSX.Element | null {
+function StatusLine({
+  row,
+  sendProgress,
+  onRetry,
+}: {
+  row: BubbleRow;
+  sendProgress: number | null;
+  onRetry: (messageId: string) => void;
+}): React.JSX.Element | null {
   const theme = useTheme();
   const { message, mine } = row;
   if (!mine) return null;
@@ -261,8 +305,39 @@ function StatusLine({ row, onRetry }: { row: BubbleRow; onRetry: (messageId: str
   if (message.status === 'pending') {
     return (
       <Label variant="caption" tone="tertiary" align="right" style={{ marginTop: theme.spacing.xs, maxWidth: STATUS_LINE_WIDTH }}>
-        {strings.chat.willSendWhenConnected}
+        {message.fileId ? chatCopy.attachmentWaiting : strings.chat.willSendWhenConnected}
       </Label>
+    );
+  }
+
+  // A photo or a voice note is seconds of bytes rather than one frame, so the
+  // bubble says how far along it is. Text never gets here: nothing sets a
+  // percentage for a message that left in a single packet.
+  if (sendProgress !== null && message.status === 'sent') {
+    return (
+      <View style={{ alignItems: 'flex-end', marginTop: theme.spacing.xs, width: STATUS_LINE_WIDTH }}>
+        <Label variant="caption" tone="tertiary">
+          {chatCopy.attachmentSending(sendProgress)}
+        </Label>
+        <View
+          style={{
+            width: '55%',
+            height: theme.spacing.xs / 2,
+            marginTop: theme.spacing.xs / 2,
+            borderRadius: theme.radius.pill,
+            backgroundColor: areaColorMuted(theme.colors, 'Chat'),
+            overflow: 'hidden',
+          }}
+        >
+          <View
+            style={{
+              width: `${Math.min(100, Math.max(0, sendProgress))}%`,
+              height: '100%',
+              backgroundColor: areaColor(theme.colors, 'Chat'),
+            }}
+          />
+        </View>
+      </View>
     );
   }
 
@@ -311,7 +386,7 @@ function ReplyQuote({
           {isOutgoing(message) ? chatCopy.you : peerName}
         </Label>
         <Label variant="caption" numberOfLines={1} style={{ color }}>
-          {message.body ?? (message.kind === 'image' ? chatCopy.photoPreview : chatCopy.filePreview)}
+          {message.body ?? previewOf(message, null)}
         </Label>
       </View>
     </View>

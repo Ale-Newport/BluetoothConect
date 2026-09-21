@@ -13,7 +13,7 @@ with N peers, in milliseconds.
 ```bash
 pnpm test                                  # everything
 pnpm --filter @airlink/core test           # protocol, crypto, transports, features
-pnpm --filter @airlink/games test          # 12 games + the conformance suite
+pnpm --filter @airlink/games test          # 28 games + the conformance suite
 pnpm --filter @airlink/db test             # against real SQLite
 pnpm --filter @airlink/mobile test         # the screens, mounted for real
 pnpm typecheck
@@ -204,28 +204,66 @@ Two physical devices, ideally one iPhone and one Android.
 
 **Discovery and pairing.**
 1. Open on both. Each appears in the other's list within a few seconds.
-2. Tap Connect. Both show the same six digits. Confirm on both.
-3. Both show Connected.
+2. **Neither phone lists itself.** Leave them both sitting there for two or
+   three minutes and check again - the failure this catches used to take about
+   that long to appear, because the self-filter forgot what it had advertised.
+3. **No row says "New device" that stays that way**, and no row appears twice.
+   One person, one row, however many radios they are visible on.
+4. Tap Connect. Both show the same six digits. Confirm on both.
+5. Both show Connected, and **the Connect button is gone on both**. Leave them
+   for several minutes with the app in the foreground: no duplicate rows, no
+   second connection request, no interruption.
+6. Now tap Connect on both phones at the same instant, from a disconnected
+   state. Exactly one connection results, and the six digits match.
 
 **Now switch both phones to airplane mode, then switch Bluetooth back on.**
 Everything below happens with no internet, no Wi-Fi network and no server.
 
-4. Send a message each way. Check ticks progress to delivered, then read.
-5. Send a photo. Check the progress and the ETA are honest, then that the file
+7. Send a message each way. Check ticks progress to delivered, then read.
+8. Send a photo. Check the progress and the ETA are honest, then that the file
    opens on the other side.
-6. Play Tic-Tac-Toe, then Chess. Both boards agree at every move.
-7. Play Pong. Motion is smooth; the ball is in the same place on both screens.
-8. Walk out of range for thirty seconds. Both show Reconnecting. Come back:
-   the session resumes and any message sent while apart arrives.
-9. Send a message while apart, then return — it must deliver, not fail.
-10. Background one app, then foreground it. It reconnects.
-11. Switch Bluetooth off on one device. The other shows a calm status, not an
-    error, and reconnects when it returns.
-12. Both join the same Wi-Fi with no internet. The transport upgrades, and a
-    photo that took minutes now takes seconds — with no interruption.
-13. Watch Together: pick the same video on both, start a session, confirm they
+
+**Invitations.** This is the flow that failed most visibly, so it gets its own
+block.
+
+9. On phone B, go to **Home** - not Play - and stay there. On A, open Play and
+   pick Chess. B must see the invitation **on the Home screen**, immediately.
+   Repeat from Chat, from Share, and from You. It must appear on all of them.
+10. On A, watch the wording: "Sending invitation…" must become "Invitation
+    delivered" as soon as B's phone has it, and only then "Waiting for Maria".
+    If it says "delivered" and B sees nothing, that is a bug worth reporting in
+    those exact words.
+11. B declines. A is told promptly, and does not sit out the full window.
+12. A invites again and B accepts. Both open the same board.
+13. Play Tic-Tac-Toe, then Chess, then Connect Four, then Battleship, then
+    Trivia, then Reaction, then Draw & Guess, then Word Duel. Both boards agree
+    at every move.
+14. **Inside a game**, drag a finger up and down the middle of the board, and
+    then in from the left edge. Neither may scroll the screen and neither may
+    leave the game. Exit is the only way out, and it asks first.
+15. Finish a game. Rematch works without reconnecting. "Choose another game"
+    returns both phones to Play **still connected**.
+16. Play Pong. Motion is smooth; the ball is in the same place on both screens.
+    Over Bluetooth it is marked "Best over Wi-Fi" in the catalogue, and that is
+    the honest answer.
+17. Walk out of range for thirty seconds, **with a game open**. Both show
+    Reconnecting and the board stays exactly where it was. Come back: the
+    session resumes **on its own** - nobody taps anything - the board is still
+    there, and any message sent while apart arrives.
+18. Send a message while apart, then return — it must deliver, not fail.
+19. Background one app, then foreground it. It reconnects.
+20. Switch Bluetooth off on one device. The other shows a calm status, not an
+    error, and reconnects when it returns. Switch Bluetooth back **on** and
+    check that discovery resumes without restarting the app.
+21. Both join the same Wi-Fi with no internet. The transport upgrades, and a
+    photo that took minutes now takes seconds — with no interruption. The peer
+    still appears exactly once.
+22. Watch Together: pick the same video on both, start a session, confirm they
     stay in step, then seek and confirm both follow.
-14. Force-quit one app and reopen it. History is intact and it reconnects.
+23. Force-quit one app and reopen it. History is intact and it reconnects.
+24. Open **You → Developer Mode → DISCOVERY** on both. Every row there should
+    be somebody real, resolved, and listed once. A row marked *held back* is the
+    system working: it is a sighting that has not identified itself yet.
 
 **Nothing in this list may ever crash the app.** A failure is a message, not a
 stack trace.
