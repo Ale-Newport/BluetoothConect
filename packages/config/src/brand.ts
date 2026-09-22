@@ -30,8 +30,8 @@ export const brand = {
    * address inside a shipped binary is the owner's decision, not a default. A
    * free GitHub Pages site and a dedicated address are enough.
    */
-  supportEmail: 'support@example.invalid',
-  supportUrl: 'https://example.invalid/airlink/support',
+  supportEmail: 'airlinkapp.support@gmail.com',
+  supportUrl: 'https://Ale-Newport.github.io/airlink-support/',
 } as const;
 
 /**

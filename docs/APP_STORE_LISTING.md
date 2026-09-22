@@ -123,8 +123,8 @@ duplicates.
 
 | Field | Value | Required |
 |---|---|---|
-| Support URL | `https://<your-username>.github.io/airlink-support/` | **Yes** |
-| Privacy Policy URL | `https://<your-username>.github.io/airlink-support/privacy.html` | **Yes** |
+| Support URL | `https://Ale-Newport.github.io/airlink-support/` | **Yes** |
+| Privacy Policy URL | `https://Ale-Newport.github.io/airlink-support/privacy.html` | **Yes** |
 | Marketing URL | leave blank, or the same site | No |
 
 Both pages are written and waiting in `support-site/` — publishing them is a new
