@@ -15,6 +15,7 @@ DerivedData/
 
 # Android
 apps/mobile/android/.gradle/
+native/airlink-transport/android/.gradle/
 apps/mobile/android/build/
 apps/mobile/android/app/build/
 apps/mobile/android/local.properties

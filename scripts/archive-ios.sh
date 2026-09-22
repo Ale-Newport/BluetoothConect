@@ -77,6 +77,10 @@ note "Configuration Release, generic iOS device, JS bundle embedded."
 
 EXTRA=()
 [ -n "$BUNDLE_ID" ] && EXTRA+=(PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID")
+# Expanded below as ${EXTRA[@]+"${EXTRA[@]}"}, never plain "${EXTRA[@]}": the
+# bash that ships with macOS is 3.2, and under `set -u` it calls an EMPTY array
+# an unbound variable. The array is empty unless --bundle-id is given, so the
+# plain form failed every ordinary run before xcodebuild even started.
 
 rm -rf "$ARCHIVE"
 mkdir -p "$OUT_DIR"
@@ -93,7 +97,7 @@ OUTPUT=$(cd "$IOS_DIR" && xcodebuild \
   -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$TEAM" \
   CODE_SIGN_STYLE=Automatic \
-  "${EXTRA[@]}" \
+  ${EXTRA[@]+"${EXTRA[@]}"} \
   archive 2>&1)
 STATUS=$?
 
