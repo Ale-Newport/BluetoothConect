@@ -125,7 +125,7 @@ Son declaraciones oficiales, así que contéstalas tal cual:
 |---|---|
 | **App Privacy** — ¿recoges datos? | **"No, we do not collect data from this app."** Luego pulsa **Publish**. |
 | **Encryption** — sale en cada build como **"Missing Compliance"** (TestFlight → la build → **Manage**) | Tipo de algoritmo: **"Standard encryption algorithms instead of, or in addition to, using or accessing the encryption within Apple's operating system"**. ¿Disponible en Francia? **No**. |
-| **Age Rating** — ¿mensajes entre usuarios? | **Yes**. Todo lo demás (violencia, apuestas, web…) **No**. Saldrá 13+ y es lo correcto. |
+| **Age Rating** — 7 pasos | Contenido (violencia, sexo, apuestas, medicina…): **Ninguna**. Capacidades: **Mensajería y chat: Sí**, contenido generado por usuarios: **Sí**, redes sociales: **No**, acceso web: **No**, publicidad: **No**. Apple calcula **4+**; súbela a mano a **13+** con "Reemplazar por una clasificación más alta". **Nunca "Apta para menores"**, que es la categoría infantil y prohíbe el chat abierto. |
 
 > Sobre el cifrado: la app cifra los mensajes con algoritmos estándar (no
 > los del propio iPhone), así que **no elijas "None"** para que deje de

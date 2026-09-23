@@ -214,17 +214,32 @@ First release.
 Answer the questionnaire honestly; a rating obtained by answering "no" to the
 chat question is grounds for removal later.
 
+Seven steps. The content ones - violence, sexuality, adult themes, medicine,
+gambling - are **None** throughout, and in-app controls (parental controls, age
+assurance) are **No**: the app has neither. On the capabilities step:
+
 | Question | Answer |
 |---|---|
-| Violence, sexual content, profanity, drugs, horror, gambling | **No** to all |
 | Unrestricted web access | **No** — the app makes no internet connections |
-| Messaging / in-app communication between users | **Yes** |
-| User-generated content | **Yes** |
-| Content rights: does your app contain third-party content | **No** |
-| Moderation | None — content never leaves the two devices. Users can block and report a peer. |
+| Messaging and chat | **Yes** |
+| User-generated content | **Yes** — cautious. Read strictly it is No, because the definition is about *broad distribution* and here content goes to one paired friend, but photos, voice notes and drawings do travel between people |
+| Social networking | **No** — no feed, no followers, no discovery |
+| Social networking disabled for under-13s | **No** — there are no social features to disable |
+| Advertising | **No** |
+| Content rights (App Information) | **No** third-party content |
 
-Expect **13+ or higher** once messaging is declared. That is the correct outcome;
-a 4+ rating on an app with open chat is the wrong answer.
+**Apple's questionnaire then calculates 4+**, not 13+: under the current system
+the age comes from CONTENT, and chat is disclosed on the product page as a
+capability instead of raising the number. 4+ is defensible, and it is what
+Apple's own answers produce.
+
+We raise it anyway, with **"Override with a higher age rating" → 13+**. A friend
+can send anything over an end-to-end encrypted link that no server can inspect,
+and an app with open chat sitting at 4+ is the kind of thing App Review sends
+back as a metadata issue. Raising it costs nothing and can be lowered later.
+
+**Never choose "Made for Kids"**: the Kids Category forbids exactly this - open
+communication between users - and it is a certain rejection.
 
 ---
 
