@@ -13,7 +13,8 @@
 #   ./scripts/archive-ios.sh                        # archive + export an .ipa
 #   ./scripts/archive-ios.sh --team ABCDE12345      # pick the signing team
 #   ./scripts/archive-ios.sh --archive-only         # stop before exporting
-#   ./scripts/archive-ios.sh --upload               # also send it to Apple
+#   ./scripts/archive-ios.sh --upload               # also send it to Apple, as
+#                                                   # the Apple ID signed in to Xcode
 #
 # A PAID Apple Developer Program membership is required. A free Apple ID
 # ("Personal Team") cannot issue an Apple Distribution certificate, so this
@@ -24,7 +25,11 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IOS_DIR="$ROOT/apps/mobile/ios"
 OUT_DIR="$ROOT/apps/mobile/ios/build/AppStore"
-ARCHIVE="$OUT_DIR/AirLink.xcarchive"
+# The archive goes where Xcode keeps its own, because that folder is the ONLY
+# place the Organizer looks. Archived anywhere else it is a perfectly good
+# archive that Window -> Organizer -> Archives says does not exist - which is
+# exactly what the "Next" step below used to send people to find.
+ARCHIVE="$HOME/Library/Developer/Xcode/Archives/$(date +%Y-%m-%d)/AirLink $(date '+%Y-%m-%d %H.%M.%S').xcarchive"
 TEAM="${AIRLINK_TEAM_ID:-}"
 BUNDLE_ID=""
 ARCHIVE_ONLY=0
@@ -36,7 +41,8 @@ while [ $# -gt 0 ]; do
     --bundle-id) BUNDLE_ID="${2:-}"; shift 2 ;;
     --archive-only) ARCHIVE_ONLY=1; shift ;;
     --upload) UPLOAD=1; shift ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # The whole leading comment block, however long it grows.
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -83,7 +89,7 @@ EXTRA=()
 # plain form failed every ordinary run before xcodebuild even started.
 
 rm -rf "$ARCHIVE"
-mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR" "$(dirname "$ARCHIVE")"
 
 # `-destination generic/platform=iOS` and NOT a specific device: an archive is
 # not built for one phone. Passing a booted simulator or a connected handset
@@ -170,31 +176,42 @@ say "Exported: $IPA"
 note "$(du -h "$IPA" | cut -f1) - this is the file App Store Connect wants."
 
 # --- 3. Optionally hand it to Apple ----------------------------------------
+#
+# Through xcodebuild with `destination = upload`, which is what the Organizer's
+# Distribute button does underneath. It authenticates as the Apple ID already
+# signed in to Xcode (Settings -> Accounts) - the same session that just
+# produced the App Store profile above - so there is no password to create,
+# store or type. The route it replaces, `altool` with an app-specific password,
+# asked a first-time publisher to mint a credential for a job Xcode can do.
 if [ $UPLOAD -eq 1 ]; then
   say "Uploading to App Store Connect"
-  note "This needs an app-specific password, not your Apple ID password."
-  note "Make one at https://appleid.apple.com -> Sign-In and Security."
-  note "Put it in the keychain once:  xcrun notarytool store-credentials"
-  note "or export AIRLINK_APPLE_ID and AIRLINK_APP_PASSWORD before running."
+  note "As the Apple ID signed in to Xcode. This takes a minute or two."
 
-  if [ -z "${AIRLINK_APPLE_ID:-}" ] || [ -z "${AIRLINK_APP_PASSWORD:-}" ]; then
-    fail "AIRLINK_APPLE_ID and AIRLINK_APP_PASSWORD are not both set, so there
-  is nothing to authenticate with. The .ipa above is finished and valid - you
-  can upload it by hand from Xcode's Organizer window, or with Apple's
-  Transporter app, which is the route most people find easier the first time."
+  UPLOAD_PLIST="$OUT_DIR/UploadOptions.plist"
+  sed 's#<string>export</string>#<string>upload</string>#' "$PLIST" > "$UPLOAD_PLIST"
+  UPLOAD_OUT=$(cd "$IOS_DIR" && xcodebuild \
+    -exportArchive \
+    -archivePath "$ARCHIVE" \
+    -exportOptionsPlist "$UPLOAD_PLIST" \
+    -exportPath "$OUT_DIR/upload" \
+    -allowProvisioningUpdates 2>&1)
+  UPLOAD_STATUS=$?
+
+  if [ $UPLOAD_STATUS -ne 0 ]; then
+    echo "$UPLOAD_OUT" | grep -iE 'error|already|version|bundle|account|app record' \
+      | sort -u | sed 's/^/  /' | head -20
+    fail "Upload rejected. Apple's message above is usually precise. The usual
+  first-time causes: the app record does not exist yet in App Store Connect
+  (step 4), no Apple ID in Xcode -> Settings -> Accounts, or a build number
+  that was already uploaded (raise CURRENT_PROJECT_VERSION). The .ipa above is
+  still valid and can be sent with the Transporter app instead."
   fi
-
-  xcrun altool --upload-app \
-    --type ios \
-    --file "$IPA" \
-    --username "$AIRLINK_APPLE_ID" \
-    --password "$AIRLINK_APP_PASSWORD" \
-    || fail "Upload rejected. Apple's message above is usually precise; the
-  most common first-time causes are a build number that has already been used
-  (bump CURRENT_PROJECT_VERSION) and an app record that does not yet exist."
-  say "Uploaded. It will appear in App Store Connect after processing."
+  say "Uploaded. Apple processes it for 10 minutes to 2 hours and emails you."
+  note "It then appears in App Store Connect -> your app -> TestFlight."
 else
-  say "Next"
-  note "Upload it from Xcode: Window -> Organizer -> Archives -> Distribute App."
-  note "Or run this again with --upload once your credentials are set."
+  say "Next - upload it"
+  note "Easiest: run this again with --upload (uses the Apple ID in Xcode)."
+  note "Or Xcode: Window -> Organizer -> Archives -> the newest AirLink ->"
+  note "  Distribute App -> App Store Connect -> Distribute."
+  note "Or the Transporter app (free, Mac App Store): drag in $IPA"
 fi

@@ -237,11 +237,15 @@ why over-declaring is also wrong, is in [APP_STORE.md](APP_STORE.md) step 7.
 
 ## Export compliance
 
-Answer **yes** to using encryption, **no** to qualifying for the exemptions, and
-**no** to proprietary or non-standard algorithms. The full reasoning, the BIS
+Asked on each build, as **Missing Compliance** in TestFlight → the build →
+Manage. The algorithm question: **"Standard encryption algorithms instead of,
+or in addition to, using or accessing the encryption within Apple's operating
+system"** — not proprietary, not "none". Then, available in France: **no** for
+a first release (and remove France under Pricing and Availability), because
+yes requires a French encryption declaration first. The full reasoning, the BIS
 filing you need, and the limits of that advice are in
 [APP_STORE.md](APP_STORE.md) part three. `ITSAppUsesNonExemptEncryption` is
-already set in `Info.plist`, so you will not be asked at every upload.
+deliberately absent from `Info.plist`; part three says why.
 
 ---
 
@@ -253,7 +257,9 @@ peer, and press **⌘S** in the Simulator for pixel-perfect files.
 
 **Already made**, in `docs/app-store-screenshots/`, at 1320 × 2868 (the 6.9"
 iPhone size), flattened RGB, from the Release build talking to a second
-simulator. Upload them in this order — the first two are what most people see
+simulator. The same five at 1284 × 2778 are in `6.5-inch/`, for an App Store
+Connect page that offers the 6.5" slot instead: scaled by 0.973 and trimmed by
+six rows of plain background top and bottom. One size is enough. Upload them in this order — the first two are what most people see
 in search results:
 
 | File | Shows |

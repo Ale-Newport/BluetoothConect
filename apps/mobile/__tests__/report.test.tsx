@@ -153,9 +153,22 @@ test('an unauthenticated peer cannot be blocked, and nothing is deleted', async 
   expect(client.db.messages.list(conversation.id, 10)).toHaveLength(1);
 });
 
-test('the developer contact is hidden while the address is a placeholder', () => {
-  // Shipping with the placeholder would send somebody who has just been
-  // harassed to a mailbox that does not exist. Better to show nothing.
-  expect(brand.supportEmail.endsWith('.invalid')).toBe(true);
-  expect(canContactDeveloper()).toBe(false);
+test('the developer contact is offered for a real address and hidden for the placeholder', () => {
+  // The address that ships. scripts/set-contact.sh has filled it in, and a
+  // store build going out with the placeholder would hide the only way a
+  // person being harassed can reach the developer - so this pins it.
+  expect(brand.supportEmail.endsWith('.invalid')).toBe(false);
+  expect(canContactDeveloper()).toBe(true);
+
+  // And the rule itself: a placeholder would send somebody to a mailbox that
+  // does not exist, so the button is not offered at all. `brand` is `as const`,
+  // which is a compile-time promise only, so it can be swapped for the check.
+  const writable = brand as { supportEmail: string };
+  const real = writable.supportEmail;
+  try {
+    writable.supportEmail = 'support@example.invalid';
+    expect(canContactDeveloper()).toBe(false);
+  } finally {
+    writable.supportEmail = real;
+  }
 });

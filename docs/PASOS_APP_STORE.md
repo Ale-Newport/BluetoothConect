@@ -81,11 +81,19 @@ En [appstoreconnect.apple.com](https://appstoreconnect.apple.com):
 En el Mac, en la carpeta del proyecto:
 
 ```bash
-./scripts/archive-ios.sh
+./scripts/archive-ios.sh --upload
 ```
 
-Crea el archivo firmado para la App Store. Luego súbelo con Xcode:
-**Window → Organizer → Archives → Distribute App → App Store Connect → Upload**.
+Crea el archivo firmado para la App Store y lo sube a Apple, todo de una vez
+(tarda unos minutos sin mostrar nada). Usa la cuenta de Apple que tienes en
+**Xcode → Settings → Accounts**, así que no te pide ninguna contraseña. Si el
+Mac pide acceso a la llave "Apple Distribution", pon la contraseña de tu Mac y
+pulsa **Permitir siempre**.
+
+> Otras formas, si prefieres: en Xcode, **Window → Organizer → Archives** → el
+> AirLink más reciente → **Distribute App → App Store Connect → Distribute**; o
+> la app gratuita **Transporter** (Mac App Store), arrastrando el archivo
+> `.ipa` que indica el script.
 
 Tarda de 10 minutos a 2 horas en "procesarse". Si te llega un email de rechazo a
 los pocos minutos, **no es una persona**: es un comprobador automático que te
@@ -98,11 +106,12 @@ dice exactamente qué falla.
 Todo el texto está listo para copiar y pegar en **`docs/APP_STORE_LISTING.md`**:
 nombre, subtítulo, descripción, palabras clave y notas para el revisor.
 
-- **Capturas:** ya están hechas, en `docs/app-store-screenshots/` (5 imágenes,
-  tamaño 6.9" que es el que pide Apple). En la sección **iPhone 6.9" Display**
-  arrástralas **en orden, del 1 al 5**: las dos primeras son las que la gente ve
-  en los resultados de búsqueda. Si el formulario pide otro tamaño, avísame y
-  las rehago.
+- **Capturas:** ya están hechas, 5 imágenes en dos tamaños. Si la casilla es
+  **Pantalla de 6,5"** (pide 1284 × 2778), usa las de
+  `docs/app-store-screenshots/6.5-inch/`; si es **6,9"**, las de
+  `docs/app-store-screenshots/`. Con un tamaño basta. Arrástralas **en orden,
+  del 1 al 5**: las dos primeras son las que la gente ve en los resultados de
+  búsqueda.
 - **Support URL** y **Privacy Policy URL:** las que te dio el paso 2.
 - **Price:** Free.
 
@@ -115,13 +124,17 @@ Son declaraciones oficiales, así que contéstalas tal cual:
 | Pregunta | Respuesta |
 |---|---|
 | **App Privacy** — ¿recoges datos? | **"No, we do not collect data from this app."** Luego pulsa **Publish**. |
-| **Encryption** — ¿usa cifrado? | **Yes** · ¿Exento? **No** · ¿Algoritmo propio o no estándar? **No** |
+| **Encryption** — sale en cada build como **"Missing Compliance"** (TestFlight → la build → **Manage**) | Tipo de algoritmo: **"Standard encryption algorithms instead of, or in addition to, using or accessing the encryption within Apple's operating system"**. ¿Disponible en Francia? **No**. |
 | **Age Rating** — ¿mensajes entre usuarios? | **Yes**. Todo lo demás (violencia, apuestas, web…) **No**. Saldrá 13+ y es lo correcto. |
 
-> Sobre el cifrado: la app usa criptografía propia, así que la respuesta
-> honesta es "Yes". **No pongas "No" para que deje de preguntarte** — es una
-> declaración ante el gobierno de EE. UU. Detalles en `docs/APP_STORE.md`,
-> parte 3.
+> Sobre el cifrado: la app cifra los mensajes con algoritmos estándar (no
+> los del propio iPhone), así que **no elijas "None"** para que deje de
+> preguntar: es una declaración oficial. Para Francia, Apple exige antes una
+> declaración de cifrado francesa; por eso lo más sencillo es empezar **sin
+> Francia**: en **Pricing and Availability** quítala de la lista de países.
+> Se puede añadir más adelante. Si las preguntas que ves no coinciden con
+> estas, mándame una captura antes de responder. Detalles en
+> `docs/APP_STORE.md`, parte 3.
 
 ---
 

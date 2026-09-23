@@ -28,8 +28,8 @@ These were blockers or near-blockers in the repo. They are fixed and verified.
 | Fixed | Why it mattered |
 |---|---|
 | App icon flattened to opaque RGB | It was 1024×1024 **RGBA**. An alpha channel in the app icon is the automated `ITMS-90717` rejection — the upload fails before a human sees it. Alpha was 255 everywhere, so the flatten is provably lossless. |
-| `ITSAppUsesNonExemptEncryption` = `true` added | Without it, every single upload stops and asks. `true` is the correct answer here; see Part 3. |
-| `NSMicrophoneUsageDescription` removed | Declared a permission for voice messages that do not exist anywhere in the codebase. Requesting a permission for an absent feature is a rejection under 5.1.1. |
+| `ITSAppUsesNonExemptEncryption` deliberately **absent** | `true` was tried first and the upload failed: `true` means "my encryption needs documentation, and here is the code Apple gave me for it", and there is no such code. `false` would claim an exemption this app does not have. Absent, App Store Connect asks its questions on each build and works out what is needed. See Part 3. |
+| `NSMicrophoneUsageDescription` rewritten | It was first removed, because it described voice messages that did not exist. They exist now, so it is back, describing exactly that: recording a voice message for the friend you are talking to. |
 | `NSPhotoLibraryAddUsageDescription` removed | Save-to-photos is gated on `Platform.OS === 'android'`, so on iOS the permission was unreachable. |
 | `_airlink._udp` removed from `NSBonjourServices` | Nothing advertises or browses it. |
 | `TARGETED_DEVICE_FAMILY` → iPhone only | It shipped as universal with **no iPad layout** and iPad landscape enabled. That forced a second set of screenshots and handed App Review an iPad on which to find a layout bug. |
@@ -308,11 +308,27 @@ primitive here is a published RFC/FIPS/NIST standard, and that last answer is
 what keeps you on the mass-market self-classification path instead of needing a
 CCATS.
 
-`ITSAppUsesNonExemptEncryption` is now `true` in `Info.plist`, so you stop being
-asked at every upload. **Do not set it to `false` to make the prompt go away.**
-That value is a declaration under the U.S. Export Administration Regulations
-that your encryption is exempt; it is recorded against the build, and here it
-would be false.
+`ITSAppUsesNonExemptEncryption` is deliberately **not** in `Info.plist`, and
+both values it could hold are wrong for this app today:
+
+- **`true` fails the upload.** Apple reads it as "this app's encryption needs
+  documentation, and the code Apple issued for that documentation is in
+  `ITSEncryptionExportComplianceCode`". With no code, validation stops with
+  *"Invalid Export Compliance Code. The export compliance key value [] …"* —
+  which is exactly what the first upload of this app did.
+- **`false` would be a false declaration.** It says the encryption is exempt
+  from documentation requirements; it is recorded against the build.
+
+Absent, App Store Connect shows **Missing Compliance** on each new build and
+asks. Apple's own table decides what follows: an app using industry-standard
+algorithms that are not provided by the Apple operating system — this one —
+needs **only a French encryption declaration, and only if it is distributed in
+France**. Outside France, no documentation is uploaded at all. So when asked
+whether the app will be available in France, the simplest first release answers
+**no** and removes France under Pricing and Availability; France can be added
+later with the declaration. If you do file it, Apple returns a code: put it in
+`ITSEncryptionExportComplianceCode`, set `ITSAppUsesNonExemptEncryption` to
+`true`, and the questions stop.
 
 ### The BIS filing
 
