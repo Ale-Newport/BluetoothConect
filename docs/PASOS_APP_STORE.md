@@ -166,7 +166,9 @@ En la página de la versión:
 
 1. Pega las **App Review Notes** de `docs/APP_STORE_LISTING.md`. **Es el campo
    más importante**: explica al revisor que hacen falta dos dispositivos.
-2. Adjunta un vídeo corto grabando dos móviles conectándose.
+2. Adjunta el vídeo `docs/app-review-video.mp4` (ya está hecho: 72 segundos con
+   los dos simuladores emparejándose, chateando y jugando). Va en **App Review
+   Information → Attachment**, en la misma página donde pegaste las notas.
 3. Marca **"Manually release this version"** (así tú decides cuándo sale).
 4. **Submit for Review**.
 

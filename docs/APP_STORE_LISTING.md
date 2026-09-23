@@ -189,8 +189,12 @@ deletion of the conversation as part of the same action; and published contact
 details on our support page.
 ```
 
-Attach a screen recording of two devices connecting. It is worth more than the
-text.
+**The attachment is made**: `docs/app-review-video.mp4` (72 seconds, 1 MB).
+Two simulators side by side, labelled, with a title card that says two devices
+are required and that a simulator has no Bluetooth radio. It shows discovery,
+the six-digit check confirmed on both, a message each way with delivery and
+read receipts, a game invitation accepted, and two moves. Upload it under App
+Review Information -> Attachment. It is worth more than the text.
 
 ---
 
