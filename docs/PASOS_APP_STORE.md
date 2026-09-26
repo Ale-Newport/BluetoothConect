@@ -176,6 +176,14 @@ Tarda de 1 a 3 días. Si la rechazan, **no es un fracaso**: lee el número de la
 norma, corrige y responde en el Resolution Center. Lo normal la primera vez es
 un par de idas y vueltas.
 
+> **Lo que pasó en el primer envío:** Apple contestó con *"Guideline 2.1 –
+> Information Needed – New App Submission"*. No encontraron ningún fallo: es el
+> cuestionario que le mandan a las cuentas nuevas. Piden seis respuestas y un
+> **vídeo grabado en un iPhone de verdad** (el de simuladores no vale para
+> esto). El texto de la respuesta, ya escrito, está en
+> `docs/APP_STORE_LISTING.md`, al final, y hay que pegarlo en el Resolution
+> Center **y** en App Review Information → Notes.
+
 ---
 
 ## Lo que ya está hecho por ti

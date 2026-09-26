@@ -198,6 +198,90 @@ Review Information -> Attachment. It is worth more than the text.
 
 ---
 
+## The Guideline 2.1 information request (it arrived on the first submission)
+
+Apple rejected build 1.0.0 (3) with **"Guideline 2.1 - Information Needed - New
+App Submission"**: no defect was found, and the letter says so - it is the
+questionnaire a developer account with no review history gets. It asks for six
+things plus **a screen recording captured on a physical device**, which is why
+the simulator video in `docs/app-review-video.mp4` does not satisfy it on its
+own.
+
+Paste this into the Resolution Center reply AND into App Review Information ->
+Notes, where Apple asks for it to live for future submissions.
+
+```
+Thank you for the review. AirLink is an offline, peer-to-peer app: there is no
+server, no account and no network request to any backend. TWO DEVICES ARE
+REQUIRED to see any feature.
+
+1. SCREEN RECORDING
+Attached, captured on a physical iPhone running the current iOS. It begins with
+launching the app and shows the typical flow: first run (no account, no login),
+the two phones finding each other, connecting by comparing the same six digits
+and confirming on both, sending a message, a photo and a voice note, the
+report-and-block mechanism for user-generated content (press and hold any
+received message -> "Report and block"), and a two-player game.
+
+There is no account registration, sign-in or account deletion flow to record:
+the app has no accounts at all. The only identity is a display name stored on
+the device, and deleting the app deletes everything it holds. There is no paid
+content, no in-app purchase and no subscription.
+
+2. PURPOSE AND TARGET AUDIENCE
+AirLink lets two people who are physically near each other talk, send photos,
+voice notes and files, and play two-player games when there is no internet: on
+a plane, on the underground, camping, at a festival, abroad without data, or
+during an outage. It is for anyone who is with a friend or a family member and
+has no connectivity. Rated 13+ because it carries open messaging.
+
+3. HOW TO SET UP AND ACCESS THE MAIN FEATURES
+No credentials, demo account or sample files are needed - nothing to sign in to.
+- Install on two devices, either on the same Wi-Fi network or with Bluetooth on
+  and no network at all. Open the app on both and enter any display name.
+- Each device lists the other under "Other devices". Tap Connect on one. Both
+  show the same six digits; tap "They match" on both. They are friends from then
+  on and reconnect without the code.
+- Chat tab: text, photos (image button) and voice notes (audio button).
+- Play tab: 28 two-player games. Tap one; the other device receives an
+  invitation and the game starts when it is accepted.
+- Share tab: send a file of any kind.
+- Report and block: press and hold any received message -> "Report and block".
+  It blocks the sender, ends the live session and deletes the conversation from
+  the device. Blocking is also available in You -> Friends, where it can be
+  undone. Because messages travel directly between the two devices and are end
+  to end encrypted, no copy ever reaches us, and the confirmation says exactly
+  that rather than implying a moderator will read it.
+
+4. EXTERNAL SERVICES, TOOLS OR PLATFORMS
+None. No data provider, authentication service, payment processor, analytics,
+advertising or AI service, and no third-party SDK that opens a network
+connection. Connectivity uses only Apple frameworks on the device: Core
+Bluetooth for BLE and Network.framework with Bonjour for the local network.
+Encryption is performed on the device with open-source cryptography bundled in
+the binary. Monitoring the app's traffic shows no outbound connections.
+
+5. REGIONAL DIFFERENCES
+None. The app behaves identically everywhere, ships in English only, and has no
+region-specific content, feature or price. It is simply not offered in France,
+for export-compliance paperwork reasons only.
+
+6. REGULATED INDUSTRY OR PROTECTED THIRD-PARTY MATERIAL
+Not applicable. The app is not in a regulated industry and contains no
+third-party or licensed material. Everything the games use ships inside the
+binary and was written for this app: a list of common English words, factual
+country data, and original question and prompt banks.
+```
+
+**The recording itself** has to come from a real device, and the app needs two,
+so: install on two iPhones through TestFlight, start iOS screen recording on one
+BEFORE opening the app, and walk the flow above in that order - launch, first
+run, connect and compare the six digits, message, photo, voice note, press and
+hold a received message and report-and-block, then a game. Two to three minutes
+is plenty. The simulator video can be attached as well, but not instead.
+
+---
+
 ## "What's New" for version 1.0
 
 Not shown for a first release — App Store Connect only asks from 1.0.1 onward.
