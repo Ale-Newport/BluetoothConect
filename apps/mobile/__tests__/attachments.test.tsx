@@ -22,6 +22,7 @@ import { ThemeProvider } from '../src/ui/index.js';
 import { Composer } from '../src/screens/chat/Composer.js';
 import { chatCopy } from '../src/screens/chat/chatStrings.js';
 import { attachmentCenterFor, choosePhoto, voiceAttachment } from '../src/screens/chat/attachments.js';
+import { encodeAttachment } from '@airlink/core';
 import { MessageBubble } from '../src/screens/chat/MessageBubble.js';
 
 interface SentFile {
@@ -35,7 +36,15 @@ interface SentFile {
 /** Jest only lets a module factory see variables whose names start with `mock`. */
 const mockSent: SentFile[] = [];
 /** Attachment descriptors the chat protocol was asked to carry to the peer. */
-const mockAnnounced: { fileId: string; name: string; mimeType: string; byteLength: number }[] = [];
+const mockAnnounced: {
+  fileId: string;
+  name: string;
+  mimeType: string;
+  byteLength: number;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+}[] = [];
 let mockSendFails = false;
 let mockPickerOptions: Record<string, unknown> = {};
 let mockPickerResponse: {
@@ -252,6 +261,55 @@ test('a recording lands as a voice row that knows how long it is', async () => {
   expect(file?.durationMs).toBe(4200);
   expect(file?.mimeType).toBe('audio/mp4');
   expect(mockSent).toHaveLength(1);
+});
+
+/**
+ * THE BUG THIS EXISTS FOR. On two real iPhones, text and photos crossed and
+ * voice notes did not: the sender's bubble went red with "They never answered"
+ * after two minutes, and the other phone showed nothing at all.
+ *
+ * `AVAudioRecorder.currentTime` is seconds as a Double, so the duration in
+ * milliseconds arrived as 3472.5623582766438. Nothing on this side minded. The
+ * RECEIVER's decoder requires an integer, threw, and dropped the entire chat
+ * message - and that message is what calls `TransferCenter.expect`, so the
+ * file was never auto-accepted and timed out unanswered.
+ *
+ * Every test here used to pass a whole number, stubbing exactly the thing that
+ * broke. This one asserts the descriptor the peer would actually receive,
+ * through the real encoder rather than the double.
+ */
+test('a duration measured in fractions of a millisecond still crosses the wire', async () => {
+  const client = await bootClient();
+  connect(client);
+
+  const rowId = attachmentCenterFor(client).send({
+    peerId: THEM,
+    displayName: 'Mallory',
+    attachment: voiceAttachment({
+      path: '/tmp/airlink-test/voice.m4a',
+      durationMs: 3472.5623582766438,
+      sizeBytes: 8412,
+    }),
+    replyToRowId: null,
+  });
+  await settle();
+
+  const fileId = rowOf(client, rowId).fileId;
+  if (!fileId) throw new Error('a voice row without a file cannot be played');
+  expect(client.db.files.get(fileId)?.durationMs).toBe(3473);
+
+  const announced = mockAnnounced[0];
+  expect(announced?.durationMs).toBe(3473);
+  // The assertion that matters: the peer's decoder is the one that rejected
+  // this, and the encoder now shares its limits - so encoding is the same
+  // check, run on the side that can still do something about it.
+  expect(() => encodeAttachment({
+    fileId: announced?.fileId ?? '',
+    name: announced?.name ?? '',
+    mimeType: announced?.mimeType ?? '',
+    byteLength: announced?.byteLength ?? 0,
+    durationMs: announced?.durationMs,
+  })).not.toThrow();
 });
 
 test('a send that cannot happen leaves a failed row, not a hole in the conversation', async () => {

@@ -176,3 +176,80 @@ test('an accept that throws does not take the offer down with it', async () => {
   // Still there, still answerable by hand.
   expect(api.get(TRANSFER_ID)?.state).toBe(TransferState.OFFERED);
 });
+
+/**
+ * The received voice note keeps its length.
+ *
+ * TWO WRITERS, ONE ROW. The transfer layer knows a file's name and size and
+ * nothing about what is inside it; the chat message that announces it carries
+ * the duration of a voice note and the dimensions of a photo. They arrive over
+ * two different channels in either order, and `files.insert` is INSERT OR
+ * REPLACE - so whichever wrote second used to erase what the other knew.
+ *
+ * On a real phone that meant an arriving voice note played fine and drew as
+ * "0:00", with a progress bar that never moved and a screen reader announcing
+ * a zero-second message. Both orders are asserted, because both lost it, for
+ * opposite reasons: REPLACE clobbered the rich row, and the chat's "never
+ * overwrite what the transfer layer owns" rule declined to fill the bare one.
+ */
+const VOICE_ID = 'tr_voice_1';
+
+function voiceOffer(): Record<string, unknown> {
+  return {
+    transferId: VOICE_ID,
+    filename: 'voice-1.m4a',
+    mimeType: 'audio/mp4',
+    fileBytes: 8_412,
+    chunkSize: 4_096,
+    contentHash: new Uint8Array(32),
+  };
+}
+
+/** What `ChatCenter.onIncoming` writes when the announcement arrives first. */
+function announceFirst(client: AirLinkClient): void {
+  client.db.files.insert({
+    id: VOICE_ID,
+    name: 'voice-1.m4a',
+    mimeType: 'audio/mp4',
+    sizeBytes: 8_412,
+    contentHash: new Uint8Array(0),
+    localPath: null,
+    width: null,
+    height: null,
+    durationMs: 3473,
+    createdAt: 1,
+  });
+}
+
+test('an offer that lands after the announcement does not erase the duration', async () => {
+  const client = await bootClient();
+  const centre = new TransferCenter(client);
+  const api = internals(centre);
+  api.accept = async () => undefined;
+
+  announceFirst(client);
+  api.expect(VOICE_ID);
+  await api.onOffer('peer-1', voiceOffer());
+
+  expect(client.db.files.get(VOICE_ID)?.durationMs).toBe(3473);
+});
+
+test('an announcement that lands after the offer fills the duration in', async () => {
+  const client = await bootClient();
+  const centre = new TransferCenter(client);
+  const api = internals(centre);
+  api.accept = async () => undefined;
+
+  api.expect(VOICE_ID);
+  await api.onOffer('peer-1', voiceOffer());
+  // The bare row the transfer layer wrote knows nothing about the audio.
+  expect(client.db.files.get(VOICE_ID)?.durationMs).toBeNull();
+
+  // This is what ChatCenter.onIncoming now does on the "already known" branch.
+  client.db.files.fillMedia(VOICE_ID, { width: null, height: null, durationMs: 3473 });
+
+  expect(client.db.files.get(VOICE_ID)?.durationMs).toBe(3473);
+  // ...and filling never overwrites what the transfer layer established.
+  client.db.files.fillMedia(VOICE_ID, { width: null, height: null, durationMs: 99 });
+  expect(client.db.files.get(VOICE_ID)?.durationMs).toBe(3473);
+});

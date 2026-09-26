@@ -201,6 +201,32 @@ export function encodeAttachment(attachment: ChatAttachment): CborValue {
   ) {
     throw new Error('chat: attachment byteLength out of range');
   }
+  /*
+   * The optional numbers are checked on the way OUT, against exactly the limits
+   * the decoder enforces on the way in. This file's own rule, stated at the
+   * top, is that limits are duplicated on both sides - our bugs caught here,
+   * their bytes caught there - and these three were the exception.
+   *
+   * It cost a shipped feature. A voice note's duration arrived from the
+   * recorder as 3472.5623582766438, CBOR wrote it as a float64 because that is
+   * a legal number, and the peer's decoder refused it and dropped the entire
+   * message. Silent on this side, invisible on that side. An encoder must
+   * never be able to emit something its own decoder would reject: throwing
+   * here puts the failure in the sender's stack, where it can be seen.
+   */
+  const optionalInts: readonly [string, number | undefined, number][] = [
+    ['width', attachment.width, 65_535],
+    ['height', attachment.height, 65_535],
+    ['durationMs', attachment.durationMs, 24 * 60 * 60 * 1000],
+  ];
+  for (const [field, value, max] of optionalInts) {
+    // `null` is skipped as well as `undefined`: the decoder's `optInt` treats
+    // both as "not present", so an absent value must not become an error here.
+    if (value === undefined || value === null) continue;
+    if (!Number.isInteger(value) || value < 0 || value > max) {
+      throw new Error(`chat: attachment ${field} must be a whole number between 0 and ${max}`);
+    }
+  }
   return {
     f: attachment.fileId,
     n: name,

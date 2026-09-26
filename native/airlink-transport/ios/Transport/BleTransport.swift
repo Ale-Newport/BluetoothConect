@@ -138,6 +138,35 @@ final class BleTransport: NSObject, AirLinkTransport {
     private var discovered: [String: DiscoveryRecord] = [:]
     private var knownPeripherals: [UUID: CBPeripheral] = [:]
 
+    /*
+     * Identity probes: the connection this transport makes purely to find out
+     * who somebody is.
+     *
+     * THE PROBLEM THEY SOLVE. iOS will not put service data in an
+     * advertisement, so an iPhone advertising AirLink can say only "I speak
+     * this service" and, optionally, a display name. The token that identifies
+     * a friend and the discovery id that merges one phone's several radios both
+     * live in the identity characteristic, which can only be READ over a
+     * connection. But the layer above will not list - and therefore gives
+     * nobody a way to dial - a peer it cannot identify, and it discards such a
+     * sighting after eight seconds. With Wi-Fi present that never showed,
+     * because the Bonjour TXT record carries both fields with no connection at
+     * all. With Wi-Fi off, which is exactly the case this app exists for, two
+     * iPhones could see each other's advertisements and never become
+     * connectable: the read that would identify them only happened after a
+     * connection that only a listed peer could start.
+     *
+     * So the transport resolves the identity itself: connect, read the one
+     * characteristic, disconnect, and re-announce the peer with what it
+     * learned. Bounded on purpose - two at a time, one per peer per minute -
+     * because this is a radio and a battery, not a database.
+     */
+    private var identityProbes: [UUID: DispatchSourceTimer] = [:]
+    private var lastProbeAt: [UUID: CFAbsoluteTime] = [:]
+    private static let maxConcurrentIdentityProbes = 2
+    private static let identityProbeTimeoutMs = 6_000
+    private static let identityProbeCooldownMs = 60_000
+
     // MARK: - Links
 
     private var links: [String: BleLink] = [:]
@@ -334,6 +363,12 @@ final class BleTransport: NSObject, AirLinkTransport {
         housekeeping?.cancel()
         housekeeping = nil
 
+        // A probe outliving the transport would fire its timer against a
+        // manager that is being thrown away, and hang up a connection that is
+        // no longer ours to hang up.
+        for identifier in Array(identityProbes.keys) { endIdentityProbe(identifier, disconnect: true) }
+        lastProbeAt.removeAll()
+
         // Snapshotted because closeLink removes from `links`, and mutating a
         // dictionary through its own iterator is undefined behaviour.
         for link in Array(links.values) {
@@ -510,6 +545,13 @@ final class BleTransport: NSObject, AirLinkTransport {
                 finish(.failure(AirLinkError.unknownEndpoint(endpointId)))
                 return
             }
+
+            // If an identity probe is holding this peripheral, let it go without
+            // hanging up: a real connection is about to use it, and the probe's
+            // timer would otherwise cancel the link out from under us. iOS
+            // re-delivers didConnect for an already-connected peripheral, so the
+            // normal flow below continues unchanged either way.
+            endIdentityProbe(identifier, disconnect: false)
 
             /*
              * One link per peripheral, always.
@@ -1381,15 +1423,69 @@ extension BleTransport: CBCentralManagerDelegate {
             // contract defines as "this transport did not say".
             rssi: rssi == 127 ? 0 : rssi
         )
+
+        // An advertisement from an iPhone cannot say who it is. Go and ask.
+        scheduleIdentityProbe(peripheral)
+    }
+
+    // MARK: - Identity probes
+
+    /// Connect to a peer we cannot identify, read its identity, disconnect.
+    private func scheduleIdentityProbe(_ peripheral: CBPeripheral) {
+        let identifier = peripheral.identifier
+
+        // Already known, already busy, or already being asked.
+        if let record = discovered[identifier.uuidString], !record.token.isEmpty || !record.discoveryId.isEmpty {
+            return
+        }
+        guard identityProbes[identifier] == nil else { return }
+        guard linkIdByPeripheral[identifier] == nil else { return }
+        guard identityProbes.count < Self.maxConcurrentIdentityProbes else { return }
+        guard serviceUUID != nil, let manager = centralManager, manager.state == .poweredOn else { return }
+
+        // A peer that does not answer must not be dialled in a loop: it is
+        // advertising once a second and this would be a connection storm.
+        let now = CFAbsoluteTimeGetCurrent()
+        if let last = lastProbeAt[identifier], (now - last) * 1000 < Double(Self.identityProbeCooldownMs) {
+            return
+        }
+        lastProbeAt[identifier] = now
+
+        identityProbes[identifier] = makeTimer(afterMs: Self.identityProbeTimeoutMs) { [weak self] in
+            guard let self else { return }
+            self.log("info", "identity probe timed out for \(identifier.uuidString)")
+            self.endIdentityProbe(identifier, disconnect: true)
+        }
+        peripheral.delegate = self
+        manager.connect(peripheral, options: nil)
+        log("debug", "identity probe dialling \(identifier.uuidString)")
+    }
+
+    private func isProbing(_ identifier: UUID) -> Bool {
+        identityProbes[identifier] != nil
+    }
+
+    /// Finish a probe. `disconnect` is false only when a real link has taken
+    /// the connection over, in which case tearing it down would kill the link.
+    private func endIdentityProbe(_ identifier: UUID, disconnect: Bool) {
+        guard let timer = identityProbes.removeValue(forKey: identifier) else { return }
+        timer.cancel()
+        guard disconnect, linkIdByPeripheral[identifier] == nil,
+              let peripheral = knownPeripherals[identifier], let manager = centralManager else { return }
+        manager.cancelPeripheralConnection(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        guard activeLink(forPeripheral: peripheral.identifier) != nil, let serviceUUID else { return }
+        guard let serviceUUID else { return }
+        // A probe has no link behind it - it is a connection made only to read
+        // the identity characteristic - so it takes the same first step.
+        guard activeLink(forPeripheral: peripheral.identifier) != nil || isProbing(peripheral.identifier) else { return }
         peripheral.delegate = self
         peripheral.discoverServices([serviceUUID])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        endIdentityProbe(peripheral.identifier, disconnect: false)
         guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         failConnect(link, error: AirLinkError.failed(error?.localizedDescription ?? "connection failed"))
     }
@@ -1414,6 +1510,9 @@ extension BleTransport: CBCentralManagerDelegate {
     }
 
     private func handleDisconnect(_ peripheral: CBPeripheral, isReconnecting: Bool, error: Error?) {
+        // The probe disconnects on purpose when it has what it came for; this
+        // also catches the peer walking away mid-probe.
+        endIdentityProbe(peripheral.identifier, disconnect: false)
         guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         // We never ask for auto-reconnect - when to come back is the session
         // layer's decision - so this flag should always be false. If a future
@@ -1433,6 +1532,15 @@ extension BleTransport: CBCentralManagerDelegate {
 extension BleTransport: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if isProbing(peripheral.identifier), activeLink(forPeripheral: peripheral.identifier) == nil {
+            guard error == nil, let serviceUUID,
+                  let service = peripheral.services?.first(where: { $0.uuid == serviceUUID }) else {
+                endIdentityProbe(peripheral.identifier, disconnect: true)
+                return
+            }
+            peripheral.discoverCharacteristics([identityUUID], for: service)
+            return
+        }
         guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         if let error {
             failConnect(link, error: AirLinkError.failed("service discovery failed: \(error.localizedDescription)"))
@@ -1447,6 +1555,15 @@ extension BleTransport: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        if isProbing(peripheral.identifier), activeLink(forPeripheral: peripheral.identifier) == nil {
+            guard error == nil,
+                  let identity = service.characteristics?.first(where: { $0.uuid == identityUUID }) else {
+                endIdentityProbe(peripheral.identifier, disconnect: true)
+                return
+            }
+            peripheral.readValue(for: identity)
+            return
+        }
         guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         if let error {
             failConnect(link, error: AirLinkError.failed("characteristic discovery failed: \(error.localizedDescription)"))
@@ -1500,6 +1617,23 @@ extension BleTransport: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        if isProbing(peripheral.identifier), activeLink(forPeripheral: peripheral.identifier) == nil {
+            defer { endIdentityProbe(peripheral.identifier, disconnect: true) }
+            guard error == nil, characteristic.uuid == identityUUID,
+                  let value = characteristic.value, let record = BleIdentityRecord.decode(value) else { return }
+            // The whole point of the exercise: the peer now has a name the
+            // layer above can recognise, a token that identifies a friend, and
+            // a discovery id that merges it with its other radios. The row
+            // becomes listable, and somebody can finally tap Connect.
+            noteDiscovery(
+                endpointId: peripheral.identifier.uuidString,
+                name: record.displayName,
+                token: record.token.base64EncodedString(),
+                discoveryId: record.discoveryId,
+                rssi: 0
+            )
+            return
+        }
         guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         if error != nil { return }
         guard let value = characteristic.value, !value.isEmpty else { return }
@@ -1751,7 +1885,32 @@ extension BleTransport: CBPeripheralManagerDelegate {
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
         guard characteristic.uuid == txUUID else { return }
-        if let existing = activeLink(forCentral: central.identifier), existing.opened { return }
+        /*
+         * A re-subscribe is a NEW connection, not a duplicate event.
+         *
+         * This used to return early whenever a link for this central was
+         * already open, which is right for a genuine duplicate subscribe and
+         * wrong for the case that actually happens: the central drops out of
+         * range in somebody's pocket, iOS does not deliver didUnsubscribeFrom,
+         * and the peer comes back and subscribes again. The old link survived,
+         * so nothing was announced to the layer above - no incoming link, so no
+         * handshake was answered - and `subscribedCentral` still pointed at the
+         * CBCentral of the dead connection, which is the only object the send
+         * path has. Inbound writes still matched by identifier. The phone
+         * therefore received messages and could not answer any of them, until
+         * the session's 20-second liveness timer eventually gave up.
+         *
+         * So: the same central object subscribing again is a duplicate and is
+         * merely refreshed; a different one replaces the link outright.
+         */
+        if let existing = activeLink(forCentral: central.identifier), existing.opened {
+            if existing.subscribedCentral === central {
+                existing.gattDatagramSize = max(20, central.maximumUpdateValueLength)
+                announceDatagramSize(existing)
+                return
+            }
+            closeLink(existing, state: .closed, reason: "peer re-subscribed on a new connection", notify: true)
+        }
 
         // The peer subscribing is the peripheral-side definition of "connected":
         // it can now hear us, and it already knows how to write to us.

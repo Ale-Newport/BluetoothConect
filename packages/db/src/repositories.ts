@@ -681,6 +681,30 @@ export class FileRepository {
   setLocalPath(id: string, path: string): void {
     this.db.prepare('UPDATE files SET local_path = ? WHERE id = ?').run(path, id);
   }
+
+  /**
+   * Fill in media metadata that is still missing, and only that.
+   *
+   * Two writers describe the same file from different directions: the transfer
+   * layer knows its name, size and bytes but nothing about what is inside it,
+   * and the chat message that announces it knows the duration of a voice note
+   * or the dimensions of a photo. They arrive in either order, and `insert` is
+   * INSERT OR REPLACE, so whichever wrote second used to erase what the other
+   * had learned - which is why a received voice note drew as 0:00 with a bar
+   * that never moved.
+   *
+   * COALESCE keeps the older rule intact: a value already established is never
+   * overwritten, a hole is filled.
+   */
+  fillMedia(id: string, media: { width: number | null; height: number | null; durationMs: number | null }): void {
+    this.db
+      .prepare(
+        `UPDATE files
+            SET width = COALESCE(width, ?), height = COALESCE(height, ?), duration_ms = COALESCE(duration_ms, ?)
+          WHERE id = ?`,
+      )
+      .run(media.width, media.height, media.durationMs, id);
+  }
 }
 
 export class TransferRepository {

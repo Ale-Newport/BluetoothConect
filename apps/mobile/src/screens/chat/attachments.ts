@@ -179,7 +179,13 @@ export function voiceAttachment(recording: Recording): OutgoingAttachment {
     fileBytes: recording.sizeBytes,
     width: null,
     height: null,
-    durationMs: recording.durationMs,
+    // Rounded again here, and deliberately. `audio.stopRecording` already
+    // rounds what the iOS recorder reports, but this function accepts any
+    // `Recording` - a future Android module, a resumed draft, a test double -
+    // and a fractional duration does not fail here. It fails on the OTHER
+    // phone, where the decoder refuses a non-integer and drops the whole
+    // message that vouches for the file.
+    durationMs: Math.round(recording.durationMs),
   };
 }
 

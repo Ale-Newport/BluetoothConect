@@ -159,6 +159,24 @@ export class ChatCenter {
         this.publish();
       }),
       this.client.events.on('pairingResolved', ({ peerKey }) => this.ensureAttached(peerKey)),
+      /*
+       * A transfer finishing is a change to a conversation, and nothing else
+       * said so.
+       *
+       * The bytes of a photo or a voice note land in the transfer layer, which
+       * writes the local path to SQLite and tells its own subscribers - the
+       * Share tab. The chat screen re-reads only when this centre's version
+       * counter moves, so on the RECEIVING phone the bubble stayed exactly as
+       * it was drawn when the message arrived: no image, and a voice note with
+       * a play control that did nothing, until some unrelated chat event
+       * happened to publish. Over Wi-Fi the file arrives in well under a
+       * second, so that "unrelated event" was usually the next message - by
+       * which time the thing reads as broken.
+       *
+       * Publishing is cheap: screens re-read from SQLite, which is the single
+       * source of truth either way.
+       */
+      transferCenterFor(this.client).subscribe(() => this.publish()),
     );
     // The centre is built by the first screen that asks for it, which may be
     // long after a session came up.
@@ -727,6 +745,20 @@ export class ChatCenter {
             height: attached.height ?? null,
             durationMs: attached.durationMs ?? null,
             createdAt: receivedAt,
+          }),
+        );
+      } else {
+        // The offer usually lands first, and the row it wrote knows nothing
+        // about what is inside the file - the transfer layer has a name and a
+        // size and no more. Only this message carries the duration of a voice
+        // note or the size of a photo, so it fills the holes rather than
+        // leaving them: a received voice note drew as 0:00 otherwise. Still
+        // never an overwrite; `fillMedia` only touches columns that are null.
+        this.safe(() =>
+          this.client.db.files.fillMedia(attached.fileId, {
+            width: attached.width ?? null,
+            height: attached.height ?? null,
+            durationMs: attached.durationMs ?? null,
           }),
         );
       }

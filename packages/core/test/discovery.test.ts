@@ -184,12 +184,30 @@ describe('unknown devices', () => {
   });
 
   it('shows it the moment the transport fills the identity in', () => {
+    /*
+     * The second sighting is not a formality - it is a contract with the
+     * native transport, and for a long time nothing honoured it.
+     *
+     * iOS cannot put service data in a BLE advertisement, so an iPhone
+     * advertising AirLink says only "I speak this service" and perhaps a name.
+     * The token and the discovery id live in a characteristic that can only be
+     * READ over a connection, and the transport used to read it only after
+     * connecting - which the user could only ask for once the peer was listed,
+     * which this registry would only do once it was identified. Two iPhones
+     * with no Wi-Fi therefore saw each other and stayed invisible, each row
+     * swept away after `resolveWindowMs`, and this test passed throughout
+     * because it hand-feeds the very re-announcement nobody made.
+     *
+     * `BleTransport.scheduleIdentityProbe` is what makes it true: it connects
+     * on its own, reads the identity, disconnects, and re-announces the peer -
+     * which is exactly the second `observe` below.
+     */
     const clock = new VirtualClock();
     const reg = registry(clock);
     reg.observe(sighting({ endpointId: 'bare' }));
     expect(reg.list()).toHaveLength(0);
 
-    // The identity read completes and the same endpoint is re-announced.
+    // The identity probe completes and the same endpoint is re-announced.
     reg.observe(sighting({ endpointId: 'bare', discoveryId: THEIR_DISCOVERY_ID, advertisedName: 'Maria' }));
 
     const listed = reg.list();

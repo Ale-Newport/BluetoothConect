@@ -482,6 +482,67 @@ of its own. All of it compiles. A simulator cannot record from a microphone
 convincingly, and the banner needs the app in the background with a peer still
 connected, which iOS rarely allows for long. Worth checking in TestFlight.
 
+---
+
+## 3e. What two real iPhones found in an hour
+
+TestFlight put the app on two physical phones for the first time, and both of
+the things simulators could never exercise were broken. Neither had a test that
+failed; both had tests that passed by stubbing the exact value that breaks.
+
+**Voice notes never arrived, over any link.** `AVAudioRecorder.currentTime` is
+seconds as a Double, so a duration in milliseconds is 3472.5623582766438. The
+encoder validated `byteLength` and passed width, height and duration through
+untouched; CBOR wrote the fraction as a legal float64; and the receiver's
+decoder, which requires an integer, threw `DecodeError` and dropped the WHOLE
+chat message before acknowledging it. That message is the one that calls
+`TransferCenter.expect`, so the file was never auto-accepted: it waited as an
+unanswered offer until the 120-second timeout turned the sender's bubble red,
+with nothing whatsoever on the other phone. Photos were immune because they
+carry no duration, which is why "everything works except audio".
+
+Fixed at the seam where native values become app values (`audio.ts` rounds
+duration and size), again in `voiceAttachment` for any other producer, and
+structurally in `encodeAttachment`, which now refuses what its own decoder
+refuses - so this class of defect fails in the sender's stack instead of
+silently on the far side of a radio. Two more defects behind it, both of which
+would have survived that fix: `files.insert` is INSERT OR REPLACE and the two
+writers of a file row - the transfer layer and the chat announcement - erased
+each other's knowledge in both arrival orders, so a received voice note drew as
+0:00 (now `fillMedia`, a COALESCE update that can only fill holes); and nothing
+told the conversation when an incoming transfer completed, so an arrived note
+kept a play control that did nothing until some unrelated chat event happened
+(the chat centre now subscribes to the transfer centre).
+
+**Bluetooth with no Wi-Fi at all.** Two defects, one of which makes the app's
+central promise impossible:
+
+- **An iPhone was unidentifiable over BLE.** iOS will not put service data in
+  an advertisement, so an advertising iPhone can say only "I speak this
+  service". The token and discovery id live in a characteristic that can only
+  be read over a connection - and the transport read it only AFTER connecting,
+  which the user can only ask for once the peer is listed, which the registry
+  only does once it is identified. Two iPhones with no Wi-Fi saw each other and
+  stayed invisible, each row swept away after eight seconds. Over Wi-Fi this
+  never showed, because the Bonjour TXT record carries both fields with no
+  connection at all. `BleTransport.scheduleIdentityProbe` now resolves it the
+  only way CoreBluetooth allows: connect, read the one characteristic,
+  disconnect, re-announce - bounded to two at a time and one per peer per
+  minute, because this is a radio and a battery.
+- **A re-subscribe on a stale link left a phone half-connected.** A peripheral
+  -role link has no liveness timer. When a central drops out of range and iOS
+  does not deliver `didUnsubscribeFrom`, the old link survives; the peer comes
+  back, subscribes again, and the handler returned early because a link was
+  already open. Nothing was announced upward, so no handshake was answered, and
+  `subscribedCentral` still pointed at the dead connection - the only object
+  the send path has. Inbound writes still matched. The phone received messages
+  and could not answer any of them. A re-subscribe from a different CBCentral
+  now replaces the link; the same one merely refreshes its datagram size.
+
+Both BLE fixes compile and are reasoned from the code. **Neither can be
+verified here** - the simulator has no Bluetooth radio - so they are claims
+until two physical phones in airplane mode say otherwise.
+
 ## 4. What was not done
 
 Stated because a list of everything that went right is not an honest report.

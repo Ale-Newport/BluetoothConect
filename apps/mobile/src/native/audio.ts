@@ -171,10 +171,28 @@ export const audio = {
   async stopRecording(): Promise<Recording> {
     if (native === null) return NO_RECORDING;
     const recording = await native.stopRecording();
+    /*
+     * ROUNDED HERE, AND THIS IS THE BUG THAT KILLED VOICE NOTES ON REAL PHONES.
+     *
+     * `AVAudioRecorder.currentTime` is a TimeInterval in seconds, so a duration
+     * in milliseconds is a fraction: 3472.5623582766438 for three and a half
+     * seconds of speech. Codegen has no integer type, so the TurboModule spec
+     * declares both of these `Double` and the fraction travelled all the way to
+     * the wire - where `encodeAttachment` did not check it, CBOR happily wrote
+     * a float64, and the RECEIVER's decoder, which requires an integer, threw
+     * and dropped the whole chat message. That message is the one that vouches
+     * for the file transfer, so the voice note was never auto-accepted: it sat
+     * as an unanswered offer until the 120s timeout turned the sender's bubble
+     * red. Photos were unaffected because they carry no duration.
+     *
+     * This is the seam where native values become app values, so it is where
+     * they are made integral - every consumer downstream wants whole
+     * milliseconds and whole bytes anyway.
+     */
     return {
       path: recording.path,
-      durationMs: recording.durationMs,
-      sizeBytes: recording.sizeBytes,
+      durationMs: Math.round(recording.durationMs),
+      sizeBytes: Math.round(recording.sizeBytes),
     };
   },
 

@@ -732,18 +732,25 @@ export class TransferCenter {
     const now = Date.now();
     this.safeDb(() => {
       if (this.client.db.transfers.get(transferId)) return;
-      this.client.db.files.insert({
-        id: transferId,
-        name: record.filename,
-        mimeType: record.mimeType,
-        sizeBytes: record.totalBytes,
-        contentHash: resume?.fileHash ?? new Uint8Array(0),
-        localPath: record.direction === TransferDirection.OUTGOING ? record.localPath : null,
-        width: null,
-        height: null,
-        durationMs: null,
-        createdAt: now,
-      });
+      // Only when nothing describes this file yet. `files.insert` is INSERT OR
+      // REPLACE, and the chat message that announced the attachment may have
+      // arrived first with the one thing this layer cannot know - how long the
+      // voice note is, how big the photo is. Replacing that row with these
+      // nulls is what made a received voice note say 0:00.
+      if (!this.client.db.files.get(transferId)) {
+        this.client.db.files.insert({
+          id: transferId,
+          name: record.filename,
+          mimeType: record.mimeType,
+          sizeBytes: record.totalBytes,
+          contentHash: resume?.fileHash ?? new Uint8Array(0),
+          localPath: record.direction === TransferDirection.OUTGOING ? record.localPath : null,
+          width: null,
+          height: null,
+          durationMs: null,
+          createdAt: now,
+        });
+      }
       this.client.db.transfers.insert({
         id: transferId,
         fileId: transferId,
