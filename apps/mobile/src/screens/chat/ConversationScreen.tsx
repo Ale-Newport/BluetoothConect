@@ -37,7 +37,7 @@ import { MessageBubble, type AttachmentView, type BubbleRow } from './MessageBub
 import type { OutgoingAttachment } from './attachments.js';
 import { Composer } from './Composer.js';
 import { MessageActions } from './MessageActions.js';
-import { RUN_BREAK_MS, daySeparatorLabel, isSameDay } from './chatTime.js';
+import { RUN_BREAK_MS, daySeparatorLabel, isSameDay, noticeDuration } from './chatTime.js';
 import { chatCopy } from './chatStrings.js';
 
 /**
@@ -59,8 +59,6 @@ import { chatCopy } from './chatStrings.js';
 
 const HEADER_AVATAR = 34;
 const BACK_TARGET = 44;
-/** How long a confirmation such as "Copied" stays on screen. */
-const NOTICE_MS = 1600;
 /** The status dot in the header, and each dot in the typing indicator. */
 const DOT_SIZE = 6;
 
@@ -115,7 +113,7 @@ export function ConversationScreen(): React.JSX.Element {
 
   useEffect(() => {
     if (notice === null) return;
-    const timer = setTimeout(() => setNotice(null), NOTICE_MS);
+    const timer = setTimeout(() => setNotice(null), noticeDuration(notice));
     return () => clearTimeout(timer);
   }, [notice]);
 

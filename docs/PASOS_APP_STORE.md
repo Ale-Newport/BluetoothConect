@@ -150,13 +150,27 @@ de probarla en dos teléfonos reales antes de publicarla.
 1. App Store Connect → **TestFlight** → **Internal Testing** → **+** → añade a un amigo.
 2. Tu amigo instala la app **TestFlight** y acepta la invitación. No hace falta
    conectar su iPhone a tu Mac.
-3. Probad con **Wi-Fi**: emparejar (los seis dígitos), chatear, enviar una foto,
-   **una nota de voz**, jugar.
+3. Probad con **Wi-Fi**: emparejar (los seis dígitos), chatear, jugar y, con la
+   barra de mensaje: **+** → una foto de la galería y un archivo; el botón de la
+   **cámara** (la primera vez iOS pide permiso de cámara: acéptalo) para hacer
+   una foto y enviarla; el **micrófono** para una nota de voz. Al escribir
+   cualquier cosa, la cámara y el micrófono se cambian por el botón de enviar.
 4. **Muy importante — probad también sin Wi-Fi:** en los dos iPhones, modo avión
    y después vuelve a activar solo el **Bluetooth**. Cada uno debe ver al otro en
    "Other devices" en unos segundos; conectad y mandad un mensaje y una foto.
    Es lo único que no se puede probar en el Mac (los simuladores no tienen
-   Bluetooth).
+   Bluetooth). Los textos van en menos de un segundo; **las fotos y los archivos
+   van mucho más lentos por Bluetooth** (en la única medida que existe, 64 KB
+   tardaron 154 s). No es un fallo nuevo, pero no prometas fotos rápidas sin Wi-Fi.
+
+   > **Si solo tienes un iPhone:** un simulador **no sirve** para esto. No tiene
+   > radio Bluetooth, así que un iPhone sin Wi-Fi no tiene ningún camino hasta
+   > él (no es un fallo de la app). Necesitas otro aparato con Bluetooth: un
+   > iPad o el iPhone de un amigo con iOS 18, instalando AirLink por TestFlight.
+   > Mientras tanto, `./scripts/ble-mac-peer.sh` usa el Bluetooth del propio Mac
+   > como segundo aparato y comprueba la parte que decide si dos móviles se
+   > encuentran y abren un enlace (no llega a emparejar). Cómo se usa, en
+   > `docs/TESTING.md`.
 5. Probad la **notificación** con la app del otro en segundo plano.
 
 Si algo de esto falla, **no envíes a revisión todavía**: cuéntamelo y lo
@@ -169,19 +183,38 @@ arreglamos primero.
 Apple ya contestó a un primer envío (ver el recuadro de abajo). Lo que hay que
 hacer ahora es **responderles y reenviar**, no empezar de cero.
 
-1. **Graba el vídeo en los dos iPhones de verdad** (el de simuladores no vale:
-   piden un iPhone físico con el último iOS). Empieza a grabar la pantalla
+0. **Antes de nada, sube la web de soporte actualizada.** La política de
+   privacidad ahora dice que la cámara también sirve para hacer una foto dentro
+   de un chat, y tiene que coincidir con lo que hace la app. En el repositorio
+   `airlink-support` de GitHub (paso 3): **Add file → Upload files** → arrastra
+   `support-site/privacy.html` y `support-site/index.html` (sustituyen a los
+   anteriores) → **Commit changes**. Espera un par de minutos y abre la página de
+   privacidad en el móvil: debe poner "Last updated: 13 October 2026" y hablar
+   del botón de cámara.
+1. **Graba el vídeo en tu iPhone de verdad** (el de simuladores no vale:
+   piden un iPhone físico con el último iOS). **Con un solo iPhone te basta**:
+   el compañero puede ser el simulador "Lucas" en el Mac, en la misma Wi-Fi,
+   como acabas de probar. Lo que Apple exige es que la **grabación** sea de un
+   iPhone físico, no que el otro lado también lo sea. Empieza a grabar la pantalla
    **antes** de abrir la app y haz, en este orden: abrir AirLink desde la
    pantalla de inicio → primera vez (nombre, permisos) → el otro móvil aparece en
    "Other devices" → **Connect** → los **mismos seis dígitos** en los dos →
-   "They match" en ambos → un mensaje, una foto y una **nota de voz** → **mantén
-   pulsado un mensaje recibido → "Report and block"** → una partida en **Play**.
-   Con 2–3 minutos basta.
+   "They match" en ambos → un mensaje, una foto con el botón **+** o con la
+   **cámara**, y una **nota de voz** → una
+   partida en **Play** → y **al final del todo**, **mantén pulsado un mensaje
+   recibido → "Report and block"**. Va el último porque bloquea a la otra
+   persona y borra la conversación: después ya no se puede jugar ni chatear (se
+   deshace en **You → Friends → Unblock**). Con 2–3 minutos basta.
 2. Pega el texto de `docs/APP_STORE_LISTING.md` (sección *The Guideline 2.1
    information request*) en **dos sitios**: la respuesta en el Resolution Center
    **y** App Review Information → **Notes**. Adjunta el vídeo a la respuesta.
+   **Si ya habías pegado el texto antes, vuelve a pegarlo:** cambió la frase de
+   los permisos (la cámara ya no es solo para el QR) y la descripción de la
+   barra del chat. Borra lo anterior y pega todo de nuevo.
 3. Elige la **build más reciente** en la sección Compilación de la versión.
-   Cada subida necesita un número de build nuevo (la última subida fue la 4; esta es la 5, y la próxima será la 6).
+   Xcode pone él mismo el número de build al subir (el proyecto dice 8 ahora, pero
+   puede que salga otra): elige siempre **la de número más alto**, y mira que la
+   hora de subida sea la de hoy.
 4. Comprueba que **Pricing and Availability** sigue sin Francia y que la
    clasificación por edades sigue en **13+**: el texto de respuesta lo afirma.
 5. Marca **"Manually release this version"** (así tú decides cuándo sale).

@@ -1,12 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, TextInput, View, type TextStyle } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, TextInput, View, type TextStyle } from 'react-native';
 import { CHAT_LIMITS } from '@airlink/core';
 import { areaColor, areaColorMuted, strings } from '@airlink/config';
 import type { Message } from '@airlink/db';
-import { Icon, Label, haptic, useTheme } from '../../ui/index.js';
+import { Icon, Label, haptic, useTheme, type IconName } from '../../ui/index.js';
 import { audio } from '../../native/audio.js';
 import { isOutgoing } from './chatCenter.js';
-import { MIN_VOICE_MS, choosePhoto, clockDuration, voiceAttachment, type OutgoingAttachment } from './attachments.js';
+import {
+  MIN_VOICE_MS,
+  chooseFile,
+  choosePhoto,
+  clockDuration,
+  takePhoto,
+  voiceAttachment,
+  type AttachmentChoice,
+  type OutgoingAttachment,
+} from './attachments.js';
+import { AttachSheet, type AttachChoice } from './AttachSheet.js';
 import { chatCopy } from './chatStrings.js';
 
 /**
@@ -18,7 +28,16 @@ import { chatCopy } from './chatStrings.js';
  * worst thing this app could do. What is typed is kept, and it goes when they
  * come back. A photo and a voice note behave the same way.
  *
- * The only thing that can disable Send is an empty box.
+ * THE BAR, LEFT TO RIGHT: a plus that offers a photo or a file, the text box,
+ * and - while the box is empty - the camera and the microphone. The moment
+ * something is typed those two give way to Send, in the same place the
+ * microphone was, so the thumb that was about to record is already over the
+ * button that sends. That is the arrangement everyone already has in their
+ * hands from the messaging apps they use every day, and a messenger is the one
+ * kind of app where being unfamiliar is a cost.
+ *
+ * Send exists only when there is something to send, so an empty box has no
+ * disabled button to explain; the microphone is what sits there instead.
  *
  * RECORDING IS A TAP, NOT A HOLD. Hold-to-talk is the familiar gesture and it
  * was deliberately not used: it is unusable with VoiceOver, it is unusable for
@@ -29,10 +48,11 @@ import { chatCopy } from './chatStrings.js';
  * being told which one it is.
  */
 
+/** Every control in the bar is this tall, which is also the text box's minimum. */
 const SEND_SIZE = 44;
 const INPUT_MAX_HEIGHT = 132;
-/** The two attachment controls, which sit lower than the send button's weight. */
-const ATTACH_SIZE = 38;
+const BAR_ICON_SIZE = 28;
+const ROUND_ICON_SIZE = 22;
 /** How often the recording bar re-reads the clock. */
 const TICK_MS = 250;
 
@@ -75,9 +95,11 @@ export function Composer({
 }): React.JSX.Element {
   const theme = useTheme();
   const canSend = value.trim().length > 0;
-  const chatHue = areaColor(theme.colors, 'Chat');
 
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useState<PickKind | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  /** What the sheet was asked for, started once the sheet has left the screen. */
+  const chosen = useRef<AttachChoice | null>(null);
   const [record, setRecord] = useState<RecordState>({ phase: 'idle' });
   const [elapsedMs, setElapsedMs] = useState(0);
   const [level, setLevel] = useState(0);
@@ -140,20 +162,41 @@ export function Composer({
     void stopRecording(true);
   }, [recording, elapsedMs, stopRecording]);
 
-  const onPhoto = useCallback(() => {
-    if (picking) return;
-    setPicking(true);
-    void (async () => {
-      const choice = await choosePhoto();
-      setPicking(false);
-      if (choice.status === 'picked') {
-        haptic('impactLight');
-        onAttach(choice.attachment);
-      } else if (choice.status === 'failed') {
-        onNotice(choice.message);
-      }
-    })();
-  }, [onAttach, onNotice, picking]);
+  const startPicker = useCallback(
+    (kind: PickKind) => {
+      if (picking) return;
+      setPicking(kind);
+      void (async () => {
+        const choice: AttachmentChoice =
+          kind === 'camera' ? await takePhoto() : kind === 'file' ? await chooseFile() : await choosePhoto();
+        setPicking(null);
+        if (choice.status === 'picked') {
+          haptic('impactLight');
+          onAttach(choice.attachment);
+        } else if (choice.status === 'failed') {
+          onNotice(choice.message);
+        }
+      })();
+    },
+    [onAttach, onNotice, picking],
+  );
+
+  const startChosen = useCallback(() => {
+    const kind = chosen.current;
+    chosen.current = null;
+    if (kind) startPicker(kind);
+  }, [startPicker]);
+
+  const onChoose = useCallback(
+    (kind: AttachChoice) => {
+      chosen.current = kind;
+      setSheetOpen(false);
+      // Android's modal has no "finished leaving" callback; a beat is the
+      // closest thing it offers. iOS starts the picker from `onDismiss`.
+      if (Platform.OS !== 'ios') setTimeout(startChosen, 250);
+    },
+    [startChosen],
+  );
 
   const onMicrophone = useCallback(() => {
     if (record.phase !== 'idle') return;
@@ -252,24 +295,13 @@ export function Composer({
           onSend={() => void stopRecording(true)}
         />
       ) : (
-        <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: theme.spacing.sm }}>
-          <AttachButton
-            icon="image"
-            label={chatCopy.photoLabel}
-            hint={chatCopy.photoHint}
-            busy={picking}
-            tint={chatHue}
-            background={areaColorMuted(theme.colors, 'Chat')}
-            onPress={onPhoto}
-          />
-          <AttachButton
-            icon="audio"
-            label={chatCopy.recordLabel}
-            hint={chatCopy.recordingHint}
-            busy={record.phase === 'arming'}
-            tint={chatHue}
-            background={areaColorMuted(theme.colors, 'Chat')}
-            onPress={onMicrophone}
+        <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: theme.spacing.xs }}>
+          <BarIconButton
+            icon="plus"
+            label={chatCopy.attachLabel}
+            hint={chatCopy.attachHint}
+            busy={picking === 'library' || picking === 'file'}
+            onPress={() => setSheetOpen(true)}
           />
 
           <TextInput
@@ -294,66 +326,81 @@ export function Composer({
                 paddingHorizontal: theme.spacing.md,
                 paddingTop: theme.spacing.sm,
                 paddingBottom: theme.spacing.sm,
+                marginHorizontal: theme.spacing.xs,
                 minHeight: SEND_SIZE,
                 maxHeight: INPUT_MAX_HEIGHT,
               },
             ]}
           />
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={chatCopy.sendLabel}
-            accessibilityState={{ disabled: !canSend }}
-            accessibilityHint={canSend ? undefined : chatCopy.sendHintEmpty}
-            disabled={!canSend}
-            onPress={() => {
-              haptic('impactLight');
-              onSend();
-            }}
-            style={({ pressed }) => [
-              {
-                width: SEND_SIZE,
-                height: SEND_SIZE,
-                borderRadius: theme.radius.pill,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: canSend ? theme.colors.accent : theme.colors.surfaceElevated,
-              },
-              pressed ? { opacity: 0.75 } : null,
-            ]}
-          >
-            <Label variant="headline" tone={canSend ? 'onAccent' : 'tertiary'}>
-              ↑
-            </Label>
-          </Pressable>
+          {canSend ? (
+            <RoundButton
+              icon="send"
+              label={chatCopy.sendLabel}
+              background={theme.colors.accent}
+              color={theme.colors.onAccent}
+              onPress={() => {
+                haptic('impactLight');
+                onSend();
+              }}
+            />
+          ) : (
+            <>
+              <BarIconButton
+                icon="photoCamera"
+                label={chatCopy.cameraLabel}
+                hint={chatCopy.cameraHint}
+                busy={picking === 'camera'}
+                onPress={() => startPicker('camera')}
+              />
+              <RoundButton
+                icon="microphone"
+                label={chatCopy.recordLabel}
+                hint={chatCopy.recordingHint}
+                busy={record.phase === 'arming'}
+                background={theme.colors.accent}
+                color={theme.colors.onAccent}
+                onPress={onMicrophone}
+              />
+            </>
+          )}
         </View>
       )}
+
+      <AttachSheet
+        visible={sheetOpen}
+        onChoose={onChoose}
+        onClose={() => {
+          chosen.current = null;
+          setSheetOpen(false);
+        }}
+        onDismiss={startChosen}
+      />
     </View>
   );
 }
 
+/** Where a photo or a file is coming from. */
+type PickKind = 'library' | 'file' | 'camera';
+
 /**
- * The photo and microphone buttons.
+ * A plain icon in the bar - the plus and the camera.
  *
- * In the Chat hue rather than the accent: the accent is the one colour of the
- * primary action on a screen, and on this screen that is Send. These are
- * offers, and they read as part of the Chat tab instead.
+ * No background: they are quiet offers beside the text box, and the one thing
+ * on this bar that gets a coloured disc is the action the thumb is about to
+ * take (record, or send).
  */
-function AttachButton({
+function BarIconButton({
   icon,
   label,
   hint,
   busy,
-  tint,
-  background,
   onPress,
 }: {
-  icon: 'image' | 'audio';
+  icon: IconName;
   label: string;
   hint: string;
   busy: boolean;
-  tint: string;
-  background: string;
   onPress: () => void;
 }): React.JSX.Element {
   const theme = useTheme();
@@ -367,26 +414,59 @@ function AttachButton({
         haptic('selection');
         onPress();
       }}
-      // The button is 38pt in a 44pt row; the target has to reach 44 either way.
-      hitSlop={theme.spacing.xs}
+      style={({ pressed }) => [
+        { width: SEND_SIZE, height: SEND_SIZE, alignItems: 'center', justifyContent: 'center' },
+        pressed ? { opacity: 0.6 } : null,
+      ]}
+    >
+      {busy ? (
+        <ActivityIndicator color={theme.colors.text} />
+      ) : (
+        <Icon name={icon} size={BAR_ICON_SIZE} color={theme.colors.text} />
+      )}
+    </Pressable>
+  );
+}
+
+/** The filled disc at the right-hand end: the microphone, or Send. */
+function RoundButton({
+  icon,
+  label,
+  hint,
+  busy = false,
+  background,
+  color,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  hint?: string;
+  busy?: boolean;
+  background: string;
+  color: string;
+  onPress: () => void;
+}): React.JSX.Element {
+  const theme = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={hint}
+      accessibilityState={{ busy }}
+      onPress={onPress}
       style={({ pressed }) => [
         {
-          width: ATTACH_SIZE,
-          height: ATTACH_SIZE,
-          marginBottom: (SEND_SIZE - ATTACH_SIZE) / 2,
+          width: SEND_SIZE,
+          height: SEND_SIZE,
           borderRadius: theme.radius.pill,
           alignItems: 'center',
           justifyContent: 'center',
           backgroundColor: background,
         },
-        pressed ? { opacity: 0.7 } : null,
+        pressed ? { opacity: 0.75 } : null,
       ]}
     >
-      {busy ? (
-        <ActivityIndicator color={tint} />
-      ) : (
-        <Icon name={icon} size={ATTACH_SIZE * 0.55} color={tint} />
-      )}
+      {busy ? <ActivityIndicator color={color} /> : <Icon name={icon} size={ROUND_ICON_SIZE} color={color} />}
     </Pressable>
   );
 }

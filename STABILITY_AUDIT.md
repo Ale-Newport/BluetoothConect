@@ -107,7 +107,7 @@ This is a **key-namespace bug**, and the code already documents half of it
 
 - Outbound: `connect(peerKey)` → `createHandle(peerKey)` where `peerKey` is the
   **registry key** — `peerId` for a recognised friend, else `"ble:UUID"`.
-- Inbound: `acceptIncoming` → `createHandle(link.endpointId)`
+- Inbound (as it was; now `IncomingLinkRouter`): `acceptIncoming` → `createHandle(link.endpointId)`
   (`AirLinkClient.ts:614`) — a **bare endpoint id**, no transport prefix.
 
 So on the accepting side the handle key is `"A1B2-…"` while the registry key
@@ -594,6 +594,141 @@ crash-reporting or advertising SDK in `Podfile.lock`; `react-native-blob-util`
 is used only for local file reads and writes, and the video player is given a
 local file the user chose; the app ships English only; the report action
 appears on received messages only, and blocking is reversible in Friends.
+
+---
+
+## 3g. A Mac pretending to be a phone found a routing bug nobody was looking for
+
+A simulator cannot speak Bluetooth, so an iPhone on Bluetooth alone could not
+connect to one - which is not a defect, and the first report of "they do not
+connect" was a test that could not have worked. But it left a real question
+unanswerable: does the Bluetooth path work on hardware at all? With one iPhone
+and no second Bluetooth device, nothing could say.
+
+`scripts/ble-mac-peer.sh` answers part of it by making the Mac's own radio the
+second device. It speaks the layer below the protocol - the same GATT service,
+three characteristics and identity record - and prints what the iPhone does to
+it. What it showed, on a real iPhone:
+
+- the iPhone advertises AirLink with no Wi-Fi at all, and the Mac can read and
+  decode its identity record;
+- the iPhone's identity probe (added in 3e) read the Mac's identity 1.6 seconds
+  after the Mac began advertising, with the app in the background;
+- "Mac-test" appeared under *Other devices*, and tapping Connect subscribed,
+  read the identity and began the handshake, retransmitting it with backoff
+  (0.5 s, 1.3 s, 2.9 s, 5.9 s...) because the Mac, speaking no protocol, never
+  answered. That is the expected end of the experiment, and it proves discovery,
+  listing and link-opening work over real Bluetooth.
+
+And one thing nobody was looking for. The moment the Mac merely SUBSCRIBED, the
+iPhone began transmitting encrypted frames at it - 95 bytes each, a counter
+climbing 0x0d, 0x0e, 0x0f, each retry further apart. The Mac owed the iPhone no
+session. The frames belonged to the iPhone's session with the simulator Lucas.
+
+`AirLinkClient.acceptIncoming` adopted an incoming link into the first
+established session that was disconnected:
+
+    if (sameEndpoint || sessionIsReconnecting) session.migrateToLink(link)
+
+"I am disconnected" is a fact about the receiver and says nothing about who has
+just connected. So a stranger was attached to another person's session, which
+pushed that person's frames at them; and the stranger's own hello went to a
+session that had finished its handshake, which ignores a hello ("handshake frame
+after the handshake completed") and answers nothing. They were accepted and
+never answered, and the receiving phone said "Connected".
+
+Whether this is what two real phones hit is NOT established: two phones that had
+once met over Wi-Fi would behave this way over Bluetooth - the dialler discards
+its old session and sends a fresh hello, the other adopts that link into its old
+session and swallows it - but that is reasoned from the code, not seen.
+
+**The fix** decides by what the link says. Every secure frame names its session
+in the clear and a hello says it is one, so `IncomingLinkRouter` holds the first
+datagrams and routes on them: a frame naming a session we hold resumes that
+session; a hello gets a new responder; a frame naming a session we do not hold,
+or a link that says nothing for fifteen seconds, is closed. What arrived while
+deciding is replayed into the chosen session, so the deliberation loses nothing.
+A fragment is looked THROUGH (the first piece of a split frame starts with the
+original frame), so a Bluetooth-sized hello is recognised from its first piece.
+And a session that migrates now speaks at once, where it used to wait five
+seconds for its first keepalive - which would otherwise have been five seconds
+in which a resumed friend is indistinguishable from a stranger.
+
+Tested with real sessions over the simulated network, and with the old rule kept
+as a control that reproduces the failure: connected on one side, never answered
+on the other. Removing the immediate keepalive fails two tests; putting the old
+rule back in the client fails three.
+
+**Verified on hardware afterwards**, in two ways. `./scripts/ble-mac-peer.sh
+--talk` makes the Mac run the real protocol over its own radio against a real
+iPhone in airplane mode with Bluetooth alone (`apps/mobile/ios/build/ble-mac-peer/talk.log`):
+
+- discovery, Connect, handshake, the six digits and "connected" took 2.4 s from
+  the first subscribe;
+- a message from the Mac was delivered in 295 ms and the echo of the iPhone's reply in
+  270 ms (read 389 ms after delivery, once the chat was open);
+- the iPhone's link dropped, and it RESUMED the same session on a new link 5.4 s
+  later, with "turned away: 0" - so a friend coming back is routed to its
+  session rather than treated as a stranger;
+- **a 64 KB file took 154 s: 0.4 KB/s** (0.5-1.3 KB/s while moving). See 3h.
+
+The user then ran the latest build on an Apple-silicon Mac and an iPhone, over
+Bluetooth only, and reported connection, messages and games all working. That is
+reported, not measured here. What is still NOT seen is the original defect
+itself - a phone holding a reconnecting session being given a stray subscriber -
+because the Mac's own router, not the phone's, was exercised in the log above.
+
+## 3h. The message bar, and the photos that turned grey
+
+The composer was rearranged to the layout people already know from messaging
+apps: a plus on the left, the text box, then the camera and the microphone, which
+become Send as soon as something is typed. The plus opens a sheet with *Photo
+library* and *File*; the camera button takes a photo and sends it; nothing in
+`packages/` or the transport was touched, and what a photo, a file or a voice
+note becomes - the row, the transfer, the descriptor - is the same code as before.
+A `file` message already existed in the database, the protocol and the bubble;
+what was missing was a way to start one from a chat.
+
+Checked by running it: two simulators paired, text sent and delivered, a photo
+chosen through the plus and delivered with the picture on both sides, the camera
+button answering "This device has no camera AirLink can use." (the simulator has
+none), the system Files picker opening, dark mode. Not checked: the real camera
+(the simulator has none) and a real file from Files.
+
+Two things surfaced while doing it, and both were older than the change.
+
+**A picked photo lived in a temporary folder.** `react-native-image-picker`
+writes its copy to `NSTemporaryDirectory()`, which iOS may empty whenever the app
+is not running. The row, the retry queue and the sender's own bubble all pointed
+at that path, so a photo queued for a friend out of range could be lost before
+they came back, and a sent photo could turn into a grey square. Every picked
+photo, camera photo and file is now moved once into `Documents/airlink/sent/`
+(`keepForSending`), and the temporary original removed. If the copy fails the
+choice fails with a message instead of queuing a pointer to nothing. Voice notes
+were already in Application Support.
+
+**Stored paths named a folder that does not survive an update.** The database
+keeps an attachment's location as an absolute path, and on iOS that path contains
+the data container's UUID, which changes when the app is reinstalled or updated.
+Reinstalling over a previous build, both simulators showed every earlier photo as
+a grey square although the files were on disk in the new container
+(`15CBF2EB-...` in the database, `F1548F1B-...` on disk). On a phone this would
+have happened to every photo, voice note and received file on the FIRST update
+after release. `currentPath` now points a stored path at the current container
+wherever the database is read (the chat bubble, the outbox, the restored
+transfers); a path without that shape is returned unchanged. Reinstalling again
+brought both phones' older photos back.
+
+**What is still open, and larger than it looks: file speed over Bluetooth.** The
+comments in this code assume 20-40 KB/s ("about 240 KB, which is under ten
+seconds even on Bluetooth"). The one measurement made, in 3g, is 0.4 KB/s. If
+that held between two iPhones a 300 KB photo would take 5 to 12 minutes and a
+voice note of a minute about the same. Text is fast (a few hundred milliseconds)
+and the protocol was not the cause of that, but where the rest goes - the Mac
+peripheral's notification rate, the transfer window, the phone's per-datagram
+work - has not been profiled, and the Mac-as-peripheral path may be slower than
+two phones. Run the TALK mode with `--file-kb 256` and the two directions
+measured separately before promising anything about photos over Bluetooth.
 
 ## 4. What was not done
 

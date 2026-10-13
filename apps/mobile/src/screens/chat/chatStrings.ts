@@ -52,15 +52,11 @@ export const chatCopy = {
 
   /** The composer. */
   sendLabel: 'Send',
-  sendHintEmpty: 'Write a message first',
   composerLabel: 'Message',
   cancelReply: 'Stop replying',
 
-  /** The photo button, and everything that can come back from the picker. */
-  photoLabel: 'Send a photo',
-  photoHint: 'Choose a photo from your library',
   /**
-   * Photos denied.
+   * Photos denied - what the library picker can say back.
    *
    * The path is spelled out because there is nothing this app can do about it
    * from here: iOS only shows its own prompt once, and after that the switch
@@ -68,6 +64,23 @@ export const chatCopy = {
    */
   photoDenied: 'AirLink cannot see your photos. Turn Photos on for AirLink in Settings.',
   photoFailed: 'That photo could not be read. Try another one.',
+
+  /** The plus button on the left of the bar, and the two things it offers. */
+  attachLabel: 'Attach',
+  attachHint: 'Choose a photo or a file to send',
+  attachPhotoRow: 'Photo library',
+  attachFileRow: 'File',
+
+  /** The camera button: a photo taken on the spot and sent. */
+  cameraLabel: 'Take a photo',
+  cameraHint: 'Open the camera and send what you take',
+  /** Same reasoning as `photoDenied`: iOS asks once, then it is a Settings switch. */
+  cameraDenied: 'AirLink cannot use the camera. Turn Camera on for AirLink in Settings.',
+  cameraUnavailable: 'This device has no camera AirLink can use.',
+
+  /** A file from the Files app, and the two ways it can fail to leave. */
+  fileFailed: 'That file could not be read. Try another one.',
+  fileTooLarge: 'That file is too big to send.',
 
   /** The microphone button and the bar that replaces the composer while recording. */
   recordLabel: 'Record a voice message',

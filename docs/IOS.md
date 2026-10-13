@@ -134,7 +134,7 @@ It is Apple-only; TN3151 says so explicitly.
 NSBluetoothAlwaysUsageDescription   why we use Bluetooth, and that location is not
 NSLocalNetworkUsageDescription      why a shared Wi-Fi makes transfers fast
 NSBonjourServices                   _airlink._tcp, _airlink._udp
-NSCameraUsageDescription            scanning a friend's QR code
+NSCameraUsageDescription            scanning a friend's QR code, and the chat's camera button
 NSPhotoLibraryUsageDescription      sending a photo
 NSPhotoLibraryAddUsageDescription   saving one a friend sent
 NSMicrophoneUsageDescription        voice messages

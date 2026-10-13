@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import { fromBase64, isValidTransferId, toBase64, type FileStore } from '@airlink/core';
+import { fromBase64, isValidTransferId, newSortableId, systemRandom, toBase64, type FileStore } from '@airlink/core';
 
 /**
  * The file I/O behind the transfer protocol.
@@ -34,6 +34,7 @@ const fs = ReactNativeBlobUtil.fs;
 const ROOT = `${fs.dirs.DocumentDir}/airlink`;
 const INCOMING_ROOT = `${ROOT}/incoming`;
 const RECEIVED_ROOT = `${ROOT}/received`;
+const SENT_ROOT = `${ROOT}/sent`;
 const SCRATCH_ROOT = `${fs.dirs.CacheDir}/airlink/outgoing`;
 
 /**
@@ -49,6 +50,38 @@ const READ_BLOCK_BYTES = 512 * 1024;
 async function ensureDir(path: string): Promise<void> {
   if (await fs.exists(path)) return;
   await fs.mkdir(path);
+}
+
+/**
+ * The part of an iOS path that names this install's data container.
+ *
+ * `.../Containers/Data/Application/<UUID>` is where Documents, Library and tmp
+ * live, and the UUID is not permanent: iOS gives the app a new one when it is
+ * reinstalled or updated, and when it is restored onto another phone. The
+ * files come along; only the folder's name changes.
+ */
+const DATA_CONTAINER = /^.*\/Containers\/Data\/Application\/[0-9A-Fa-f-]{36}(?=\/|$)/;
+
+/**
+ * A stored path, pointed at wherever this app's container is NOW.
+ *
+ * The database remembers where a photo or a voice note was written as an
+ * absolute path, container UUID included. After an update that path names a
+ * folder that no longer exists, although the file is sitting in the new one -
+ * so every photo ever sent or received would turn into a grey square, and every
+ * voice note would refuse to play, on the first update after release. Reading
+ * a path through here replaces the stale container with the current one. A
+ * path that does not have the shape (Android's, a test's) is returned as it is.
+ */
+export function rebaseToContainer(stored: string, documentDir: string): string {
+  const current = DATA_CONTAINER.exec(documentDir)?.[0];
+  if (!current) return stored;
+  return stored.replace(DATA_CONTAINER, current);
+}
+
+/** `rebaseToContainer` against this install's own Documents directory; null stays null. */
+export function currentPath(stored: string | null): string | null {
+  return stored === null ? null : rebaseToContainer(stored, fs.dirs.DocumentDir);
 }
 
 /** blob-util wants a plain path; pickers hand back a URI. */
@@ -156,6 +189,33 @@ export class SourceFileStore implements FileStore {
     this.disposed = true;
     this.block = null;
   }
+}
+
+/**
+ * Keep a file that is about to be sent, somewhere the system will not take it back.
+ *
+ * What a picker hands over lives in a temporary folder, and "temporary" is
+ * meant literally: iOS empties it when the app is not running and when the
+ * phone is short of space. That is fine for something sent in the next second,
+ * and wrong for everything else this app promises - a photo queued for a friend
+ * who is out of range has to still exist when they come back, a retry has to
+ * have something to read, and the sender's own bubble has to keep showing the
+ * picture rather than a grey square after the app is reopened. So the file is
+ * moved, once, into this app's own storage (next to what it receives), under a
+ * folder of its own so that two photos called IMG_0001.jpg cannot collide.
+ *
+ * The temporary original is removed afterwards: it is our copy of the picker's
+ * copy, never the user's own file.
+ */
+export async function keepForSending(sourcePath: string, filename: string): Promise<string> {
+  await ensureDir(ROOT);
+  await ensureDir(SENT_ROOT);
+  const dir = `${SENT_ROOT}/${newSortableId(systemRandom, Date.now())}`;
+  await ensureDir(dir);
+  const destination = `${dir}/${diskNameFor(filename)}`;
+  await fs.cp(sourcePath, destination);
+  await fs.unlink(sourcePath).catch(() => undefined);
+  return destination;
 }
 
 /** Read a file's real size. The pickers report it too, but not always. */

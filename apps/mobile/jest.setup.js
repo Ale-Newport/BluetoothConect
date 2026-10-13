@@ -341,16 +341,42 @@ jest.mock('@react-native-documents/picker', () => ({
 
 jest.mock('react-native-image-picker', () => ({
   launchImageLibrary: async () => ({ didCancel: true }),
+  launchCamera: async () => ({ didCancel: true }),
 }));
+
+/**
+ * The file system, as far as this app uses it. `__airlinkFsTest` records what
+ * was copied and removed, so a test can check where a file ended up without a
+ * disk, and can make a copy fail.
+ */
+const fsRecord = { copies: [], unlinked: [], failCopy: false };
+globalThis.__airlinkFsTest = {
+  copies: () => fsRecord.copies.slice(),
+  unlinked: () => fsRecord.unlinked.slice(),
+  failCopies: (fail) => {
+    fsRecord.failCopy = fail;
+  },
+  clear: () => {
+    fsRecord.copies.length = 0;
+    fsRecord.unlinked.length = 0;
+    fsRecord.failCopy = false;
+  },
+};
 
 jest.mock('react-native-blob-util', () => ({
   __esModule: true,
   default: {
     fs: {
-      dirs: { DocumentDir: '/tmp/airlink-test' },
+      dirs: { DocumentDir: '/tmp/airlink-test', CacheDir: '/tmp/airlink-test-cache' },
       exists: async () => false,
       mkdir: async () => undefined,
-      unlink: async () => undefined,
+      unlink: async (path) => {
+        fsRecord.unlinked.push(path);
+      },
+      cp: async (from, to) => {
+        if (fsRecord.failCopy) throw new Error('disk full');
+        fsRecord.copies.push({ from, to });
+      },
       writeFile: async () => undefined,
       readFile: async () => '',
       stat: async () => ({ size: 0 }),

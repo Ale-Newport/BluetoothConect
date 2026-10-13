@@ -20,6 +20,16 @@ declare global {
   var __airlinkKeychainTest: { clear: () => void; size: () => number } | undefined;
   // eslint-disable-next-line no-var
   var __airlinkSqliteTest: { clear: () => void } | undefined;
+  // eslint-disable-next-line no-var
+  var __airlinkFsTest:
+    | {
+        copies: () => { from: string; to: string }[];
+        unlinked: () => string[];
+        /** Make every copy throw, as a full disk would. */
+        failCopies: (fail: boolean) => void;
+        clear: () => void;
+      }
+    | undefined;
 }
 
 export {};

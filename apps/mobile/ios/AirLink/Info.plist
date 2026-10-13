@@ -40,7 +40,7 @@
 		<string>_airlink._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>AirLink uses the camera to scan a friend's QR code so you can add them without typing anything.</string>
+	<string>AirLink uses the camera to scan a friend's QR code so you can add them without typing anything, and to take a photo that you send to a friend in a chat. Photos go straight to the friend you choose and are not uploaded anywhere.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>When you and your friend share a Wi-Fi network, AirLink uses it to send photos and video much faster. Only devices you connect to can see you.</string>
 	<key>NSMicrophoneUsageDescription</key>

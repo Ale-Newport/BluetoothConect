@@ -81,3 +81,17 @@ export function listTimestamp(timestamp: number, now: number): string {
  * and deserves its own timestamp.
  */
 export const RUN_BREAK_MS = 5 * 60_000;
+
+/** How long a short confirmation such as "Copied" stays on screen. */
+const NOTICE_MIN_MS = 1600;
+/**
+ * A sentence takes longer to read than a word. "Copied" is gone in a moment,
+ * but "AirLink cannot use the camera. Turn Camera on for AirLink in Settings."
+ * is an instruction, and a person has to be able to finish it.
+ */
+const NOTICE_MS_PER_CHAR = 55;
+const NOTICE_MAX_MS = 6000;
+
+export function noticeDuration(notice: string): number {
+  return Math.min(NOTICE_MAX_MS, Math.max(NOTICE_MIN_MS, notice.length * NOTICE_MS_PER_CHAR));
+}

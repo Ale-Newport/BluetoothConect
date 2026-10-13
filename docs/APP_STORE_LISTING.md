@@ -166,9 +166,11 @@ requests to any server; if you monitor its traffic you will see none.
 PERMISSIONS
 Bluetooth and Local Network are how the app finds and reaches the other phone —
 denying either narrows how it can connect, and the home screen explains which
-one is missing and why. Camera is only for scanning a friend's QR code.
-Microphone is only for recording a voice message in a conversation. Photo
-Library is only for choosing a photo to send.
+one is missing and why. Camera is for scanning a friend's QR code and for the
+camera button in a conversation, which takes a photo and sends it (it is not
+saved to the photo library). Microphone is only for recording a voice message
+in a conversation. Photo Library is only for choosing a photo to send; files
+are chosen through the system Files picker, which needs no permission.
 
 BACKGROUND MODES
 Both Bluetooth background modes are declared because the app genuinely restores
@@ -243,7 +245,10 @@ Requires iOS 18 or later.
 - Each device lists the other under "Other devices". Tap Connect on one. Both
   show the same six digits; tap "They match" on both. They are friends from then
   on and reconnect without the code.
-- Chat tab: text, photos (image button) and voice notes (audio button).
+- Chat tab: text, plus the bar beside the message box: "+" sends a photo from
+  the library or a file, the camera button takes a photo and sends it, and the
+  microphone records a voice note (tap to start, tap the arrow to send). As soon
+  as something is typed, the camera and microphone are replaced by Send.
 - Play tab: 28 two-player games. Tap one; the other device receives an
   invitation and the game starts when it is accepted.
 - Share tab: send a file of any kind.

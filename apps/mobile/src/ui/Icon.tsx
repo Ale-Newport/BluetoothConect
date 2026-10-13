@@ -72,6 +72,11 @@ export const ALL_ICON_NAMES = [
   'video',
   'audio',
   'document',
+  // The message bar.
+  'plus',
+  'photoCamera',
+  'microphone',
+  'send',
 ] as const;
 
 export type IconName = (typeof ALL_ICON_NAMES)[number];
@@ -341,6 +346,32 @@ export function Icon({
           <Path d="M6 4.6h7L18 9.6v9.8a1.4 1.4 0 0 1-1.4 1.4H6a1.4 1.4 0 0 1-1.4-1.4V6a1.4 1.4 0 0 1 1.4-1.4z" {...stroked} />
           <Path d="M13 4.6v5h5" {...stroked} />
           <Path d="M7.8 13.4h6.4M7.8 16.4h4.4" {...stroked} opacity={0.55} />
+        </>
+      ) : null}
+
+      {name === 'plus' ? <Path d="M12 5v14M5 12h14" {...stroked} strokeWidth={2} /> : null}
+
+      {name === 'photoCamera' ? (
+        <>
+          <Path
+            d="M3.8 9.2A2.4 2.4 0 0 1 6.2 6.8h1.5l1.2-1.9c.2-.3.5-.5.9-.5h4.4c.4 0 .7.2.9.5l1.2 1.9h1.5a2.4 2.4 0 0 1 2.4 2.4v8.1a2.4 2.4 0 0 1-2.4 2.4H6.2a2.4 2.4 0 0 1-2.4-2.4z"
+            {...stroked}
+          />
+          <Circle cx={12} cy={13.1} r={3.3} {...stroked} />
+        </>
+      ) : null}
+
+      {name === 'microphone' ? (
+        <>
+          <Rect x={9} y={3.2} width={6} height={11.2} rx={3} {...stroked} />
+          <Path d="M5.6 11.4a6.4 6.4 0 0 0 12.8 0M12 17.8v3M9 20.8h6" {...stroked} />
+        </>
+      ) : null}
+
+      {name === 'send' ? (
+        <>
+          <Path d="M21.2 2.8 10.6 13.4" {...stroked} />
+          <Path d="M21.2 2.8 14.4 21.2l-3.8-7.8-7.8-3.8z" {...stroked} />
         </>
       ) : null}
     </Svg>

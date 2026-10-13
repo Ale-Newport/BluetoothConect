@@ -16,7 +16,7 @@ import {
 import type { Transfer } from '@airlink/db';
 import type { AirLinkClient } from '../../client/AirLinkClient.js';
 import { useAppStore } from '../../state/index.js';
-import { IncomingPartStore, SourceFileStore } from './fileStore.js';
+import { IncomingPartStore, SourceFileStore, currentPath } from './fileStore.js';
 import { failureText, shareStrings } from './strings.js';
 
 /**
@@ -842,7 +842,7 @@ export class TransferCenter {
       if (row.state === 'offered') continue;
       const file = this.safeDb(() => this.client.db.files.get(row.fileId));
       if (!file) continue;
-      this.records.set(row.id, restoredRecord(row, file.name, file.mimeType, file.sizeBytes, file.localPath));
+      this.records.set(row.id, restoredRecord(row, file.name, file.mimeType, file.sizeBytes, currentPath(file.localPath)));
       restored++;
     }
     if (restored > 0) this.publish();

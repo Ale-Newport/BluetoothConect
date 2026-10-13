@@ -1,6 +1,7 @@
-import { launchImageLibrary } from 'react-native-image-picker';
+import { launchCamera, launchImageLibrary, type ImagePickerResponse } from 'react-native-image-picker';
 import {
   ConnectionState,
+  FILE_LIMITS,
   TransferState,
   encodeAttachment,
   isSafeFilename,
@@ -12,9 +13,10 @@ import {
 import type { MessageKind, StoredFile } from '@airlink/db';
 import type { AirLinkClient, PeerHandle } from '../../client/AirLinkClient.js';
 import type { Recording } from '../../native/audio.js';
-import { measureFile, pathFromUri } from '../share/fileStore.js';
+import { currentPath, keepForSending, measureFile, pathFromUri } from '../share/fileStore.js';
+import { pickDocument } from '../share/picker.js';
 import { transferCenterFor, type TransferCenter } from '../share/transferCenter.js';
-import { LOCAL_SENDER, chatCenterFor, directConversationId } from './chatCenter.js';
+import { LOCAL_SENDER, chatCenterFor, directConversationId, kindForMime } from './chatCenter.js';
 import { chatCopy } from './chatStrings.js';
 
 /**
@@ -83,7 +85,7 @@ export interface OutgoingAttachment {
   readonly durationMs: number | null;
 }
 
-export type PhotoChoice =
+export type AttachmentChoice =
   | { readonly status: 'picked'; readonly attachment: OutgoingAttachment }
   | { readonly status: 'cancelled' }
   | { readonly status: 'failed'; readonly message: string };
@@ -101,6 +103,14 @@ function usableName(candidate: string | null | undefined, extension: string): st
   return `photo-${Date.now()}${extension}`;
 }
 
+/** What both ways of getting a photo ask the picker for: small, because the link is slow. */
+const PHOTO_REQUEST = {
+  mediaType: 'photo',
+  maxWidth: PHOTO_MAX_EDGE,
+  maxHeight: PHOTO_MAX_EDGE,
+  quality: PHOTO_QUALITY,
+} as const;
+
 /**
  * Choose a photo, already cut down to something a slow link can carry.
  *
@@ -109,22 +119,42 @@ function usableName(candidate: string | null | undefined, extension: string): st
  * app - and the last of those has to be said out loud, since iOS asks only once
  * and after that the answer lives in Settings.
  */
-export async function choosePhoto(): Promise<PhotoChoice> {
-  let response;
+export async function choosePhoto(): Promise<AttachmentChoice> {
+  let response: ImagePickerResponse;
   try {
-    response = await launchImageLibrary({
-      mediaType: 'photo',
-      selectionLimit: 1,
-      maxWidth: PHOTO_MAX_EDGE,
-      maxHeight: PHOTO_MAX_EDGE,
-      quality: PHOTO_QUALITY,
-    });
+    response = await launchImageLibrary({ ...PHOTO_REQUEST, selectionLimit: 1 });
   } catch {
     return { status: 'failed', message: chatCopy.photoFailed };
   }
+  return photoChoiceFrom(response, chatCopy.photoDenied);
+}
 
+/**
+ * Take a photo with the camera, and hand it back the way `choosePhoto` does.
+ *
+ * It is the same photo from then on - the same size, the same row, the same
+ * transfer - so the only differences are the ones the camera forces: it can be
+ * denied for a different reason, and a simulator has none. Nothing is saved to
+ * the camera roll: a picture taken to send to a friend is not necessarily one
+ * the person wants to keep, and writing to Photos would ask for a second
+ * permission on top of the camera's.
+ */
+export async function takePhoto(): Promise<AttachmentChoice> {
+  let response: ImagePickerResponse;
+  try {
+    response = await launchCamera({ ...PHOTO_REQUEST, cameraType: 'back', saveToPhotos: false });
+  } catch {
+    return { status: 'failed', message: chatCopy.photoFailed };
+  }
+  if (response.errorCode === 'camera_unavailable') {
+    return { status: 'failed', message: chatCopy.cameraUnavailable };
+  }
+  return photoChoiceFrom(response, chatCopy.cameraDenied);
+}
+
+async function photoChoiceFrom(response: ImagePickerResponse, deniedMessage: string): Promise<AttachmentChoice> {
   if (response.didCancel) return { status: 'cancelled' };
-  if (response.errorCode === 'permission') return { status: 'failed', message: chatCopy.photoDenied };
+  if (response.errorCode === 'permission') return { status: 'failed', message: deniedMessage };
   if (response.errorCode) return { status: 'failed', message: chatCopy.photoFailed };
 
   const asset = response.assets?.[0];
@@ -148,16 +178,74 @@ export async function choosePhoto(): Promise<PhotoChoice> {
     }
   }
 
+  // Moved out of the picker's temporary folder before anything refers to it:
+  // the row, the queue and the sender's own bubble all read this path later.
+  let kept: string;
+  try {
+    kept = await keepForSending(path, filename);
+  } catch {
+    return { status: 'failed', message: chatCopy.photoFailed };
+  }
+
   return {
     status: 'picked',
     attachment: {
       kind: 'image',
-      path,
+      path: kept,
       filename,
       mimeType,
       fileBytes,
       width: asset.width ?? null,
       height: asset.height ?? null,
+      durationMs: null,
+    },
+  };
+}
+
+/**
+ * Choose any file from the Files app, as an attachment.
+ *
+ * The picking and the private copy are the Share tab's - one place that knows
+ * how a security-scoped iOS URL becomes a path this app can still read in ten
+ * minutes. What is added here is the part that is about a CONVERSATION: the
+ * kind of bubble it will get, decided from the type exactly as the receiving
+ * phone will decide it (`kindForMime`), so both sides draw the same thing; and
+ * the size limit, said before anything is queued rather than as a failed bubble
+ * afterwards.
+ *
+ * The file is sent as it is. Unlike a photo it cannot be made smaller, so on
+ * Bluetooth a large one is slow - the bubble shows the progress, and the Share
+ * tab still offers the slow-link estimate for anything big.
+ */
+export async function chooseFile(): Promise<AttachmentChoice> {
+  const result = await pickDocument();
+  if (result.status === 'cancelled') return { status: 'cancelled' };
+  if (result.status === 'failed') return { status: 'failed', message: chatCopy.fileFailed };
+
+  const { file } = result;
+  if (file.fileBytes <= 0) return { status: 'failed', message: chatCopy.fileFailed };
+  if (file.fileBytes > FILE_LIMITS.defaultMaxFileBytes) {
+    return { status: 'failed', message: chatCopy.fileTooLarge };
+  }
+
+  let kept: string;
+  try {
+    kept = await keepForSending(file.path, file.filename);
+  } catch {
+    return { status: 'failed', message: chatCopy.fileFailed };
+  }
+
+  const kind = kindForMime(file.mimeType);
+  return {
+    status: 'picked',
+    attachment: {
+      kind: kind === 'image' || kind === 'voice' ? kind : 'file',
+      path: kept,
+      filename: file.filename,
+      mimeType: file.mimeType,
+      fileBytes: file.fileBytes,
+      width: null,
+      height: null,
       durationMs: null,
     },
   };
@@ -316,7 +404,7 @@ export class AttachmentCenter {
     const fileId = row?.fileId;
     if (!row || !fileId || row.deleted) return;
     const file = this.safe(() => this.client.db.files.get(fileId));
-    const path = file?.localPath;
+    const path = currentPath(file?.localPath ?? null);
     if (!file || !path) {
       // The bytes are not on this phone, so there is nothing to offer. This is
       // an incoming file, or a local copy that has been cleaned up underneath

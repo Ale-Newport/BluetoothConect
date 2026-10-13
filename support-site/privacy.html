@@ -18,7 +18,7 @@
     <a href="index.html">Support</a>
     <a href="privacy.html" aria-current="page">Privacy Policy</a>
   </nav>
-  <p class="meta">Last updated: <strong>20 September 2026</strong>. Applies to the AirLink iPhone app.</p>
+  <p class="meta">Last updated: <strong>13 October 2026</strong>. Applies to the AirLink iPhone app.</p>
 </header>
 
 <main>
@@ -173,13 +173,17 @@
   <div class="card">
     <h3>Camera</h3>
     <!-- OWNER EDIT: this paragraph must match what the shipped build actually
-         does. Today the only camera use in the app is scanning a friend's QR
-         code, which is what NSCameraUsageDescription in Info.plist says. If a
-         later build lets someone take a photo from inside a chat, add that here
-         and update the Info.plist purpose string to match. -->
+         does, and what NSCameraUsageDescription in Info.plist says. Today the
+         camera is used for two things: scanning a friend's QR code, and the
+         camera button in a chat, which takes a photo and sends it. If a later
+         build uses the camera for anything else, add it here and update the
+         Info.plist purpose string to match. -->
     <p>
-      To scan a friend's QR code when you add them, so you do not have to type anything.
-      Nothing the camera sees is stored or sent anywhere.
+      To scan a friend's QR code when you add them, so you do not have to type anything, and
+      when you tap the camera button in a conversation to take a photo and send it. The camera
+      is only on while one of those screens is open. A photo you take goes to the friend you
+      are talking to, over the same direct, encrypted link as everything else; AirLink does
+      not save it to your photo library, and nothing the camera sees is sent anywhere else.
     </p>
   </div>
 
@@ -187,7 +191,8 @@
     <h3>Photos</h3>
     <p>
       To let you pick a photo to send to the person you are connected to. AirLink reads only
-      the photos you choose, and each one goes to that one device and nowhere else.
+      the photos you choose, and each one goes to that one device and nowhere else. Files you
+      choose from the Files app to send work the same way: only the file you pick is read.
     </p>
   </div>
 
@@ -289,7 +294,7 @@
   <p>
     <a href="index.html">Support</a> · Privacy Policy
   </p>
-  <p>Last updated 20 September 2026. © 2026 Alejandro Newport.</p>
+  <p>Last updated 13 October 2026. © 2026 Alejandro Newport.</p>
 </footer>
 
 </body>

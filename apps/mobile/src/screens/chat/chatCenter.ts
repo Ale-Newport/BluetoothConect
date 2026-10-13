@@ -12,6 +12,7 @@ import {
 import type { Message, MessageKind, MessageStatus, Reaction } from '@airlink/db';
 import type { AirLinkClient, PeerHandle } from '../../client/AirLinkClient.js';
 import { transferCenterFor } from '../share/transferCenter.js';
+import { currentPath } from '../share/fileStore.js';
 
 /**
  * The bridge between `ChatProtocol` and SQLite.
@@ -299,7 +300,9 @@ export class ChatCenter {
     return {
       name: file.name,
       sizeBytes: file.sizeBytes,
-      localPath: file.localPath,
+      // Through `currentPath`: what is stored names the container of the install
+      // that wrote it, and an update gives the app a new one.
+      localPath: currentPath(file.localPath),
       mimeType: file.mimeType,
       durationMs: file.durationMs,
     };
