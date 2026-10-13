@@ -167,6 +167,63 @@ export function decodeFrame(data: Uint8Array): Frame {
 }
 
 // ---------------------------------------------------------------------------
+// Peeking at a first datagram
+// ---------------------------------------------------------------------------
+
+/**
+ * What a datagram says about who is sending it, learned without consuming it.
+ *
+ * `decodeFrame` answers "what is this frame"; this answers the narrower
+ * question a RECEIVER of a brand-new link has: "is this somebody introducing
+ * themselves, or somebody resuming a session I already hold?" - which decides
+ * which session the link belongs to, before any session has read a byte of it.
+ */
+export type FramePeek =
+  /** A handshake frame: a device saying hello, with no session yet. */
+  | { readonly kind: 'handshake' }
+  /** A frame of an established session, naming it in the clear. */
+  | { readonly kind: 'secure'; readonly sessionId: Uint8Array }
+  /** Cannot tell yet: a fragment that is not the first, so the part that says who is elsewhere. */
+  | { readonly kind: 'undecided' }
+  /** A beacon, or something unreadable. Says nothing about who is there. */
+  | { readonly kind: 'unreadable' };
+
+/**
+ * Classify a datagram by its header alone. Never throws: this reads bytes a
+ * stranger chose, and a stranger's junk is "unreadable", not an exception.
+ *
+ * A FRAGMENT is looked through, not at. The first fragment of a split frame
+ * carries the start of the original frame, and a frame's start is exactly where
+ * its kind and its session id live - so a hello or a resumed session is
+ * recognised from its first Bluetooth-sized piece, without waiting for the rest.
+ */
+export function peekFrame(data: Uint8Array): FramePeek {
+  if (data.length < 2) return { kind: 'unreadable' };
+
+  let frame = data;
+  if (data[1] === FrameType.FRAGMENT) {
+    if (data.length < FRAGMENT_HEADER_LENGTH) return { kind: 'unreadable' };
+    const index = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(4, false);
+    if (index !== 0) return { kind: 'undecided' };
+    frame = data.subarray(FRAGMENT_HEADER_LENGTH);
+    if (frame.length < 2) return { kind: 'unreadable' };
+  }
+
+  const version = frame[0] as number;
+  if (version < MIN_SUPPORTED_PROTOCOL_VERSION || version > PROTOCOL_VERSION) return { kind: 'unreadable' };
+
+  switch (frame[1]) {
+    case FrameType.HANDSHAKE:
+      return { kind: 'handshake' };
+    case FrameType.SECURE:
+      if (frame.length < 2 + SESSION_ID_LENGTH) return { kind: 'unreadable' };
+      return { kind: 'secure', sessionId: frame.subarray(2, 2 + SESSION_ID_LENGTH) };
+    default:
+      return { kind: 'unreadable' };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Fragmentation
 // ---------------------------------------------------------------------------
 

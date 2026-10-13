@@ -10,6 +10,7 @@ import {
   PROTOCOL_VERSION,
   SelfIdentityGuard,
   PairingController,
+  IncomingLinkRouter,
   PeerSession,
   ReconnectPolicy,
   TIMING,
@@ -261,6 +262,31 @@ export class AirLinkClient {
   private readonly discoveryId = newDiscoveryId(systemRandom);
   private advertiseTimer: ReturnType<typeof setInterval> | undefined;
   private inboundCounter = 0;
+
+  /**
+   * Who does an incoming link belong to? Decided by what it says, never by who
+   * happens to be disconnected. See `IncomingLinkRouter` for the bug this
+   * replaced: any link at all used to be adopted by the first session that was
+   * reconnecting, and a newcomer's hello was then swallowed by it.
+   */
+  private readonly inbound = new IncomingLinkRouter<PeerHandle>({
+    clock: systemClock,
+    sessions: () => [...this.peers.values()].filter((handle) => handle.session.isSecure),
+    owns: (handle, sessionId) => handle.session.ownsSessionId(sessionId),
+    resume: (handle, link) => {
+      this.log.info('inbound link resumes an existing session', { peer: shortId(handle.peerId ?? handle.key) });
+      handle.session.migrateToLink(link);
+    },
+    introduce: (link) => {
+      // Nobody we hold a session with; the handshake will say who it is. Keyed
+      // on a name of our own so it can never collide with a discovery row, and
+      // re-keyed onto the peer id the moment there is one.
+      this.createHandle(`inbound:${++this.inboundCounter}`).session.startAsResponder(link);
+    },
+    onTurnedAway: (reason, link) => {
+      this.log.info('inbound link turned away', { reason, endpoint: shortId(link.endpointId) });
+    },
+  });
   /** Transports already scanning, so re-arming one is idempotent. */
   private readonly armed = new Set<TransportKind>();
   /** One pending redial per session. See `scheduleReconnect`. */
@@ -549,6 +575,8 @@ export class AirLinkClient {
     }
     for (const off of this.unsubscribers) off();
     this.unsubscribers.length = 0;
+    // Links still being sized up would otherwise sit open, with a timer each.
+    this.inbound.dispose();
     for (const handle of this.peers.values()) await handle.session.close('app stopping');
     this.peers.clear();
     this.registry?.dispose();
@@ -616,7 +644,8 @@ export class AirLinkClient {
         this.registry.forgetEndpoint(transport.kind, endpointId);
       }),
       transport.events.on('incomingLink', ({ link }) => {
-        void this.acceptIncoming(link.endpointId, link);
+        // Synchronously: the router must be listening before the event returns.
+        this.inbound.accept(link);
       }),
       transport.events.on('availabilityChanged', ({ availability }) => {
         this.events.emit('radioChanged', {
@@ -794,31 +823,6 @@ export class AirLinkClient {
       });
       throw err;
     }
-  }
-
-  private async acceptIncoming(endpointId: string, link: Parameters<PeerSession['startAsResponder']>[0]): Promise<void> {
-    // A peer we already hold a session with is MIGRATING, not re-introducing
-    // itself - that is what makes a transport upgrade invisible. Matching on
-    // the endpoint alone could never see an upgrade, because an upgrade arrives
-    // on a DIFFERENT transport with a different handle by definition.
-    for (const handle of this.peers.values()) {
-      if (!handle.session.isSecure) continue;
-      const sameEndpoint = handle.session.currentLink?.endpointId === endpointId;
-      const linkGone = handle.session.currentLink === null || handle.session.state === ConnectionState.RECONNECTING;
-      if (sameEndpoint || linkGone) {
-        this.log.info('inbound link adopted by an existing session', {
-          peer: shortId(handle.peerId ?? handle.key),
-        });
-        handle.session.migrateToLink(link);
-        return;
-      }
-    }
-
-    // Nobody knows who this is yet; the handshake will say. Keyed on a name of
-    // our own so it can never collide with a discovery row, and re-keyed onto
-    // the peer id the moment there is one.
-    const handle = this.createHandle(`inbound:${++this.inboundCounter}`);
-    handle.session.startAsResponder(link);
   }
 
   private createHandle(peerKey: string): PeerHandle {

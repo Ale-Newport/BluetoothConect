@@ -26,6 +26,7 @@ export * from './session/stateMachine.js';
 export * from './session/reliability.js';
 export * from './session/clockSync.js';
 export * from './session/peerSession.js';
+export * from './session/incomingLinkRouter.js';
 
 // Pairing
 export * from './pairing/index.js';

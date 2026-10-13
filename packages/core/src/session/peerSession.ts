@@ -299,6 +299,24 @@ export class PeerSession {
   }
 
   /**
+   * Whether `sessionId` - the eight bytes every secure frame carries in the
+   * clear - names the session this object holds.
+   *
+   * This is how a receiver of a brand-new link tells a friend RESUMING a
+   * conversation from a stranger arriving: the friend's frames name a session we
+   * hold, the stranger's do not. The id is not a secret and is not
+   * authentication - the AEAD on the frame is - so a plain comparison is right.
+   */
+  ownsSessionId(sessionId: Uint8Array): boolean {
+    const secure = this.secure;
+    if (!secure || this.closed || sessionId.length !== secure.sessionId.length) return false;
+    for (let i = 0; i < sessionId.length; i++) {
+      if (sessionId[i] !== secure.sessionId[i]) return false;
+    }
+    return true;
+  }
+
+  /**
    * Replace the link carrying an already-authenticated session.
    *
    * This is the transport upgrade path (Bluetooth to Wi-Fi) and the reconnect
@@ -315,6 +333,12 @@ export class PeerSession {
     this.bulk.resume();
     this.stateMachine.transitionTo(ConnectionState.CONNECTED, 'transport migrated');
     this.startKeepalive();
+    // Speak at once. The other end of a link it has just been handed cannot
+    // know whose it is until a frame arrives naming the session - and with
+    // nothing queued, the first one would otherwise be a keepalive five seconds
+    // away. That is five seconds in which a resumed session looks identical to
+    // a stranger who has said nothing.
+    this.sendKeepalive();
     this.events.emit('transportChanged', {
       from: previous,
       to: link.id,
@@ -1012,18 +1036,7 @@ export class PeerSession {
     const timeout = this.options.livenessTimeoutMs ?? TIMING.livenessTimeoutMs;
     this.lastInboundAt = this.options.clock.now();
 
-    this.keepaliveTimer = this.options.clock.setInterval(() => {
-      if (!this.secure || !this.link || this.link.state !== LinkState.CONNECTED) return;
-      this.writeEnvelope({
-        channel: Channel.CONTROL,
-        flags: EnvelopeFlags.NONE,
-        seq: 0,
-        ...this.reliable.ackState(),
-        messageType: MessageType.KEEPALIVE,
-        timestamp: this.options.clock.wallNow(),
-        payload: new Uint8Array(0),
-      });
-    }, interval);
+    this.keepaliveTimer = this.options.clock.setInterval(() => this.sendKeepalive(), interval);
 
     this.livenessTimer = this.options.clock.setInterval(() => {
       if (this.options.clock.now() - this.lastInboundAt <= timeout) return;
@@ -1033,6 +1046,19 @@ export class PeerSession {
       this.bulk.pause();
       this.stateMachine.transitionTo(ConnectionState.RECONNECTING, 'peer stopped responding');
     }, Math.max(1000, Math.floor(timeout / 3)));
+  }
+
+  private sendKeepalive(): void {
+    if (!this.secure || !this.link || this.link.state !== LinkState.CONNECTED) return;
+    this.writeEnvelope({
+      channel: Channel.CONTROL,
+      flags: EnvelopeFlags.NONE,
+      seq: 0,
+      ...this.reliable.ackState(),
+      messageType: MessageType.KEEPALIVE,
+      timestamp: this.options.clock.wallNow(),
+      payload: new Uint8Array(0),
+    });
   }
 
   private stopKeepalive(): void {
