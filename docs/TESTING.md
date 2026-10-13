@@ -194,6 +194,67 @@ Honestly:
 
 So the mock proves correctness; hardware proves feasibility.
 
+### Bluetooth cannot be tested against a simulator, and one phone is enough
+
+An iPhone with Wi-Fi off cannot connect to an iOS Simulator, and that is not a
+defect: the simulator has no Bluetooth radio at all (`CBCentralManager` reports
+`.unsupported`, which is why the app shows "No Bluetooth on this device"), so it
+speaks only the local network, and an iPhone on Bluetooth alone has no route to
+it. Testing the Bluetooth path takes two devices that both have a radio.
+
+If you have one iPhone, the Mac is the second device:
+
+```bash
+./scripts/ble-mac-peer.sh --seconds 300
+```
+
+It builds a small app that advertises the AirLink GATT service from the Mac's
+own radio, answers identity reads, scans for the iPhone, and prints every move
+the iPhone makes. Put the iPhone in airplane mode with only Bluetooth on, open
+AirLink, and watch for:
+
+| In the log | It means |
+|---|---|
+| `SAW AN AIRLINK PEER` | the iPhone advertises, with no Wi-Fi |
+| `THE IPHONE'S IDENTITY RECORD decodes` | the Mac can read who the iPhone is |
+| `THE IPHONE READ OUR IDENTITY RECORD` | the iPhone's identity probe works |
+| a row named `Mac-test` under *Other devices* | the iPhone listed a peer it only knows over Bluetooth |
+| `THE IPHONE SUBSCRIBED` then `iPhone WROTE to RX` | tapping Connect opened a link and began a handshake |
+| `notification from the iPhone` while nothing is paired | **a bug**: the iPhone is pushing some other session's encrypted frames (counters climbing, retries spacing out) at a device it owes no session. This is the routing fault `IncomingLinkRouter` fixes; on a fixed build the log shows no such lines |
+
+**That is PROBE mode, and what it cannot do:** it speaks the layer below the
+protocol, so it never completes a pairing and tapping Connect ends in "Couldn't
+connect" on the iPhone. It proves the part that decides whether two phones can
+find each other and open a link. It does not prove messages cross it.
+
+### TALK mode: the Mac as a real AirLink phone
+
+```bash
+./scripts/ble-mac-peer.sh --talk
+```
+
+The radio stays in the Swift app; everything above it is `packages/core` running
+in Node - the encrypted handshake, six-digit pairing, chat with delivery
+receipts, file transfer, and the same `IncomingLinkRouter` the phone uses. The
+iPhone can connect to it, pair (the Mac prints the six digits and confirms its
+side by itself; compare them and tap "They match"), exchange messages in both
+directions, and receive a file. It measures what has only ever been argued about:
+how long a message takes to be delivered over real Bluetooth, and how fast a file
+moves (`--file-kb N` sets its size; accept it in the iPhone's Share tab).
+
+Everything printed also goes to `apps/mobile/ios/build/ble-mac-peer/talk.log`.
+
+Before trusting a bench result, run the self-test, which plays the iPhone against
+the bridge over the same wire with no radio at all - pairing, chat, a file, a
+dropped link resumed, a stray subscriber - at any link size:
+
+```bash
+./node_modules/.bin/tsx scripts/ble-mac-peer/selftest.ts --mtu 185
+```
+
+If that passes and the bench does not, the fault is the radio or the phone, not
+the Node half.
+
 ---
 
 ## 5. The manual checklist
