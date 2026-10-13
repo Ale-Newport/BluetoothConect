@@ -5,10 +5,23 @@ require Pod::Executable.execute_command('node', ['-p',
     {paths: [process.argv[1]]},
   )', __dir__]).strip
 
-# React Native's own floor is 15.1, but two dependencies we rely on require
-# more: the VisionCamera barcode scanner (QR pairing) needs 15.5. iOS 16 is a
-# comfortable, current floor and costs nothing in reach in 2026.
-platform :ios, '16.0'
+# The floor is iOS 18, and it is a floor the toolchain imposes rather than one
+# we chose. React Native itself would run on 15.1 and the VisionCamera QR scanner
+# on 15.5, which is what this used to say (16.0).
+#
+# Then Xcode 27 changed it. The Nitro modules that VisionCamera sits on
+# (NitroModules, NitroImage, VisionCamera's own Hybrid specs) are Swift with C++
+# interop, and compiled by Xcode 27 they call
+# std::exception_ptr::__from_native_exception_pointer - a function the system
+# libc++ only has from iOS 18.0. nm on the iOS 17.0, 17.2 and 17.5 runtimes finds
+# it absent and on 18.0, 18.2 and 26.3 finds it present, and an app built to
+# "support iOS 16" is then killed by dyld before main() with "Symbol not found".
+# That is a launch crash on every phone below 18, so the floor says so: the App
+# Store will not offer the app to a phone it cannot start on.
+#
+# The way back down is not a setting. It means moving off the Nitro-based
+# VisionCamera, or a toolchain that guards that call for older runtimes.
+platform :ios, '18.0'
 prepare_react_native_project!
 
 linkage = ENV['USE_FRAMEWORKS']
@@ -33,5 +46,23 @@ target 'AirLink' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # No pod may declare a minimum iOS lower than the app's own.
+    #
+    # Several of ours do - react-native-image-picker says 9.0, blob-util 11.0,
+    # RNSVG 12.4 - and Xcode 27 refuses to build a deployment target below 15.0
+    # at all: "set to 9.0, but the range of supported deployment target versions
+    # is 15.0 to 27.0.x". Older Xcodes let it through as a warning, so this only
+    # surfaced the day the toolchain moved, and it broke the App Store archive
+    # exactly as it broke the simulator build. Raising them to the app's floor
+    # changes nothing at runtime - the app itself cannot install below it.
+    app_minimum = Gem::Version.new('18.0')
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |build_config|
+        declared = build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+        next if declared.nil? || Gem::Version.new(declared.to_s) >= app_minimum
+        build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = app_minimum.to_s
+      end
+    end
   end
 end

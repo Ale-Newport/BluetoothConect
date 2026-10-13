@@ -46,6 +46,7 @@ const mockAnnounced: {
   durationMs?: number;
 }[] = [];
 let mockSendFails = false;
+let mockAnnounceFails = false;
 let mockPickerOptions: Record<string, unknown> = {};
 let mockPickerResponse: {
   didCancel?: boolean;
@@ -123,6 +124,7 @@ function connect(client: AirLinkClient): void {
       restoreOutbox: () => undefined,
       markRead: () => undefined,
       send: (draft: { attachments?: typeof mockAnnounced }) => {
+        if (mockAnnounceFails) throw new Error('the chat protocol refused the announcement');
         for (const attachment of draft.attachments ?? []) mockAnnounced.push(attachment);
         return { message: { id: 'wire-1' } };
       },
@@ -148,6 +150,7 @@ beforeEach(() => {
   mockSent.length = 0;
   mockAnnounced.length = 0;
   mockSendFails = false;
+  mockAnnounceFails = false;
   mockPickerOptions = {};
   mockPickerResponse = { didCancel: true };
 });
@@ -310,6 +313,63 @@ test('a duration measured in fractions of a millisecond still crosses the wire',
     byteLength: announced?.byteLength ?? 0,
     durationMs: announced?.durationMs,
   })).not.toThrow();
+});
+
+/**
+ * The guarantee behind the voice-note fix: an attachment that the other phone
+ * could not read never leaves this one.
+ *
+ * Before, a descriptor the peer would reject was sent anyway, the announcement
+ * was swallowed, the row said "sent", and two minutes later "They never
+ * answered" - with the bytes sitting as a bare offer in a Share tab nobody was
+ * looking at. These two tests pin the two ways that could still happen.
+ */
+test('a descriptor the peer could not read fails BEFORE any byte is sent', async () => {
+  const client = await bootClient();
+  connect(client);
+
+  const rowId = attachmentCenterFor(client).send({
+    peerId: THEM,
+    displayName: 'Mallory',
+    // 1080.5 pixels wide: not a thing a decoder accepts, and not a thing the
+    // picker produces today - which is the point of a guard.
+    attachment: {
+      kind: 'image',
+      path: '/tmp/airlink-test/odd.jpg',
+      filename: 'odd.jpg',
+      mimeType: 'image/jpeg',
+      fileBytes: 120_000,
+      width: 1080.5,
+      height: 1920,
+      durationMs: null,
+    },
+    replyToRowId: null,
+  });
+  await settle();
+
+  expect(rowOf(client, rowId).status).toBe('failed');
+  // Nothing moved: no transfer was started, nothing was announced.
+  expect(mockSent).toHaveLength(0);
+  expect(mockAnnounced).toHaveLength(0);
+});
+
+test('an announcement that fails after the bytes started leaves a red row, not a sent one', async () => {
+  const client = await bootClient();
+  connect(client);
+  mockAnnounceFails = true;
+
+  const rowId = attachmentCenterFor(client).send({
+    peerId: THEM,
+    displayName: 'Mallory',
+    attachment: voiceAttachment({ path: '/tmp/airlink-test/voice.m4a', durationMs: 4200, sizeBytes: 9000 }),
+    replyToRowId: null,
+  });
+  await settle();
+
+  // The bytes did go out - there is nothing to take back - but the row must not
+  // claim success for a message the other phone was never given.
+  expect(mockSent).toHaveLength(1);
+  expect(rowOf(client, rowId).status).toBe('failed');
 });
 
 test('a send that cannot happen leaves a failed row, not a hole in the conversation', async () => {

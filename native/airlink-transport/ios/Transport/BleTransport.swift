@@ -163,6 +163,11 @@ final class BleTransport: NSObject, AirLinkTransport {
      */
     private var identityProbes: [UUID: DispatchSourceTimer] = [:]
     private var lastProbeAt: [UUID: CFAbsoluteTime] = [:]
+    /// Peripherals a probe has just asked CoreBluetooth to hang up. The
+    /// disconnect callback arrives LATER, on its own schedule, and by then a
+    /// real link for the same peripheral may exist - so that callback must be
+    /// recognised as the probe's own and not read as the real link dropping.
+    private var probeHangups: Set<UUID> = []
     private static let maxConcurrentIdentityProbes = 2
     private static let identityProbeTimeoutMs = 6_000
     private static let identityProbeCooldownMs = 60_000
@@ -368,6 +373,7 @@ final class BleTransport: NSObject, AirLinkTransport {
         // no longer ours to hang up.
         for identifier in Array(identityProbes.keys) { endIdentityProbe(identifier, disconnect: true) }
         lastProbeAt.removeAll()
+        probeHangups.removeAll()
 
         // Snapshotted because closeLink removes from `links`, and mutating a
         // dictionary through its own iterator is undefined behaviour.
@@ -1472,6 +1478,7 @@ extension BleTransport: CBCentralManagerDelegate {
         timer.cancel()
         guard disconnect, linkIdByPeripheral[identifier] == nil,
               let peripheral = knownPeripherals[identifier], let manager = centralManager else { return }
+        probeHangups.insert(identifier)
         manager.cancelPeripheralConnection(peripheral)
     }
 
@@ -1513,6 +1520,17 @@ extension BleTransport: CBCentralManagerDelegate {
         // The probe disconnects on purpose when it has what it came for; this
         // also catches the peer walking away mid-probe.
         endIdentityProbe(peripheral.identifier, disconnect: false)
+
+        // This callback is the answer to a hang-up a PROBE asked for. If the
+        // user pressed Connect in the meantime there is a real link on this
+        // peripheral now, still opening, and it is not the thing that closed.
+        // Only a link that has actually opened can be reported as dropping on
+        // the strength of a disconnect we may have caused ourselves.
+        if probeHangups.remove(peripheral.identifier) != nil,
+           let pending = activeLink(forPeripheral: peripheral.identifier), !pending.opened {
+            log("debug", "ignoring the disconnect of an identity probe on \(peripheral.identifier.uuidString)")
+            return
+        }
         guard let link = activeLink(forPeripheral: peripheral.identifier) else { return }
         // We never ask for auto-reconnect - when to come back is the session
         // layer's decision - so this flag should always be false. If a future

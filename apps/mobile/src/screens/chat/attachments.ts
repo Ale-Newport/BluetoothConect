@@ -2,10 +2,12 @@ import { launchImageLibrary } from 'react-native-image-picker';
 import {
   ConnectionState,
   TransferState,
+  encodeAttachment,
   isSafeFilename,
   isTerminalState,
   newSortableId,
   systemRandom,
+  type ChatAttachment,
 } from '@airlink/core';
 import type { MessageKind, StoredFile } from '@airlink/db';
 import type { AirLinkClient, PeerHandle } from '../../client/AirLinkClient.js';
@@ -189,6 +191,9 @@ export function voiceAttachment(recording: Recording): OutgoingAttachment {
   };
 }
 
+/** Stands in for the transfer id while a descriptor is only being checked. Any id in the chat alphabet will do. */
+const PREFLIGHT_ID = 'preflight';
+
 /**
  * The outbox for attachments.
  *
@@ -327,6 +332,27 @@ export class AttachmentCenter {
       return;
     }
 
+    /*
+     * Check that the other phone will be able to READ what we are about to say
+     * about this file, before any byte of it moves.
+     *
+     * The announcement is the message that tells the receiver "this transfer
+     * belongs in the conversation" and makes it accept the bytes without
+     * asking. If it cannot be encoded - a duration with a fraction on it, which
+     * is what the iOS recorder reports, or a dimension out of range - nothing
+     * reaches the far side that it can use: the bytes arrive as a bare offer in
+     * a Share tab nobody is looking at, and this phone has already said "sent".
+     * That is exactly how voice notes failed on real phones. Failing here puts
+     * a red line the user can tap in the one place that can still do something
+     * about it, and costs no radio time.
+     */
+    try {
+      encodeAttachment(this.descriptorFor(PREFLIGHT_ID, file));
+    } catch {
+      this.fail(rowId);
+      return;
+    }
+
     this.starting.add(rowId);
     try {
       const transferId = await this.transfers.send({
@@ -338,7 +364,15 @@ export class AttachmentCenter {
       });
       this.inFlight.set(transferId, rowId);
       this.percents.set(rowId, 0);
-      this.announce(handle, transferId, file);
+      if (!this.announce(handle, transferId, file)) {
+        // The bytes are already moving but the other phone will never be told
+        // where they belong. Stop tracking the transfer, so its eventual
+        // completion cannot repaint this row "delivered", and let the user
+        // retry: a new transfer announces itself again.
+        this.inFlight.delete(transferId);
+        this.fail(rowId);
+        return;
+      }
       this.safe(() => this.client.db.messages.setStatus(rowId, 'sent'));
       chatCenterFor(this.client).touch();
     } catch {
@@ -371,22 +405,26 @@ export class AttachmentCenter {
    * bubble on their side saying "Receiving" for ever; there is no retraction in
    * the protocol, and a duplicate that arrives beats a photo that does not.
    */
-  private announce(handle: PeerHandle, transferId: string, file: StoredFile): void {
-    this.safe(() =>
-      handle.chat.send({
-        attachments: [
-          {
-            fileId: transferId,
-            name: file.name,
-            mimeType: file.mimeType,
-            byteLength: file.sizeBytes,
-            ...(file.width !== null ? { width: file.width } : {}),
-            ...(file.height !== null ? { height: file.height } : {}),
-            ...(file.durationMs !== null ? { durationMs: file.durationMs } : {}),
-          },
-        ],
-      }),
-    );
+  private announce(handle: PeerHandle, transferId: string, file: StoredFile): boolean {
+    try {
+      handle.chat.send({ attachments: [this.descriptorFor(transferId, file)] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** What the other phone is told about a file. One place, so the pre-flight check and the real send cannot drift apart. */
+  private descriptorFor(transferId: string, file: StoredFile): ChatAttachment {
+    return {
+      fileId: transferId,
+      name: file.name,
+      mimeType: file.mimeType,
+      byteLength: file.sizeBytes,
+      ...(file.width !== null ? { width: file.width } : {}),
+      ...(file.height !== null ? { height: file.height } : {}),
+      ...(file.durationMs !== null ? { durationMs: file.durationMs } : {}),
+    };
   }
 
   private fail(rowId: string): void {

@@ -543,6 +543,58 @@ Both BLE fixes compile and are reasoned from the code. **Neither can be
 verified here** - the simulator has no Bluetooth radio - so they are claims
 until two physical phones in airplane mode say otherwise.
 
+---
+
+## 3f. The day the toolchain moved
+
+Three weeks after submission the Mac had Xcode 27.0 (iOS 27 SDK), and the app
+stopped building. Nothing in the repository had changed.
+
+**The build refused three CocoaPods.** `react-native-image-picker` declares an
+iOS minimum of 9.0, `react-native-blob-util` 11.0, `RNSVG` 12.4. Xcode 27 will
+not build a deployment target below 15.0 at all. Older Xcodes let it through as
+a warning, which is why this surfaced only now - and it would have broken
+`scripts/archive-ios.sh` identically, on the day it mattered. The Podfile's
+`post_install` now raises any pod below the app's own floor to it.
+
+**The app did not launch on iOS 17.** The simulator on the iOS 17.0 runtime
+killed it before `main()`:
+
+    Symbol not found: __ZNSt13exception_ptr31__from_native_exception_pointerEPv
+    Expected in: libc++.1.dylib
+
+`nm -gU` on the system libc++ of every installed runtime settles it: the symbol
+is ABSENT from iOS 17.0, 17.2 and 17.5 and PRESENT in 18.0, 18.2 and 26.3. The
+referencing objects are all Nitro: `NitroModules`, `NitroImage` and
+VisionCamera's `Hybrid*Spec_cxx`, which are Swift with C++ interop and, compiled
+by Xcode 27, call that function unguarded. The binary says `minos 16.0` and
+cannot start below 18, so a build from this toolchain would have crashed at
+launch for every user on iOS 16 or 17 - the worst result a store listing can
+have, and invisible to App Review, who test on the latest iOS.
+
+VisionCamera is the QR scanner and cannot be dropped, so **the deployment target
+is now iOS 18.0**, in the Podfile and the project. That is a real cost - nobody
+on iOS 16 or 17 can install the app - paid so that nobody downloads something
+that does not start. Getting back down is not a setting: it means leaving the
+Nitro-based VisionCamera, or a toolchain that guards the call for old runtimes.
+
+**A change of mine made one failure louder and left it silent.** Making
+`encodeAttachment` throw on a fractional duration moved a cross-device failure
+into the sender's stack, where `AttachmentCenter.announce` swallowed it and
+`deliver` marked the row "sent" regardless - the original symptom again, by
+another road. The descriptor is now checked BEFORE any byte is sent (an
+unreadable attachment fails the row at once and costs no radio time), and an
+announcement that fails after the bytes started leaves a red row and stops
+tracking the transfer, so its completion cannot repaint it "delivered".
+
+What was checked for the App Store's 2.1 questionnaire, against the code
+rather than from memory: no `fetch`, `XMLHttpRequest`, `WebSocket` or `http(s)`
+URL in any of our TypeScript; no `URLSession` in our native code; no analytics,
+crash-reporting or advertising SDK in `Podfile.lock`; `react-native-blob-util`
+is used only for local file reads and writes, and the video player is given a
+local file the user chose; the app ships English only; the report action
+appears on received messages only, and blocking is reversible in Friends.
+
 ## 4. What was not done
 
 Stated because a list of everything that went right is not an honest report.

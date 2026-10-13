@@ -26,8 +26,12 @@ pnpm --filter @airlink/mobile ios          # build, install, launch
 
 Open `apps/mobile/ios/AirLink.xcworkspace` in Xcode — **not** the `.xcodeproj`.
 
-**Deployment target: iOS 16.0.** React Native's own floor is 15.1, but the
-VisionCamera barcode scanner (QR pairing) needs 15.5, so the Podfile sets 16.0.
+**Deployment target: iOS 18.0.** React Native's own floor is 15.1 and the
+VisionCamera barcode scanner (QR pairing) needs 15.5, but built with Xcode 27 the
+Nitro modules underneath it need a libc++ function that exists only from iOS 18.
+On the iOS 17.x runtimes the app is killed by dyld at launch ("Symbol not
+found: __ZNSt13exception_ptr31__from_native_exception_pointerEPv"), so the
+Podfile and the project say 18.0 and the App Store never offers it below that.
 
 ---
 
@@ -198,7 +202,7 @@ What you need, and nothing more:
 
 | | |
 |---|---|
-| iOS version | **16.0 or newer** (`IPHONEOS_DEPLOYMENT_TARGET`) |
+| iOS version | **18.0 or newer** (`IPHONEOS_DEPLOYMENT_TARGET`) |
 | Apple account | A **free** Apple ID is enough |
 | Entitlements | **None.** No `.entitlements` file exists and none is needed |
 

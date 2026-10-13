@@ -237,6 +237,7 @@ has no connectivity. Rated 13+ because it carries open messaging.
 
 3. HOW TO SET UP AND ACCESS THE MAIN FEATURES
 No credentials, demo account or sample files are needed - nothing to sign in to.
+Requires iOS 18 or later.
 - Install on two devices, either on the same Wi-Fi network or with Bluetooth on
   and no network at all. Open the app on both and enter any display name.
 - Each device lists the other under "Other devices". Tap Connect on one. Both

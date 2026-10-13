@@ -143,17 +143,21 @@ Son declaraciones oficiales, así que contéstalas tal cual:
 AirLink necesita **dos móviles** para funcionar, y esta es la única forma fácil
 de probarla en dos teléfonos reales antes de publicarla.
 
+> **Los dos iPhones necesitan iOS 18 o superior.** La app no arranca por debajo
+> (ver `STABILITY_AUDIT.md`, apartado 3f). Si un amigo tiene iOS 17, TestFlight
+> no le dejará instalarla: no es un fallo, es el mínimo.
+
 1. App Store Connect → **TestFlight** → **Internal Testing** → **+** → añade a un amigo.
 2. Tu amigo instala la app **TestFlight** y acepta la invitación. No hace falta
    conectar su iPhone a tu Mac.
-3. Probad: emparejar, chatear, enviar una foto, jugar.
+3. Probad con **Wi-Fi**: emparejar (los seis dígitos), chatear, enviar una foto,
+   **una nota de voz**, jugar.
 4. **Muy importante — probad también sin Wi-Fi:** en los dos iPhones, modo avión
-   y después vuelve a activar solo el **Bluetooth**. Conectad y mandad un
-   mensaje. Es lo único que no se puede probar en el Mac (los simuladores no
-   tienen Bluetooth), así que es la primera vez que se comprobará de verdad.
-5. Probad también una **nota de voz** y que llegue la **notificación** con la
-   app del otro en segundo plano. Están hechas y tienen tests, pero tampoco se
-   pueden probar bien en un simulador.
+   y después vuelve a activar solo el **Bluetooth**. Cada uno debe ver al otro en
+   "Other devices" en unos segundos; conectad y mandad un mensaje y una foto.
+   Es lo único que no se puede probar en el Mac (los simuladores no tienen
+   Bluetooth).
+5. Probad la **notificación** con la app del otro en segundo plano.
 
 Si algo de esto falla, **no envíes a revisión todavía**: cuéntamelo y lo
 arreglamos primero.
@@ -162,15 +166,26 @@ arreglamos primero.
 
 ## 9. Envíala a revisión
 
-En la página de la versión:
+Apple ya contestó a un primer envío (ver el recuadro de abajo). Lo que hay que
+hacer ahora es **responderles y reenviar**, no empezar de cero.
 
-1. Pega las **App Review Notes** de `docs/APP_STORE_LISTING.md`. **Es el campo
-   más importante**: explica al revisor que hacen falta dos dispositivos.
-2. Adjunta el vídeo `docs/app-review-video.mp4` (ya está hecho: 72 segundos con
-   los dos simuladores emparejándose, chateando y jugando). Va en **App Review
-   Information → Attachment**, en la misma página donde pegaste las notas.
-3. Marca **"Manually release this version"** (así tú decides cuándo sale).
-4. **Submit for Review**.
+1. **Graba el vídeo en los dos iPhones de verdad** (el de simuladores no vale:
+   piden un iPhone físico con el último iOS). Empieza a grabar la pantalla
+   **antes** de abrir la app y haz, en este orden: abrir AirLink desde la
+   pantalla de inicio → primera vez (nombre, permisos) → el otro móvil aparece en
+   "Other devices" → **Connect** → los **mismos seis dígitos** en los dos →
+   "They match" en ambos → un mensaje, una foto y una **nota de voz** → **mantén
+   pulsado un mensaje recibido → "Report and block"** → una partida en **Play**.
+   Con 2–3 minutos basta.
+2. Pega el texto de `docs/APP_STORE_LISTING.md` (sección *The Guideline 2.1
+   information request*) en **dos sitios**: la respuesta en el Resolution Center
+   **y** App Review Information → **Notes**. Adjunta el vídeo a la respuesta.
+3. Elige la **build más reciente** en la sección Compilación de la versión.
+   Cada subida necesita un número de build nuevo (la última subida fue la 4; esta es la 5, y la próxima será la 6).
+4. Comprueba que **Pricing and Availability** sigue sin Francia y que la
+   clasificación por edades sigue en **13+**: el texto de respuesta lo afirma.
+5. Marca **"Manually release this version"** (así tú decides cuándo sale).
+6. **Submit for Review** / "Volver a enviar a revisión de apps".
 
 Tarda de 1 a 3 días. Si la rechazan, **no es un fracaso**: lee el número de la
 norma, corrige y responde en el Resolution Center. Lo normal la primera vez es
@@ -179,10 +194,8 @@ un par de idas y vueltas.
 > **Lo que pasó en el primer envío:** Apple contestó con *"Guideline 2.1 –
 > Information Needed – New App Submission"*. No encontraron ningún fallo: es el
 > cuestionario que le mandan a las cuentas nuevas. Piden seis respuestas y un
-> **vídeo grabado en un iPhone de verdad** (el de simuladores no vale para
-> esto). El texto de la respuesta, ya escrito, está en
-> `docs/APP_STORE_LISTING.md`, al final, y hay que pegarlo en el Resolution
-> Center **y** en App Review Information → Notes.
+> **vídeo grabado en un iPhone de verdad**. El texto de la respuesta, ya
+> escrito, está en `docs/APP_STORE_LISTING.md`, al final.
 
 ---
 
